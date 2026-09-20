@@ -29,6 +29,7 @@ const DSH_HOME = path.join(WORKSPACE_ROOT, '.agents', 'e2e-dsh-home');
 const DSH_PROFILE = process.env.E2E_DSH_PROFILE ?? 'e2e';
 const WEB_URL = `http://127.0.0.1:${PORT}`;
 const TIMEOUT_MS = Number(process.env.E2E_TIMEOUT_MS ?? 180_000);
+const KEEP_MS = Number(process.env.E2E_KEEP_MS ?? 0);
 const POLL_MS = 500;
 
 async function exists(p: string): Promise<boolean> {
@@ -228,6 +229,19 @@ while (Date.now() < deadline) {
 
   if (pending.size === 0 && portUp && (webPageOk || !tokenedUrl)) {
     console.log('[e2e] 全部断言通过');
+    if (KEEP_MS > 0) {
+      // banner 可能晚于断言通过才打印（web 装配完成时），keep 窗口内轮询等待完整 tokened URL
+      const waitUntil = Date.now() + Math.min(KEEP_MS, 60_000);
+      while (!tokenedUrl && Date.now() < waitUntil) {
+        await new Promise<void>((r) => setTimeout(r, POLL_MS));
+        const m = output.match(/dsh web: (http:\S+)/);
+        if (m) tokenedUrl = m[1];
+      }
+      console.log(
+        `[e2e] UI 验证窗口 ${KEEP_MS}ms：用浏览器工具访问 ${tokenedUrl ?? WEB_URL + '（token 未捕获，见上方说明）'}`,
+      );
+      await new Promise<void>((resolve) => setTimeout(resolve, KEEP_MS));
+    }
     killTree(web.pid);
     await rm(overlayPath, { force: true });
     // 等待子进程树退出，避免残留
