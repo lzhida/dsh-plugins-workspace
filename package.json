@@ -12,9 +12,9 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "typecheck": "pnpm -r --if-present typecheck",
+    "typecheck": "tsc --noEmit -p tsconfig.json && pnpm -r --if-present typecheck",
     "test": "vitest run",
-    "test:e2e": "node scripts/test-e2e.mjs",
+    "test:e2e": "tsx scripts/test-e2e.ts",
     "prepare": "lefthook install"
   },
   "lint-staged": {
@@ -32,9 +32,11 @@
     "@types/node": "^26.6.2",
     "eslint": "^10.11.0",
     "globals": "^17.12.0",
+    "jiti": "^2.7.0",
     "lefthook": "^2.1.14",
     "lint-staged": "^17.5.1",
     "prettier": "^3.9.8",
+    "tsx": "^4.23.13",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.70.0",
     "vitest": "^5.0.1"

@@ -31,8 +31,7 @@ const WEB_URL = `http://127.0.0.1:${PORT}`;
 const TIMEOUT_MS = Number(process.env.E2E_TIMEOUT_MS ?? 180_000);
 const POLL_MS = 500;
 
-/** @param {string} p */
-async function exists(p) {
+async function exists(p: string): Promise<boolean> {
   try {
     await access(p);
     return true;
@@ -41,13 +40,12 @@ async function exists(p) {
   }
 }
 
-/** @param {string} s */
-function escapeRegExp(s) {
+function escapeRegExp(s: string): string {
   return s.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-/** @param {number} pid */
-function killTree(pid) {
+function killTree(pid: number | undefined): void {
+  if (pid === undefined) return;
   if (process.platform === 'win32') {
     spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' });
   } else {
@@ -167,14 +165,14 @@ const tokens = plugins.map((p) => path.basename(path.dirname(path.dirname(p))));
 const pending = new Set(tokens);
 let portUp = false;
 let webPageOk = false;
-let tokenedUrl = null;
-let exited = null;
+let tokenedUrl: string | null = null;
+let exited: number | null = null;
 
 web.on('exit', (code) => {
   exited = code;
 });
 
-function fail(message) {
+function fail(message: string): never {
   console.error(`[e2e] 失败: ${message}`);
   console.error(`[e2e] ===== web 进程输出（尾部 4000 字符）=====`);
   console.error(output.slice(-4000));
@@ -231,7 +229,7 @@ while (Date.now() < deadline) {
     killTree(web.pid);
     await rm(overlayPath, { force: true });
     // 等待子进程树退出，避免残留
-    await new Promise((resolve) => {
+    await new Promise<void>((resolve) => {
       const t = setTimeout(resolve, 3000);
       web.on('exit', () => {
         clearTimeout(t);
