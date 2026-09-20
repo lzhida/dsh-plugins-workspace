@@ -35,13 +35,14 @@ describe('hello-plugin', () => {
 
     apply(ctx);
     expect(cleanups).toHaveLength(1);
+    expect(log).toHaveBeenCalledWith('[hello-plugin] plugin loaded');
 
     const cleanup = cleanups[0];
     vi.advanceTimersByTime(10_000);
-    expect(log).toHaveBeenCalledTimes(2);
+    expect(log).toHaveBeenCalledTimes(3);
 
     cleanup();
     vi.advanceTimersByTime(10_000);
-    expect(log).toHaveBeenCalledTimes(2);
+    expect(log).toHaveBeenCalledTimes(3);
   });
 });

@@ -2,4 +2,9 @@ packages:
   - 'packages/*'
 
 allowBuilds:
+  '@deepseek-ai/dsh-subprocess-local': true
+  '@google/genai': true
+  koffi: true
   lefthook: true
+  node-pty: true
+  protobufjs: true

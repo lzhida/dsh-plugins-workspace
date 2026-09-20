@@ -4,3 +4,4 @@ coverage/
 *.tsbuildinfo
 .eslintcache
 .agents/tmp/
+.agents/e2e-dsh-home/

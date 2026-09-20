@@ -29,6 +29,7 @@ pnpm lint           # ESLint 检查（lint:fix 自动修）
 pnpm format         # Prettier 写入（format:check 只校验）
 pnpm typecheck      # 递归各包 tsc --noEmit
 pnpm test           # vitest run（集中在根，子包无 test 脚本）
+pnpm test:e2e       # e2e：真实 dsh Web UI 加载验证（默认 hello-plugin，详见 Testing & QA）
 ```
 
 新增插件的最小步骤：建 `packages/my-plugin/`，仿照 `packages/hello-plugin/package.json`（`type: "module"`、`main: "src/index.ts"`、`devDependencies` 含 cordis、`scripts.typecheck`），tsconfig extends 根配置即可，无需其他注册动作。
@@ -46,6 +47,7 @@ pnpm test           # vitest run（集中在根，子包无 test 脚本）
 
 - `packages/hello-plugin/src/index.ts`——新插件的模板（最小契约 + effect 清理范例）
 - `packages/hello-plugin/src/index.test.ts`——测试三件套范例（`stubCtx` + fake timers + `vi.spyOn`）
+- `scripts/test-e2e.mjs`——e2e 运行器：真实 dsh Web UI 加载验证，支持任意插件路径参数
 - `lefthook.yml` + 根 `package.json` 的 `lint-staged` 块——钩子与暂存区门禁行为
 - `tsconfig.base.json` / `eslint.config.js` / `.prettierrc.json`——质量门禁，改动需谨慎
 - `pnpm-workspace.yaml`——包收录 + `allowBuilds`；新依赖需要构建脚本时必须在此追加白名单（pnpm 11 默认拦截构建脚本）
@@ -66,3 +68,12 @@ pnpm test           # vitest run（集中在根，子包无 test 脚本）
   - 定时器用 `vi.useFakeTimers()` + `vi.advanceTimersByTime()`；
   - `vi.spyOn(console, 'log')` 静默计数，`afterEach` 里 `vi.useRealTimers()` + `vi.restoreAllMocks()` 还原。
 - 提交前门禁链：手动跑 `pnpm lint && pnpm typecheck && pnpm test`；pre-commit 钩子自动跑 lint-staged，pre-push 跑 `pnpm test`。
+
+### E2E（Web UI 加载级验证）
+
+- 命令：`pnpm test:e2e`（默认验证 hello-plugin）；验证任意插件：`pnpm test:e2e -- packages/<name>/src/index.ts`（可传多个）
+- 机制：运行器以仓库内隔离的 `DSH_HOME=.agents/e2e-dsh-home` + 独立 profile（默认 `e2e`，**缺失时自动从官方 web 模板引导**）启动 `pnpm dsh --profile e2e --patch <overlay> --no-open --port <port>`，patch overlay（`- insert` 列表、插件绝对路径）由运行器生成到 `.agents/tmp/e2e/`
+- 三项断言：① 进程输出出现插件加载日志——**契约：插件 `apply` 时须打印含自身 name 的日志行**（如 `[hello-plugin] plugin loaded`）② Web 服务端口可访问 ③ 若捕获到带 token 的 UI URL 则页面须返回 <400；结束自动 taskkill 进程树并清理 overlay
+- 与本机已运行的 dsh 实例完全隔离：DSH_HOME 重定向（不触碰 `~/.dsh`），默认端口 3865（3080 通常被本机实例占用）
+- 环境变量：`E2E_PORT`（3865）、`E2E_TIMEOUT_MS`（180000）、`E2E_DSH_PROFILE`（e2e）
+- 前提：`@deepseek-ai/dsh` 在根 devDependencies；`pnpm-workspace.yaml` 的 `allowBuilds` 已批准其原生依赖（node-pty/koffi/protobufjs/@google/genai/dsh-subprocess-local），新增依赖需构建脚本时照此追加

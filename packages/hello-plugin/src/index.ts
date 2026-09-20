@@ -7,6 +7,7 @@ export function greet(who: string): string {
 }
 
 export function apply(ctx: Context): void {
+  console.log(`[${name}] plugin loaded`);
   ctx.effect(() => {
     const timer = setInterval(() => {
       console.log(`[${name}] ${greet('dsh')}`);
