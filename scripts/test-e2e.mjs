@@ -9,10 +9,10 @@
  * 前提：devDependencies 已安装 @deepseek-ai/dsh（`pnpm install` 即可）。
  * 环境变量：
  *   E2E_TIMEOUT_MS    启动与断言总超时（默认 180000）
- *   E2E_PORT          Web UI 端口（默认 3080）
+ *   E2E_PORT          Web UI 端口（默认 3865）
  *
- * 插件契约：插件加载时应打印包含自身 name 的日志行（如 `[hello-plugin] ...`），
- * e2e 以「插件所在目录名」作为日志断言令牌。
+ * 插件契约：插件加载时应打印 `[name] ` 前缀格式的日志行（如 `[hello-plugin] plugin loaded`），
+ * e2e 以「[插件目录名]」结构化匹配，路径/堆栈中出现裸包名不算加载成功。
  */
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdir, rm, writeFile } from 'node:fs/promises';
@@ -39,6 +39,11 @@ async function exists(p) {
   } catch {
     return false;
   }
+}
+
+/** @param {string} s */
+function escapeRegExp(s) {
+  return s.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /** @param {number} pid */
@@ -80,7 +85,7 @@ if (!(await exists(profileDir))) {
   console.log(
     `[e2e] profile "${DSH_PROFILE}" 不存在，正在从官方 web 模板引导（首次约 30-60s）...`,
   );
-  spawnSync(
+  const boot = spawnSync(
     'cmd.exe',
     [
       '/c',
@@ -98,8 +103,17 @@ if (!(await exists(profileDir))) {
     },
   );
   if (!(await exists(profileDir))) {
-    console.error(`[e2e] profile 引导失败：未生成 ${profileDir}`);
+    // 官方模板引导在试启动崩溃（如 3080 被占）时会非零退出，但 profile 已落盘——目录缺失才算真失败
+    const code = boot.status ?? boot.signal ?? boot.error?.message ?? 'unknown';
+    console.error(
+      `[e2e] profile 引导失败：未生成 ${profileDir}（引导命令退出码 ${code}，排查上方引导输出）`,
+    );
     process.exit(1);
+  }
+  if (boot.status !== 0) {
+    console.warn(
+      `[e2e] 引导命令非零退出（code=${boot.status}），但 profile 已生成，继续`,
+    );
   }
   console.log('[e2e] ✓ profile 引导完成');
 }
@@ -173,9 +187,11 @@ while (Date.now() < deadline) {
   if (exited !== null) fail(`web 进程提前退出（code=${exited}）`);
 
   for (const token of [...pending]) {
-    if (output.includes(token)) {
+    // 结构化匹配：仅认 `[name] ` 前缀格式（插件契约），避免路径/堆栈中的裸包名造成假阳性
+    const re = new RegExp(`\\[${escapeRegExp(token)}\\]`);
+    if (re.test(output)) {
       pending.delete(token);
-      console.log(`[e2e] ✓ 捕获插件加载日志: ${token}`);
+      console.log(`[e2e] ✓ 捕获插件加载日志: [${token}] ...`);
     }
   }
 

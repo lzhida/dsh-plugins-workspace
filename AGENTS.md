@@ -73,7 +73,7 @@ pnpm test:e2e       # e2e：真实 dsh Web UI 加载验证（默认 hello-plugin
 
 - 命令：`pnpm test:e2e`（默认验证 hello-plugin）；验证任意插件：`pnpm test:e2e -- packages/<name>/src/index.ts`（可传多个）
 - 机制：运行器以仓库内隔离的 `DSH_HOME=.agents/e2e-dsh-home` + 独立 profile（默认 `e2e`，**缺失时自动从官方 web 模板引导**）启动 `pnpm dsh --profile e2e --patch <overlay> --no-open --port <port>`，patch overlay（`- insert` 列表、插件绝对路径）由运行器生成到 `.agents/tmp/e2e/`
-- 三项断言：① 进程输出出现插件加载日志——**契约：插件 `apply` 时须打印含自身 name 的日志行**（如 `[hello-plugin] plugin loaded`）② Web 服务端口可访问 ③ 若捕获到带 token 的 UI URL 则页面须返回 <400；结束自动 taskkill 进程树并清理 overlay
+- 三项断言：① 进程输出出现插件加载日志——**契约：插件 `apply` 时须打印 `[name] ` 前缀格式的日志行**（如 `[hello-plugin] plugin loaded`），e2e 按该结构化格式匹配，路径中出现裸包名不算 ② Web 服务端口可访问 ③ 若捕获到带 token 的 UI URL 则页面须返回 <400；结束自动 taskkill 进程树并清理 overlay
 - 与本机已运行的 dsh 实例完全隔离：DSH_HOME 重定向（不触碰 `~/.dsh`），默认端口 3865（3080 通常被本机实例占用）
 - 环境变量：`E2E_PORT`（3865）、`E2E_TIMEOUT_MS`（180000）、`E2E_DSH_PROFILE`（e2e）
 - 前提：`@deepseek-ai/dsh` 在根 devDependencies；`pnpm-workspace.yaml` 的 `allowBuilds` 已批准其原生依赖（node-pty/koffi/protobufjs/@google/genai/dsh-subprocess-local），新增依赖需构建脚本时照此追加
