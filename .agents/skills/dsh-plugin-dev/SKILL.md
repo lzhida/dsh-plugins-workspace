@@ -110,6 +110,18 @@ pnpm test:e2e -- .agents/tmp/my-plugin/src/index.ts     # 临时插件（.agents
 - **加载日志契约**：插件 `apply` 时必须打印 `[name] ` 前缀格式的日志行（如 `[my-plugin] plugin loaded`）。e2e 按 `\[name\]` 结构化正则匹配——路径/堆栈中出现裸包名**不算**加载成功。
 - 首次运行会引导 profile（约 30-60s）；默认端口 3865（`E2E_PORT` 可覆盖）；与 `~/.dsh` 零接触。
 
+### 浏览器级验证（Web 效果，可选）
+
+```sh
+E2E_KEEP_MS=180000 pnpm test:e2e -- packages/my-plugin/src/index.ts
+```
+
+断言通过后实例保持存活，运行器打印带 token 的 UI 地址（dsh 的 banner 可能耗 40s+，运行器会自动等待）。用 chrome-devtool MCP 之类的浏览器工具打开该地址：
+
+1. 页面健康：标题 `DeepSeek Harness`，console 无错误；
+2. 插件效果可见：设置 → 插件 → 插件列表 → 「全局插件」分组中目标插件显示「已启用」；
+3. 工具被模型实际调用需模型凭证——纯本地验证到此为止。
+
 ## 6. 门禁链（提交前必过）
 
 ```sh
