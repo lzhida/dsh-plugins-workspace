@@ -57,8 +57,10 @@ function killTree(pid: number | undefined): void {
   }
 }
 
-const plugins = process.argv.slice(2).length
-  ? process.argv.slice(2).map((p) => path.resolve(WORKSPACE_ROOT, p))
+// pnpm run 会把 `--` 字面量透传进 argv（pnpm 11 行为），过滤掉再解析插件路径
+const pluginArgs = process.argv.slice(2).filter((a) => a !== '--');
+const plugins = pluginArgs.length
+  ? pluginArgs.map((p) => path.resolve(WORKSPACE_ROOT, p))
   : [path.join(WORKSPACE_ROOT, 'packages', 'hello-plugin', 'src', 'index.ts')];
 
 for (const p of plugins) {
