@@ -41,7 +41,7 @@ pnpm test:e2e       # e2e：真实 dsh Web UI 加载验证（默认 hello-plugin
 - **严格 TS**：`strict` + `noUnusedLocals/noUnusedParameters`；函数写显式返回类型。
 - **格式**：Prettier 仅 `singleQuote: true`，其余默认；提交时 lint-staged 自动对暂存文件跑 `eslint --fix` + `prettier --write`。
 - **资源清理模式**：`ctx.effect(() => { ...; return () => cleanup() })`（参考 `src/index.ts:9-16`）。
-- **Git**：中文 Conventional Commits（`chore:/feat:/fix:`）；不直接提交 main，工作走 `feat/*`、`fix/*` 分支；push 由用户执行。
+- **Git**：中文 Conventional Commits（`chore:/feat:/fix:`）；分支模型 `main`（发布）/ `dev`（集线）：开发走 `feat/*`、`fix/*` 分支并合入 `dev`，验证后再合入 `main`；不直接提交 main；push 由用户执行。
 
 ## Important Files
 
