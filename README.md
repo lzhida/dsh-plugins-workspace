@@ -6,7 +6,7 @@
 
 ## 插件
 
-### @dsh-plugins/guided-goal
+### @lzhida/guided-goal
 
 引导式持久目标(goal)命令。将一句自然语言意图转化为结构化 goal,由 dsh goal 域在会话内自主执行直至完成。
 

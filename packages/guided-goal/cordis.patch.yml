@@ -3,4 +3,4 @@
 
 - insert:
     - id: guided-goal
-      name: '@dsh-plugins/guided-goal'
+      name: '@lzhida/guided-goal'

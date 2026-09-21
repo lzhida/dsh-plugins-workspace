@@ -6,7 +6,7 @@ A collection of plugins for [dsh](https://www.npmjs.com/package/@deepseek-ai/dsh
 
 ## Plugins
 
-### @dsh-plugins/guided-goal
+### @lzhida/guided-goal
 
 A guided persistent-goal command. It turns a one-line natural-language intent into a structured goal that the dsh goal domain executes autonomously within the session until completion.
 

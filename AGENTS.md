@@ -36,7 +36,7 @@ pnpm test:e2e       # e2e：真实 dsh Web UI 加载验证（默认 guided-goal�
 
 ## Code Conventions & Common Patterns
 
-- **命名**：插件包名 `@dsh-plugins/<kebab-case>`；`export const name` 与插件 kebab 名一致。
+- **命名**：插件包名 `@lzhida/<kebab-case>`；`export const name` 与插件 kebab 名一致。
 - **ESM-only**：全仓 `type: "module"`，禁止 CJS；`verbatimModuleSyntax` 强制类型导入写 `import type`。
 - **严格 TS**：`strict` + `noUnusedLocals/noUnusedParameters`；函数写显式返回类型。
 - **格式**：Prettier 仅 `singleQuote: true`，其余默认；提交时 lint-staged 自动对暂存文件跑 `eslint --fix` + `prettier --write`。
