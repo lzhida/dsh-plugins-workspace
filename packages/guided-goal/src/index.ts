@@ -32,19 +32,14 @@ export const inject = ['commands', 'settings'];
  */
 
 export interface GuidedGoalConfig {
-  /** /guided-goal 访谈式创建命令开关 */
-  guidedGoal: boolean;
-  /** /quick-goal 快速创建命令开关 */
-  quickGoal: boolean;
+  /** /guided-goal 命令开关 */
+  enabled: boolean;
 }
 
 const CONFIG_SCHEMA = Schema.object({
-  guidedGoal: Schema.boolean()
+  enabled: Schema.boolean()
     .default(true)
     .description('Enable /guided-goal command / 启用引导式目标命令'),
-  quickGoal: Schema.boolean()
-    .default(true)
-    .description('Enable /quick-goal command / 启用快速目标命令'),
 });
 
 type ConfigLanguage = 'auto' | 'zh' | 'en';
@@ -64,12 +59,10 @@ export function resolveLanguage(ctx: Context): ConfigLanguage {
 
 interface CommandTexts {
   guidedDescription: string;
-  quickDescription: string;
   guidedHint: string;
-  quickHint: string;
   guidedUsage: string;
-  guidedSuccess: string;
   quickUsage: string;
+  guidedSuccess: string;
   quickSuccess: string;
 }
 
@@ -82,27 +75,22 @@ export function commandTexts(language: ConfigLanguage): CommandTexts {
         ? enText
         : `${enText} · ${zhText}`;
   return {
-    guidedHint: '<draft>',
-    quickHint: '<[N | unlimited |] one-line goal>',
+    guidedHint: '[quick <one-line goal> | <draft>]',
     guidedDescription: both(
-      'Guided goal creation: clarify success criteria / verification / round cap / boundaries / stop conditions, then create_goal',
-      '引导式创建 goal:逐项澄清五字段后 create_goal',
-    ),
-    quickDescription: both(
-      'Quick goal creation: no interview — infer all five fields from one line (assumptions marked) and create_goal',
-      '快速创建 goal:零访谈自填五字段(假设标注)直接 create_goal',
+      'Guided goal creation: with the quick subcommand, infer all five fields from one line and create_goal; otherwise clarify success criteria / verification / round cap / boundaries / stop conditions first',
+      '引导式创建 goal:子命令 quick 时一句话自填五字段直接创建,否则逐项澄清成功标准 / 验证方式 / 轮次上限 / 边界 / 停止条件后 create_goal',
     ),
     guidedUsage: both(
-      'Usage: /guided-goal <draft>',
-      '用法:/guided-goal <草稿目标>',
+      'Usage: /guided-goal [quick <one-line goal> | <draft>]',
+      '用法:/guided-goal [quick <一句话目标> | <草稿目标>]',
+    ),
+    quickUsage: both(
+      'Usage: /guided-goal quick <one-line goal>',
+      '用法:/guided-goal quick <一句话目标>',
     ),
     guidedSuccess: both(
       'Guided goal creation started: answer the clarifying questions one by one; the goal will be created once all fields are confirmed',
       '已启动引导式 goal 创建:请逐项回答澄清问题,全部确认后将自动创建 goal',
-    ),
-    quickUsage: both(
-      'Usage: /quick-goal <[N | unlimited |] one-line goal>; prefix "8 |" caps at 8 rounds, "unlimited |" removes the cap',
-      '用法:/quick-goal <一句话目标>;前缀 "8 |" 指定 8 轮上限,"不限 |" 显式不限轮次',
     ),
     quickSuccess: both(
       'Quick goal creation started: fields will be inferred without interview (assumptions marked in the reply)',
@@ -125,36 +113,29 @@ export function apply(ctx: Context): void {
       for (const dispose of commandDisposers) dispose();
       commandDisposers = [];
       const t = commandTexts(language);
-      if (config.guidedGoal !== false) {
+      if (config.enabled !== false) {
         commandDisposers.push(
           ctx.commands.register({
             name: 'guided-goal',
             description: t.guidedDescription,
             input: { hint: t.guidedHint },
             handler: ({ agent, rawInput }) => {
-              const draft = rawInput.trim();
-              if (draft.length === 0) {
+              const input = rawInput.trim();
+              if (input.length === 0) {
                 return { kind: 'error', text: t.guidedUsage };
               }
-              agent.steer(buildClarifyMessage(draft));
-              return { kind: 'success', text: t.guidedSuccess };
-            },
-          }),
-        );
-      }
-      if (config.quickGoal !== false) {
-        commandDisposers.push(
-          ctx.commands.register({
-            name: 'quick-goal',
-            description: t.quickDescription,
-            input: { hint: t.quickHint },
-            handler: ({ agent, rawInput }) => {
-              const { rounds, draft } = parseQuickInput(rawInput);
-              if (draft.length === 0) {
-                return { kind: 'error', text: t.quickUsage };
+              // 首词子命令路由(与原生 /goal 的 clear/edit 同构)
+              if (/^quick(?=\s|$)/i.test(input)) {
+                const rest = input.replace(/^quick\s*/i, '');
+                const { rounds, draft } = parseQuickInput(rest);
+                if (draft.length === 0) {
+                  return { kind: 'error', text: t.quickUsage };
+                }
+                agent.steer(buildQuickCreateMessage(draft, rounds));
+                return { kind: 'success', text: t.quickSuccess };
               }
-              agent.steer(buildQuickCreateMessage(draft, rounds));
-              return { kind: 'success', text: t.quickSuccess };
+              agent.steer(buildClarifyMessage(input));
+              return { kind: 'success', text: t.guidedSuccess };
             },
           }),
         );

@@ -27,10 +27,8 @@ globalThis.__ModuleLoader__.load({
         return ctx.locale.register('guided-goal', {
           zh: {
             nav: '引导式目标',
-            guidedTitle: '引导式目标命令',
-            guidedDesc: '通过 /guided-goal 逐项访谈澄清五字段后创建',
-            quickTitle: '快速目标命令',
-            quickDesc: '通过 /quick-goal 一句话直接创建,不进行访谈',
+            enabledTitle: '引导式目标命令',
+            enabledDesc: '/guided-goal:直接输入走访谈创建,quick 子命令快速创建',
             on: '已启用',
             off: '已关闭',
             loading: '正在载入配置…',
@@ -39,10 +37,9 @@ globalThis.__ModuleLoader__.load({
           },
           en: {
             nav: 'Guided Goal',
-            guidedTitle: 'Guided goal command',
-            guidedDesc: 'Create via /guided-goal with field-by-field interview',
-            quickTitle: 'Quick goal command',
-            quickDesc: 'Create via /quick-goal from one line, no interview',
+            enabledTitle: 'Guided goal command',
+            enabledDesc:
+              '/guided-goal: plain input runs the interview; the quick subcommand creates without one',
             on: 'Enabled',
             off: 'Disabled',
             loading: 'Loading settings…',
@@ -127,21 +124,12 @@ globalThis.__ModuleLoader__.load({
           'div',
           { style: { display: 'flex', flexDirection: 'column', gap: 12 } },
           h(Row, {
-            title: t('guidedTitle'),
-            desc: t('guidedDesc'),
-            on: value.guidedGoal !== false,
+            title: t('enabledTitle'),
+            desc: t('enabledDesc'),
+            on: value.enabled !== false,
             disabled: disabled,
             onToggle: function () {
-              scope.set('guidedGoal', value.guidedGoal === false);
-            },
-          }),
-          h(Row, {
-            title: t('quickTitle'),
-            desc: t('quickDesc'),
-            on: value.quickGoal !== false,
-            disabled: disabled,
-            onToggle: function () {
-              scope.set('quickGoal', value.quickGoal === false);
+              scope.set('enabled', value.enabled === false);
             },
           }),
           readonlyTip

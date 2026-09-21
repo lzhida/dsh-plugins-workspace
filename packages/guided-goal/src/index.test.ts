@@ -120,99 +120,101 @@ describe('guided-goal 契约', () => {
   });
 
   it('settings namespace 以插件名注册', () => {
-    const state = stubCtx({ guidedGoal: true, quickGoal: true });
+    const state = stubCtx({ enabled: true });
     expect(state.settingsNs).toBe('guided-goal');
   });
 
-  it('双开关全开时注册两条命令,副作用进 effect 清理', () => {
-    const state = stubCtx({ guidedGoal: true, quickGoal: true });
-    expect(state.registered.map((r) => r.def.name)).toEqual([
-      'guided-goal',
-      'quick-goal',
-    ]);
+  it('启用时注册 guided-goal 命令,副作用进 effect 清理', () => {
+    const state = stubCtx({ enabled: true });
+    expect(state.registered.map((r) => r.def.name)).toEqual(['guided-goal']);
     expect(state.cleanups).toHaveLength(1);
   });
 
-  it('仅关闭 guided-goal 时只注册 quick-goal', () => {
-    const state = stubCtx({ guidedGoal: false, quickGoal: true });
-    expect(state.registered.map((r) => r.def.name)).toEqual(['quick-goal']);
-  });
-
-  it('仅关闭 quick-goal 时只注册 guided-goal', () => {
-    const state = stubCtx({ guidedGoal: true, quickGoal: false });
-    expect(state.registered.map((r) => r.def.name)).toEqual(['guided-goal']);
-  });
-
-  it('两个开关都关闭时不注册任何命令', () => {
-    const state = stubCtx({ guidedGoal: false, quickGoal: false });
+  it('关闭时不注册任何命令', () => {
+    const state = stubCtx({ enabled: false });
     expect(state.registered).toHaveLength(0);
   });
 
-  it('旧单开关配置(仅 enabled 字段)迁移后双命令默认注册', () => {
+  it('旧字段缺失(剥离后 undefined)时默认启用', () => {
     const state = stubCtx({} as GuidedGoalConfig);
-    expect(state.registered.map((r) => r.def.name)).toEqual([
-      'guided-goal',
-      'quick-goal',
-    ]);
+    expect(state.registered.map((r) => r.def.name)).toEqual(['guided-goal']);
   });
 
-  it('watch 到开关变化时按新配置增删命令', () => {
-    const state = stubCtx({ guidedGoal: true, quickGoal: true });
-    expect(state.registered).toHaveLength(2);
-    state.notify({ guidedGoal: true, quickGoal: false });
-    expect(state.registered).toHaveLength(3); // 2 旧(已注销) + 1 新 quick-goal
-    expect(
-      state.registered
-        .slice(0, 2)
-        .every((r) => r.dispose.mock.calls.length === 1),
-    ).toBe(true);
-    expect(state.registered[2].dispose.mock.calls.length).toBe(0);
-    state.notify({ guidedGoal: true, quickGoal: true });
-    expect(state.registered).toHaveLength(5); // dispose 全部 3 条 + 重注册 2 条
-    expect(
-      state.registered
-        .slice(0, 3)
-        .every((r) => r.dispose.mock.calls.length === 1),
-    ).toBe(true);
-    expect(state.registered[4].dispose.mock.calls.length).toBe(0);
+  it('watch 到开关变化时注销并重注册命令', () => {
+    const state = stubCtx({ enabled: true });
+    expect(state.registered).toHaveLength(1);
+    state.notify({ enabled: false });
+    expect(state.registered).toHaveLength(1); // 1 旧(已注销) + 0 新
+    expect(state.registered[0].dispose.mock.calls.length).toBe(1);
+    state.notify({ enabled: true });
+    expect(state.registered).toHaveLength(2); // 1 旧(首次 notify 已注销) + 1 新
+    expect(state.registered[0].dispose.mock.calls.length).toBe(1);
+    expect(state.registered[1].dispose.mock.calls.length).toBe(0);
   });
 
   it('命令 hint 全英文(语法性占位符不翻译)', () => {
-    const state = stubCtx({ guidedGoal: true, quickGoal: true });
+    const state = stubCtx({ enabled: true });
     for (const r of state.registered) {
       expect(r.def.input?.hint).not.toMatch(/[\u4e00-\u9fff]/);
     }
-    expect(state.registered[0].def.input?.hint).toBe('<draft>');
-    expect(state.registered[1].def.input?.hint).toBe(
-      '<[N | unlimited |] one-line goal>',
+    expect(state.registered[0].def.input?.hint).toBe(
+      '[quick <one-line goal> | <draft>]',
     );
   });
 
+  it('handler 子命令路由:quick 走快速协议,普通输入走访谈协议', () => {
+    const state = stubCtx({ enabled: true });
+    const handler = state.registered[0].def.handler;
+    const steer = vi.fn();
+    const invoke = (rawInput: string): void => {
+      handler({
+        agent: { steer },
+        rawInput,
+      } as unknown as Parameters<typeof handler>[0]);
+    };
+
+    invoke('');
+    expect(steer).not.toHaveBeenCalled();
+
+    invoke('quick 3 | 给仓库补 README');
+    expect(steer).toHaveBeenCalledTimes(1);
+    const quickText = (steer.mock.calls[0][0].content[0] as { text: string })
+      .text;
+    expect(quickText).toContain('给仓库补 README');
+
+    invoke('重构鉴权模块');
+    expect(steer).toHaveBeenCalledTimes(2);
+    const clarifyText = (steer.mock.calls[1][0].content[0] as { text: string })
+      .text;
+    expect(clarifyText).toContain('重构鉴权模块');
+    expect(clarifyText).not.toBe(quickText);
+  });
+
   it('跟随官方语言配置:locale preference 驱动命令文案语言', () => {
-    const zh = stubCtx({ guidedGoal: true, quickGoal: true }, 'zh');
+    const zh = stubCtx({ enabled: true }, 'zh');
     const zhDesc = zh.registered[0].def.description ?? '';
     expect(zhDesc).toContain('引导式创建');
     expect(zhDesc).not.toContain('Guided goal creation');
 
-    const en = stubCtx({ guidedGoal: true, quickGoal: true }, 'en');
+    const en = stubCtx({ enabled: true }, 'en');
     const enDesc = en.registered[0].def.description ?? '';
     expect(enDesc).toContain('Guided goal creation');
     expect(enDesc).not.toContain('引导式创建');
 
-    const auto = stubCtx({ guidedGoal: true, quickGoal: true });
+    const auto = stubCtx({ enabled: true });
     const autoDesc = auto.registered[0].def.description ?? '';
     expect(autoDesc).toContain('Guided goal creation');
     expect(autoDesc).toContain('引导式创建');
   });
 
   it('settings/updated(locale) 时运行时切换命令文案', () => {
-    const state = stubCtx({ guidedGoal: true, quickGoal: true });
+    const state = stubCtx({ enabled: true });
     const before = state.registered[0].def.description ?? '';
     expect(before).toContain('·'); // 双语兜底
 
     state.emitLocaleUpdate('zh');
-    expect(state.registered).toHaveLength(4); // dispose + re-register ×2
-    const after = state.registered[2].def.description ?? '';
+    expect(state.registered).toHaveLength(2); // dispose + re-register ×1
+    const after = state.registered[1].def.description ?? '';
     expect(after).toContain('引导式创建');
     expect(after).not.toContain('Guided goal creation');
   });
@@ -302,7 +304,7 @@ describe('guided-goal 契约', () => {
 
 describe('/guided-goal 命令', () => {
   it('带草稿时 steer 一条含协议与草稿的 user 消息并返回 success', () => {
-    const state = stubCtx({ guidedGoal: true, quickGoal: true });
+    const state = stubCtx({ enabled: true });
     const steerCalls: unknown[] = [];
     const result = state.registered[0].def.handler({
       agent: {
@@ -327,7 +329,7 @@ describe('/guided-goal 命令', () => {
   });
 
   it('空草稿返回 error 且不 steer', () => {
-    const state = stubCtx({ guidedGoal: true, quickGoal: true });
+    const state = stubCtx({ enabled: true });
     const steerCalls: unknown[] = [];
     const result = state.registered[0].def.handler({
       agent: {
@@ -344,17 +346,17 @@ describe('/guided-goal 命令', () => {
   });
 });
 
-describe('/quick-goal 命令', () => {
+describe('/guided-goal quick 子命令', () => {
   it('带草稿时 steer quick 协议消息并返回 success', () => {
-    const state = stubCtx({ guidedGoal: true, quickGoal: true });
+    const state = stubCtx({ enabled: true });
     const steerCalls: unknown[] = [];
-    const result = state.registered[1].def.handler({
+    const result = state.registered[0].def.handler({
       agent: {
         steer(message: unknown): void {
           steerCalls.push(message);
         },
       },
-      rawInput: ' 优化构建缓存 ',
+      rawInput: 'quick 优化构建缓存',
     });
 
     expect(result.kind).toBe('success');
@@ -372,15 +374,15 @@ describe('/quick-goal 命令', () => {
   });
 
   it('显式轮次前缀被剥离后注入且草稿干净', () => {
-    const state = stubCtx({ guidedGoal: true, quickGoal: true });
+    const state = stubCtx({ enabled: true });
     const steerCalls: unknown[] = [];
-    state.registered[1].def.handler({
+    state.registered[0].def.handler({
       agent: {
         steer(message: unknown): void {
           steerCalls.push(message);
         },
       },
-      rawInput: '3 | 修复登录超时',
+      rawInput: 'quick 3 | 修复登录超时',
     });
     const message = steerCalls[0] as { content: Array<{ text?: string }> };
     const text = message.content[0]?.text ?? '';
@@ -390,15 +392,15 @@ describe('/quick-goal 命令', () => {
   });
 
   it('空草稿返回 error 且不 steer', () => {
-    const state = stubCtx({ guidedGoal: true, quickGoal: true });
+    const state = stubCtx({ enabled: true });
     const steerCalls: unknown[] = [];
-    const result = state.registered[1].def.handler({
+    const result = state.registered[0].def.handler({
       agent: {
         steer(message: unknown): void {
           steerCalls.push(message);
         },
       },
-      rawInput: '',
+      rawInput: 'quick',
     });
 
     expect(result.kind).toBe('error');
@@ -407,15 +409,15 @@ describe('/quick-goal 命令', () => {
   });
 
   it('只有前缀没有草稿返回 error 且不 steer', () => {
-    const state = stubCtx({ guidedGoal: true, quickGoal: true });
+    const state = stubCtx({ enabled: true });
     const steerCalls: unknown[] = [];
-    const result = state.registered[1].def.handler({
+    const result = state.registered[0].def.handler({
       agent: {
         steer(message: unknown): void {
           steerCalls.push(message);
         },
       },
-      rawInput: '8 |   ',
+      rawInput: 'quick 8 |   ',
     });
 
     expect(result.kind).toBe('error');
