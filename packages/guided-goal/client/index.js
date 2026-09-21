@@ -27,7 +27,7 @@ globalThis.__ModuleLoader__.load({
         return ctx.locale.register('guided-goal', {
           zh: {
             nav: '引导式目标',
-            enabledTitle: '引导式目标命令',
+            enabledTitle: '启用命令',
             enabledDesc: '/guided-goal:直接输入走访谈创建,quick 子命令快速创建',
             on: '已启用',
             off: '已关闭',
