@@ -2,7 +2,11 @@ import type { Context } from '@deepseek-ai/cordis';
 // 引入包内类型即激活其 cordis Context declaration merging(ctx.commands)
 import type {} from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-commands';
-import { buildClarifyMessage, buildQuickCreateMessage } from './protocol.ts';
+import {
+  buildClarifyMessage,
+  buildQuickCreateMessage,
+  parseQuickInput,
+} from './protocol.ts';
 
 export const name = 'guided-goal';
 export const inject = ['commands'];
@@ -47,14 +51,17 @@ export function apply(ctx: Context): void {
       ctx.commands.register({
         name: 'quick-goal',
         description:
-          '快速创建持久 goal:一句话草稿,不访谈——模型自行推断五字段(假设显式标注)直接 create_goal',
-        input: { hint: '<一句话目标>' },
+          '快速创建持久 goal:一句话草稿,不访谈——模型按工作量自估迭代上限(有限值);可用 "N |" 指定轮次、"不限 |" 显式不限',
+        input: { hint: '<[N | 不限 |] 一句话目标>' },
         handler: ({ agent, rawInput }) => {
-          const draft = rawInput.trim();
+          const { rounds, draft } = parseQuickInput(rawInput);
           if (draft.length === 0) {
-            return { kind: 'error', text: '用法:/quick-goal <一句话目标>' };
+            return {
+              kind: 'error',
+              text: '用法:/quick-goal <一句话目标>;可选前缀 "8 |" 指定 8 轮上限,"不限 |" 显式不限轮次',
+            };
           }
-          agent.steer(buildQuickCreateMessage(draft));
+          agent.steer(buildQuickCreateMessage(draft, rounds));
           return {
             kind: 'success',
             text: '已按快速模式创建 goal:模型将自行推断五字段(假设会在回复中标注)并直接创建,不进行访谈',
