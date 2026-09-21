@@ -25,24 +25,36 @@ export const inject = ['commands', 'settings'];
  *
  * 配置(Settings → Guided Goal,官方 settings 体系持久化):
  * - enabled:开关,关闭时两命令从补全列表注销
- * - language:命令文案语言(auto=浏览器自适应双语 / zh / en)
+ *
+ * 文案语言跟随 dsh 全局语言设置(Settings → Language,settings 'locale'
+ * namespace 的 preference 字段):zh/en 单语言,未设置时双语兜底——
+ * 通过订阅 settings/updated 事件在运行时切换。
  */
 
 export interface GuidedGoalConfig {
   enabled: boolean;
-  language: 'auto' | 'zh' | 'en';
 }
 
 const CONFIG_SCHEMA = Schema.object({
   enabled: Schema.boolean()
     .default(true)
     .description('Enable commands / 启用命令'),
-  language: Schema.union(['auto', 'zh', 'en'])
-    .default('auto')
-    .description('Command text language / 命令文案语言'),
 });
 
-type ConfigLanguage = GuidedGoalConfig['language'];
+type ConfigLanguage = 'auto' | 'zh' | 'en';
+
+/** 读取 dsh 全局语言偏好(Settings → Language):zh/en,未设置时 auto(双语)。 */
+export function resolveLanguage(ctx: Context): ConfigLanguage {
+  let doc: unknown;
+  try {
+    doc = ctx.settings.get('locale');
+  } catch {
+    return 'auto';
+  }
+  const preference = (doc as { preference?: string } | undefined)?.preference;
+  if (preference === 'zh' || preference === 'en') return preference;
+  return 'auto';
+}
 
 interface CommandTexts {
   guidedDescription: string;
@@ -103,11 +115,11 @@ export function apply(ctx: Context): void {
     );
 
     let commandDisposers: Array<() => void> = [];
-    const sync = (config: GuidedGoalConfig): void => {
+    const sync = (config: GuidedGoalConfig, language: ConfigLanguage): void => {
       for (const dispose of commandDisposers) dispose();
       commandDisposers = [];
       if (!config.enabled) return;
-      const t = commandTexts(config.language);
+      const t = commandTexts(language);
       commandDisposers.push(
         ctx.commands.register({
           name: 'guided-goal',
@@ -138,10 +150,15 @@ export function apply(ctx: Context): void {
       );
     };
 
-    sync(scope.get());
-    const stopWatch = scope.watch((next) => sync(next));
+    sync(scope.get(), resolveLanguage(ctx));
+    const stopWatch = scope.watch((next) => sync(next, resolveLanguage(ctx)));
+    // 全局语言变更(Settings → Language → locale ns)时同步命令文案
+    const stopLocaleWatch = ctx.on('settings/updated', (ns) => {
+      if (ns === 'locale') sync(scope.get(), resolveLanguage(ctx));
+    });
     return () => {
       stopWatch();
+      stopLocaleWatch();
       for (const dispose of commandDisposers) dispose();
       commandDisposers = [];
     };

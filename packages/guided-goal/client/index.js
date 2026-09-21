@@ -1,10 +1,10 @@
 /**
  * guided-goal client bundle — 手写零构建 CJS-in-factory。
  *
- * Settings → Guided Goal 配置面板:Enable 开关 + 命令文案语言选择。
+ * Settings → Guided Goal 配置面板:Enable 开关(命令启停)。
  * 读写走 ctx.settingsScope(bind settings.namespace,host 持久化);
- * 面板文案走 ctx.locale(浏览器语言自适应)。
- * react 与 @deepseek-ai/* client 服务由宿主模块表解析(dsh.client.inject)。
+ * 面板文案走 ctx.locale(浏览器语言自适应);命令文案语言跟随
+ * dsh 全局语言设置(host 侧 resolveLanguage 读取 locale namespace)。
  */
 globalThis.__ModuleLoader__.load({
   // id 必须与 package.json 包名一致,否则 boot graph arrive() 抛
@@ -25,10 +25,6 @@ globalThis.__ModuleLoader__.load({
           zh: {
             nav: '目标引导 Goal',
             enable: '启用命令',
-            language: '命令文案语言',
-            langAuto: '跟随浏览器(双语)',
-            langZh: '中文',
-            langEn: 'English',
             loading: '正在载入配置…',
             unavailable: '配置存储不可用',
             readonly: '只读连接,无法修改',
@@ -36,10 +32,6 @@ globalThis.__ModuleLoader__.load({
           en: {
             nav: 'Guided Goal',
             enable: 'Enable commands',
-            language: 'Command text language',
-            langAuto: 'Follow browser (bilingual)',
-            langZh: '中文',
-            langEn: 'English',
             loading: 'Loading settings…',
             unavailable: 'Settings storage unavailable',
             readonly: 'Read-only connection; settings cannot be changed',
@@ -74,71 +66,37 @@ globalThis.__ModuleLoader__.load({
         var disabled = !snap.writable;
 
         return h(
-          'div',
-          null,
-          h(
-            'label',
-            {
-              key: 'enable',
-              style: {
-                display: 'flex',
-                gap: 8,
-                alignItems: 'center',
-                marginBottom: 12,
-              },
+          'label',
+          {
+            style: {
+              display: 'flex',
+              gap: 8,
+              alignItems: 'center',
+              marginBottom: 12,
             },
-            h('input', {
-              type: 'checkbox',
-              checked: value.enabled !== false,
-              disabled: disabled,
-              onChange: function (event) {
-                scope.set('enabled', event.target.checked);
-              },
-            }),
+          },
+          h('input', {
+            type: 'checkbox',
+            checked: value.enabled !== false,
+            disabled: disabled,
+            onChange: function (event) {
+              scope.set('enabled', event.target.checked);
+            },
+          }),
+          h(
+            'span',
+            { style: { fontSize: 13, fontWeight: 600 } },
+            t('enable'),
             h(
               'span',
-              { style: { fontSize: 13, fontWeight: 600 } },
-              t('enable'),
-            ),
-          ),
-          h(
-            'label',
-            {
-              key: 'language',
-              style: {
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 4,
-                marginBottom: 12,
-              },
-            },
-            h(
-              'span',
-              { style: { fontSize: 12, fontWeight: 600, opacity: 0.8 } },
-              t('language'),
-            ),
-            h(
-              'select',
               {
                 style: {
-                  padding: '6px 8px',
-                  borderRadius: 6,
-                  border: '1px solid var(--dsh-border, #ccc)',
-                  font: 'inherit',
-                },
-                value: value.language || 'auto',
-                disabled: disabled,
-                onChange: function (event) {
-                  scope.set('language', event.target.value);
+                  display: 'block',
+                  fontSize: 11,
+                  fontWeight: 400,
+                  opacity: 0.6,
                 },
               },
-              h('option', { value: 'auto' }, t('langAuto')),
-              h('option', { value: 'zh' }, t('langZh')),
-              h('option', { value: 'en' }, t('langEn')),
-            ),
-            h(
-              'span',
-              { style: { fontSize: 11, opacity: 0.6 } },
               'guided-goal / quick-goal',
             ),
           ),

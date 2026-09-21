@@ -38,12 +38,20 @@ interface StubState {
   notify(next: GuidedGoalConfig): void;
 }
 
-function stubCtx(initial: GuidedGoalConfig): StubState {
+function stubCtx(
+  initial: GuidedGoalConfig,
+  localePreference?: 'zh' | 'en',
+): StubState & {
+  emitLocaleUpdate(preference: 'zh' | 'en' | undefined): void;
+  localeWatchers: Array<(ns: string) => void>;
+} {
   const registered: RegisterRecord[] = [];
   const cleanups: Array<() => void> = [];
   let settingsNs: string | null = null;
   let watcher: ((next: GuidedGoalConfig) => void) | null = null;
   let current = initial;
+  let currentPreference: string | undefined = localePreference;
+  const localeWatchers: Array<(ns: string) => void> = [];
   const ctx = {
     effect(fn: () => (() => void) | void): void {
       const cleanup = fn();
@@ -72,18 +80,34 @@ function stubCtx(initial: GuidedGoalConfig): StubState {
           },
         };
       },
+      get(ns: string): { preference?: string } | undefined {
+        return ns === 'locale' ? { preference: currentPreference } : undefined;
+      },
+    },
+    on(event: string, cb: (ns: string) => void): () => void {
+      if (event === 'settings/updated') localeWatchers.push(cb);
+      return () => {};
     },
   } as unknown as Context;
   apply(ctx);
-  return {
+  const state: StubState & {
+    emitLocaleUpdate(preference: 'zh' | 'en' | undefined): void;
+    localeWatchers: Array<(ns: string) => void>;
+  } = {
     registered,
     cleanups,
     settingsNs,
+    localeWatchers,
     notify(next: GuidedGoalConfig) {
       current = next;
       watcher?.(next);
     },
+    emitLocaleUpdate(pref: 'zh' | 'en' | undefined) {
+      currentPreference = pref;
+      for (const cb of localeWatchers) cb('locale');
+    },
   };
+  return state;
 }
 
 describe('guided-goal 契约', () => {
@@ -96,12 +120,12 @@ describe('guided-goal 契约', () => {
   });
 
   it('settings namespace 以插件名注册', () => {
-    const state = stubCtx({ enabled: true, language: 'auto' });
+    const state = stubCtx({ enabled: true });
     expect(state.settingsNs).toBe('guided-goal');
   });
 
   it('enabled=true 时注册两条命令,副作用进 effect 清理', () => {
-    const state = stubCtx({ enabled: true, language: 'auto' });
+    const state = stubCtx({ enabled: true });
     expect(state.registered.map((r) => r.def.name)).toEqual([
       'guided-goal',
       'quick-goal',
@@ -110,38 +134,26 @@ describe('guided-goal 契约', () => {
   });
 
   it('enabled=false 时不注册任何命令', () => {
-    const state = stubCtx({ enabled: false, language: 'auto' });
+    const state = stubCtx({ enabled: false });
     expect(state.registered).toHaveLength(0);
   });
 
   it('watch 到 enabled=false 时注销全部命令,恢复 true 时重注册', () => {
-    const state = stubCtx({ enabled: true, language: 'auto' });
+    const state = stubCtx({ enabled: true });
     expect(state.registered).toHaveLength(2);
-    state.notify({ enabled: false, language: 'auto' });
+    state.notify({ enabled: false });
     expect(
       state.registered.every((r) => r.dispose.mock.calls.length === 1),
     ).toBe(true);
-    state.notify({ enabled: true, language: 'zh' });
+    state.notify({ enabled: true });
     expect(state.registered).toHaveLength(4);
     expect(
       state.registered.slice(2).every((r) => r.dispose.mock.calls.length === 0),
     ).toBe(true);
   });
 
-  it('language=zh 时命令描述为纯中文,auto 时为双语', () => {
-    const zhState = stubCtx({ enabled: true, language: 'zh' });
-    const zhDesc = zhState.registered[0].def.description ?? '';
-    expect(zhDesc).toContain('引导式创建');
-    expect(zhDesc).not.toContain('Guided goal creation');
-
-    const autoState = stubCtx({ enabled: true, language: 'auto' });
-    const autoDesc = autoState.registered[0].def.description ?? '';
-    expect(autoDesc).toContain('Guided goal creation');
-    expect(autoDesc).toContain('引导式创建');
-  });
-
   it('命令 hint 全英文(语法性占位符不翻译)', () => {
-    const state = stubCtx({ enabled: true, language: 'zh' });
+    const state = stubCtx({ enabled: true });
     for (const r of state.registered) {
       expect(r.def.input?.hint).not.toMatch(/[\u4e00-\u9fff]/);
     }
@@ -149,6 +161,35 @@ describe('guided-goal 契约', () => {
     expect(state.registered[1].def.input?.hint).toBe(
       '<[N | unlimited |] one-line goal>',
     );
+  });
+
+  it('跟随官方语言配置:locale preference 驱动命令文案语言', () => {
+    const zh = stubCtx({ enabled: true }, 'zh');
+    const zhDesc = zh.registered[0].def.description ?? '';
+    expect(zhDesc).toContain('引导式创建');
+    expect(zhDesc).not.toContain('Guided goal creation');
+
+    const en = stubCtx({ enabled: true }, 'en');
+    const enDesc = en.registered[0].def.description ?? '';
+    expect(enDesc).toContain('Guided goal creation');
+    expect(enDesc).not.toContain('引导式创建');
+
+    const auto = stubCtx({ enabled: true });
+    const autoDesc = auto.registered[0].def.description ?? '';
+    expect(autoDesc).toContain('Guided goal creation');
+    expect(autoDesc).toContain('引导式创建');
+  });
+
+  it('settings/updated(locale) 时运行时切换命令文案', () => {
+    const state = stubCtx({ enabled: true });
+    const before = state.registered[0].def.description ?? '';
+    expect(before).toContain('·'); // 双语兜底
+
+    state.emitLocaleUpdate('zh');
+    expect(state.registered).toHaveLength(4); // dispose + re-register ×2
+    const after = state.registered[2].def.description ?? '';
+    expect(after).toContain('引导式创建');
+    expect(after).not.toContain('Guided goal creation');
   });
 
   it('userText 构造 user 角色、user 来源的文本消息', () => {
@@ -236,7 +277,7 @@ describe('guided-goal 契约', () => {
 
 describe('/guided-goal 命令', () => {
   it('带草稿时 steer 一条含协议与草稿的 user 消息并返回 success', () => {
-    const state = stubCtx({ enabled: true, language: 'en' });
+    const state = stubCtx({ enabled: true });
     const steerCalls: unknown[] = [];
     const result = state.registered[0].def.handler({
       agent: {
@@ -261,7 +302,7 @@ describe('/guided-goal 命令', () => {
   });
 
   it('空草稿返回 error 且不 steer', () => {
-    const state = stubCtx({ enabled: true, language: 'zh' });
+    const state = stubCtx({ enabled: true });
     const steerCalls: unknown[] = [];
     const result = state.registered[0].def.handler({
       agent: {
@@ -280,7 +321,7 @@ describe('/guided-goal 命令', () => {
 
 describe('/quick-goal 命令', () => {
   it('带草稿时 steer quick 协议消息并返回 success', () => {
-    const state = stubCtx({ enabled: true, language: 'auto' });
+    const state = stubCtx({ enabled: true });
     const steerCalls: unknown[] = [];
     const result = state.registered[1].def.handler({
       agent: {
@@ -306,7 +347,7 @@ describe('/quick-goal 命令', () => {
   });
 
   it('显式轮次前缀被剥离后注入且草稿干净', () => {
-    const state = stubCtx({ enabled: true, language: 'auto' });
+    const state = stubCtx({ enabled: true });
     const steerCalls: unknown[] = [];
     state.registered[1].def.handler({
       agent: {
@@ -324,7 +365,7 @@ describe('/quick-goal 命令', () => {
   });
 
   it('空草稿返回 error 且不 steer', () => {
-    const state = stubCtx({ enabled: true, language: 'auto' });
+    const state = stubCtx({ enabled: true });
     const steerCalls: unknown[] = [];
     const result = state.registered[1].def.handler({
       agent: {
@@ -341,7 +382,7 @@ describe('/quick-goal 命令', () => {
   });
 
   it('只有前缀没有草稿返回 error 且不 steer', () => {
-    const state = stubCtx({ enabled: true, language: 'auto' });
+    const state = stubCtx({ enabled: true });
     const steerCalls: unknown[] = [];
     const result = state.registered[1].def.handler({
       agent: {

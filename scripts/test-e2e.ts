@@ -229,7 +229,11 @@ while (Date.now() < deadline) {
   }
   if (tokenedUrl && !webPageOk) {
     try {
+      // redirect: 'manual'——auth 中间件对带 token 首访返回 303(auth 决策流,
+      // 浏览器侧由后续会话机制续接);跟随重定向会在无会话状态下拿到 401,
+      // 因此以首跳状态码判定:2xx/3xx = HTTP 服务与认证链路健康
       const res = await fetch(tokenedUrl, {
+        redirect: 'manual',
         signal: AbortSignal.timeout(3000),
       });
       if (res.status < 400) {
