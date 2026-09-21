@@ -1,5 +1,7 @@
 # dsh-plugins-workspace
 
+English | [简体中文](./README.md)
+
 A collection of plugins for [dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)(DeepSeek Harness) — a TypeScript + cordis plugin monorepo. Plugins are loaded directly as TypeScript source by the dsh loader, with no build step.
 
 ## Plugins

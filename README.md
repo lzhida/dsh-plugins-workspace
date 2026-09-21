@@ -1,5 +1,7 @@
 # dsh-plugins-workspace
 
+[English](./README.en.md) | 简体中文
+
 [dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)(DeepSeek Harness)插件集合——TypeScript + cordis 插件 monorepo。插件以 TS 源码形态被 dsh loader 直接加载,无构建步骤。
 
 ## 插件
