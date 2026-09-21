@@ -4,6 +4,9 @@ import {
   type UserMessage,
 } from '@deepseek-ai/dsh-llm';
 
+/** 协议语言:auto 走中文兜底(与 index.ts 的 ConfigLanguage 同形)。 */
+type ProtocolLanguage = 'auto' | 'zh' | 'en';
+
 /** 构造一条 source 为用户的文本消息(steer 的载体)。 */
 export function userText(text: string): UserMessage {
   // ContentBlock 判别联合的 text 变体:结构由 dsh-llm 契约定义
@@ -14,7 +17,7 @@ export function userText(text: string): UserMessage {
   });
 }
 
-const CLARIFY_PROTOCOL = [
+const CLARIFY_PROTOCOL_ZH = [
   '[guided-goal] 用户希望以引导方式创建一个持久 goal(每会话一个,由 dsh goal 域管理)。',
   '请严格按以下协议执行:',
   '1. 依次澄清五个字段:成功标准(必须可判定,拒绝"做得好/完成"等主观表述)、验证方式(确切命令或动作)、迭代上限(最多几轮尝试)、范围边界(允许/禁止触碰的路径)、停止条件(何时停下交还人工)。',
@@ -25,12 +28,34 @@ const CLARIFY_PROTOCOL = [
   '6. 用户放弃则不创建 goal。不要在字段未明确时抢跑创建。',
 ].join('\n');
 
-/** 澄清链入口消息:命令把草稿交给模型,由模型多轮追问后创建。 */
-export function buildClarifyMessage(draft: string): UserMessage {
-  return userText(`${CLARIFY_PROTOCOL}\n\n用户草稿意图:\n${draft.trim()}`);
+const CLARIFY_PROTOCOL_EN = [
+  '[guided-goal] The user wants to create a persistent goal in guided mode (one per session, managed by the dsh goal domain).',
+  'Follow this protocol strictly:',
+  '1. Clarify five fields in order: success criteria (must be decidable; reject vague phrasing like "works well/done"), verification (exact commands or actions), round cap (max attempts), boundaries (allowed/forbidden paths), stop conditions (when to stop and hand back to the human).',
+  '2. Ask exactly one highest-value question at a time; do not re-ask fields already clear from the draft.',
+  '3. Once all fields are clear, compose the full objective (structure: ## Objective / ## Success criteria / ## Verification / ## Boundaries / ## Stop conditions) and call create_goal; if the user gave a round cap, pass it as max_goal_rounds.',
+  "4. After calling create_goal, end this turn immediately: output the five-field summary and the list of assumptions awaiting confirmation; do not start executing the goal's work (the goal runs autonomously in later rounds).",
+  '5. The composed goal\'s Stop conditions must include a mandatory "completion summary" requirement: when the goal finishes, the final reply must give the modified-file list, per-item verification results (each Verification item pass/fail), and leftover issues or unhandled items.',
+  '6. If the user gives up, do not create the goal. Never jump ahead to creation while fields remain unclear.',
+].join('\n');
+
+function clarifyProtocol(language: ProtocolLanguage): string {
+  return language === 'en' ? CLARIFY_PROTOCOL_EN : CLARIFY_PROTOCOL_ZH;
 }
 
-const QUICK_CREATE_PROTOCOL = [
+/** 澄清链入口消息:命令把草稿交给模型,由模型多轮追问后创建。 */
+export function buildClarifyMessage(
+  draft: string,
+  language: ProtocolLanguage = 'auto',
+): UserMessage {
+  const tail =
+    language === 'en'
+      ? `User draft intent:\n${draft.trim()}`
+      : `用户草稿意图:\n${draft.trim()}`;
+  return userText(`${clarifyProtocol(language)}\n\n${tail}`);
+}
+
+const QUICK_CREATE_PROTOCOL_ZH = [
   '[guided-goal] 用户希望以快速方式创建持久 goal:仅提供一句话草稿,不进行任何访谈。',
   '请严格按以下协议执行:',
   '1. 不要向用户提出任何澄清问题;基于草稿与对工作区的必要只读勘察(Grep/读文件,不得修改任何文件),自行推断五个字段:成功标准(必须可判定)、验证方式(确切命令或动作)、迭代上限(见第 3 条)、范围边界(允许/禁止触碰的路径)、停止条件(何时停下交还人工)。',
@@ -44,6 +69,27 @@ const QUICK_CREATE_PROTOCOL = [
   '6. 合成的 goal 中,Stop conditions 必须包含「完成后输出总结」要求:goal 执行结束时,最终回复须给出修改文件清单、逐条验证结果对照(Verification 每项通过/失败)、遗留问题与未处理项。',
   '7. 唯一例外:草稿语义过于模糊无法安全推断(目标对象不存在、意图自相矛盾)时,不要编造——停下说明缺失并请求用户补充。',
 ].join('\n');
+
+const QUICK_CREATE_PROTOCOL_EN = [
+  '[guided-goal] The user wants to create a persistent goal in quick mode: only a one-line draft, no interview.',
+  'Follow this protocol strictly:',
+  '1. Do not ask the user any clarifying questions; based on the draft and necessary read-only reconnaissance of the workspace (Grep/read files; do not modify anything), infer the five fields yourself: success criteria (must be decidable), verification (exact commands or actions), round cap (see rule 3), boundaries (allowed/forbidden paths), stop conditions (when to stop and hand back to the human).',
+  '2. For any field inferred rather than stated in the draft, mark it explicitly as "Assumption: ..." in the final reply so the user can correct it later.',
+  '3. Determine the round cap (max_goal_rounds) by this precedence, and explain the choice in the final reply:',
+  '   a. Explicitly specified by the user: adopt as-is, no adjustment;',
+  '   b. User explicitly asked for unlimited rounds: only then may create_goal omit max_goal_rounds; warn about token consumption in the reply;',
+  '   c. Otherwise estimate by workload (unlimited is forbidden in this case; a finite value is required): small change (copy/single-file fix) 2-3 rounds; medium (single feature/multi-file) 5 rounds; large (cross-module/architectural) 8-10 rounds.',
+  '4. Compose the objective (structure: ## Objective / ## Success criteria / ## Verification / ## Boundaries / ## Stop conditions) and call create_goal immediately.',
+  '5. After calling create_goal, end this turn immediately: output the five-field summary and the "Assumption: ..." list; do not start executing the goal\'s work (the goal runs autonomously in later rounds).',
+  '6. The composed goal\'s Stop conditions must include a mandatory "completion summary" requirement: when the goal finishes, the final reply must give the modified-file list, per-item verification results (each Verification item pass/fail), and leftover issues or unhandled items.',
+  '7. Sole exception: if the draft is too vague to infer safely (target does not exist, or intent is self-contradictory), do not fabricate — stop, explain what is missing, and ask the user to supply it.',
+].join('\n');
+
+function quickProtocol(language: ProtocolLanguage): string {
+  return language === 'en'
+    ? QUICK_CREATE_PROTOCOL_EN
+    : QUICK_CREATE_PROTOCOL_ZH;
+}
 
 /** 快速创建的轮次来源:用户指定数字 / 用户显式不限 / 模型按工作量估算。 */
 export type QuickRounds =
@@ -83,8 +129,24 @@ const ROUNDS_HINT: Record<QuickRounds['kind'], string> = {
 export function buildQuickCreateMessage(
   draft: string,
   rounds: QuickRounds,
+  language: ProtocolLanguage = 'auto',
 ): UserMessage {
-  return userText(
-    `${QUICK_CREATE_PROTOCOL}\n\n${ROUNDS_HINT[rounds.kind]}\n\n用户草稿意图:\n${draft}`,
-  );
+  const roundsHint =
+    language === 'en'
+      ? QUICK_ROUNDS_HINT_EN[rounds.kind]
+      : ROUNDS_HINT[rounds.kind];
+  const tail =
+    language === 'en'
+      ? `User draft intent:\n${draft}`
+      : `用户草稿意图:\n${draft}`;
+  return userText(`${quickProtocol(language)}\n\n${roundsHint}\n\n${tail}`);
 }
+
+const QUICK_ROUNDS_HINT_EN: Record<QuickRounds['kind'], string> = {
+  fixed:
+    'Round cap: explicitly specified by the user; adopt as-is, no adjustment.',
+  unlimited:
+    'Round cap: the user explicitly asked for unlimited rounds — only in this case may max_goal_rounds be omitted; warn about token consumption in the reply.',
+  estimate:
+    'Round cap: not specified by the user; you must estimate by workload and explain the basis. Choosing unlimited is forbidden in this case; a finite value is required (tiers: small 2-3 rounds / medium 5 rounds / large 8-10 rounds).',
+};

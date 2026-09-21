@@ -190,6 +190,31 @@ describe('guided-goal 契约', () => {
     expect(clarifyText).not.toBe(quickText);
   });
 
+  it('en 语言态下协议消息为英文且不含中文协议正文', () => {
+    const state = stubCtx({ enabled: true }, 'en');
+    const handler = state.registered[0].def.handler;
+    const steer = vi.fn();
+    handler({
+      agent: { steer },
+      rawInput: '重构鉴权模块',
+    } as unknown as Parameters<typeof handler>[0]);
+    const text = (steer.mock.calls[0][0].content[0] as { text: string }).text;
+    expect(text).toContain('Follow this protocol strictly');
+    expect(text).toContain('Clarify five fields in order');
+    expect(text).not.toContain('请严格按以下协议执行');
+    expect(text).toContain('重构鉴权模块'); // 草稿原文保留
+
+    const quick = buildQuickCreateMessage(
+      '补 README',
+      { kind: 'fixed', rounds: 2 },
+      'en',
+    );
+    const quickText = (quick.content[0] as { text: string }).text;
+    expect(quickText).toContain('no interview');
+    expect(quickText).toContain('Round cap: explicitly specified by the user');
+    expect(quickText).not.toContain('不进行任何访谈');
+  });
+
   it('跟随官方语言配置:locale preference 驱动命令文案语言', () => {
     const zh = stubCtx({ enabled: true }, 'zh');
     const zhDesc = zh.registered[0].def.description ?? '';

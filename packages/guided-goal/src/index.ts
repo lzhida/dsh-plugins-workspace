@@ -131,10 +131,10 @@ export function apply(ctx: Context): void {
                 if (draft.length === 0) {
                   return { kind: 'error', text: t.quickUsage };
                 }
-                agent.steer(buildQuickCreateMessage(draft, rounds));
+                agent.steer(buildQuickCreateMessage(draft, rounds, language));
                 return { kind: 'success', text: t.quickSuccess };
               }
-              agent.steer(buildClarifyMessage(input));
+              agent.steer(buildClarifyMessage(input, language));
               return { kind: 'success', text: t.guidedSuccess };
             },
           }),
