@@ -1,20 +1,19 @@
 import type { Context } from '@deepseek-ai/cordis';
-// 引入包内类型即激活其 cordis Context declaration merging(ctx.commands / ctx.agents)
+// 引入包内类型即激活其 cordis Context declaration merging(ctx.commands)
 import type {} from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-commands';
 import { buildClarifyMessage } from './protocol.ts';
-import { mountRoutes } from './router.ts';
 
 export const name = 'guided-goal';
-export const inject = ['commands', 'agents', 'webServer'];
+export const inject = ['commands'];
 
 /**
  * guided-goal:基于 dsh 官方 goal 域的 omp guided-goal 等价插件。
  *
- * - `/guided-goal <草稿>` 命令:把澄清协议 + 草稿 steer 进会话,模型逐项澄清
- *   五字段后调用官方 create_goal(创建动作与权限完全复用官方 tool-goal)。
- * - Web 设置面板(见 client/index.js):表单填完五字段,经 loopback API
- *   注入"直接创建"指令,同样由官方 create_goal 落地。
+ * 纯会话命令插件:`/guided-goal <草稿>` 把澄清协议 + 草稿 steer 进当前会话,
+ * 模型逐项澄清五字段(Objective / Success criteria / Verification /
+ * Boundaries / Stop conditions)后调用官方 create_goal——创建动作与权限
+ * 完全复用官方 tool-goal,本插件不绕过 authority。
  */
 export function apply(ctx: Context): void {
   console.log(`[${name}] plugin loaded`);
@@ -39,10 +38,5 @@ export function apply(ctx: Context): void {
         },
       }),
     'guided-goal: command',
-  );
-
-  ctx.effect(
-    () => mountRoutes(ctx.webServer, ctx.agents),
-    'guided-goal: routes',
   );
 }

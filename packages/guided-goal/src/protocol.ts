@@ -4,44 +4,7 @@ import {
   type UserMessage,
 } from '@deepseek-ai/dsh-llm';
 
-/** 引导式 goal 的五个结构化字段(key 与 Web 表单/测试共用)。 */
-export interface GoalFields {
-  objective: string;
-  successCriteria: string;
-  verification?: string;
-  boundaries?: string;
-  stopConditions?: string;
-  maxGoalRounds?: string;
-}
-
-/** 用户视角的字段元数据。 */
-export const GOAL_FIELD_DEFS: ReadonlyArray<{
-  key: keyof GoalFields;
-  label: string;
-  required: boolean;
-}> = [
-  { key: 'objective', label: '目标', required: true },
-  { key: 'successCriteria', label: '成功标准', required: true },
-  { key: 'verification', label: '验证方式', required: false },
-  { key: 'boundaries', label: '范围边界', required: false },
-  { key: 'stopConditions', label: '停止条件', required: false },
-  { key: 'maxGoalRounds', label: '轮次上限', required: false },
-];
-
-/** 把五字段合成 goal objective 的固定 markdown 结构(与 goal 域约定一致)。 */
-export function composeObjective(fields: GoalFields): string {
-  const section = (title: string, value: string | undefined): string =>
-    `## ${title}\n${value && value.trim().length > 0 ? value.trim() : '未指定'}`;
-  return [
-    section('Objective', fields.objective),
-    section('Success criteria', fields.successCriteria),
-    section('Verification', fields.verification),
-    section('Boundaries', fields.boundaries),
-    section('Stop conditions', fields.stopConditions),
-  ].join('\n\n');
-}
-
-/** 构造一条 source 为用户的文本消息(steer/followup 的载体)。 */
+/** 构造一条 source 为用户的文本消息(steer 的载体)。 */
 export function userText(text: string): UserMessage {
   // ContentBlock 判别联合的 text 变体:结构由 dsh-llm 契约定义
   const textBlock: ContentBlock = { type: 'text', text };
@@ -63,18 +26,4 @@ const CLARIFY_PROTOCOL = [
 /** 澄清链入口消息:命令把草稿交给模型,由模型多轮追问后创建。 */
 export function buildClarifyMessage(draft: string): UserMessage {
   return userText(`${CLARIFY_PROTOCOL}\n\n用户草稿意图:\n${draft.trim()}`);
-}
-
-const DIRECT_CREATE_PROTOCOL = [
-  '[guided-goal] 用户已通过 Web 表单提供完整的 goal 定义,字段已确认,请直接创建,不要再追问。',
-  '调用 create_goal,objective 使用以下内容;若下方给出了轮次上限,同时传入 max_goal_rounds。',
-].join('\n');
-
-/** 表单直建消息:五字段已由用户在 UI 中确认。 */
-export function buildDirectCreateMessage(fields: GoalFields): UserMessage {
-  const rounds = fields.maxGoalRounds?.trim();
-  const suffix = rounds && rounds.length > 0 ? `\n\n轮次上限:${rounds}` : '';
-  return userText(
-    `${DIRECT_CREATE_PROTOCOL}\n\n${composeObjective(fields)}${suffix}`,
-  );
 }
