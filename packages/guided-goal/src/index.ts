@@ -32,13 +32,19 @@ export const inject = ['commands', 'settings'];
  */
 
 export interface GuidedGoalConfig {
-  enabled: boolean;
+  /** /guided-goal 访谈式创建命令开关 */
+  guidedGoal: boolean;
+  /** /quick-goal 快速创建命令开关 */
+  quickGoal: boolean;
 }
 
 const CONFIG_SCHEMA = Schema.object({
-  enabled: Schema.boolean()
+  guidedGoal: Schema.boolean()
     .default(true)
-    .description('Enable commands / 启用命令'),
+    .description('Enable /guided-goal command / 启用引导式目标命令'),
+  quickGoal: Schema.boolean()
+    .default(true)
+    .description('Enable /quick-goal command / 启用快速目标命令'),
 });
 
 type ConfigLanguage = 'auto' | 'zh' | 'en';
@@ -118,36 +124,41 @@ export function apply(ctx: Context): void {
     const sync = (config: GuidedGoalConfig, language: ConfigLanguage): void => {
       for (const dispose of commandDisposers) dispose();
       commandDisposers = [];
-      if (!config.enabled) return;
       const t = commandTexts(language);
-      commandDisposers.push(
-        ctx.commands.register({
-          name: 'guided-goal',
-          description: t.guidedDescription,
-          input: { hint: t.guidedHint },
-          handler: ({ agent, rawInput }) => {
-            const draft = rawInput.trim();
-            if (draft.length === 0) {
-              return { kind: 'error', text: t.guidedUsage };
-            }
-            agent.steer(buildClarifyMessage(draft));
-            return { kind: 'success', text: t.guidedSuccess };
-          },
-        }),
-        ctx.commands.register({
-          name: 'quick-goal',
-          description: t.quickDescription,
-          input: { hint: t.quickHint },
-          handler: ({ agent, rawInput }) => {
-            const { rounds, draft } = parseQuickInput(rawInput);
-            if (draft.length === 0) {
-              return { kind: 'error', text: t.quickUsage };
-            }
-            agent.steer(buildQuickCreateMessage(draft, rounds));
-            return { kind: 'success', text: t.quickSuccess };
-          },
-        }),
-      );
+      if (config.guidedGoal !== false) {
+        commandDisposers.push(
+          ctx.commands.register({
+            name: 'guided-goal',
+            description: t.guidedDescription,
+            input: { hint: t.guidedHint },
+            handler: ({ agent, rawInput }) => {
+              const draft = rawInput.trim();
+              if (draft.length === 0) {
+                return { kind: 'error', text: t.guidedUsage };
+              }
+              agent.steer(buildClarifyMessage(draft));
+              return { kind: 'success', text: t.guidedSuccess };
+            },
+          }),
+        );
+      }
+      if (config.quickGoal !== false) {
+        commandDisposers.push(
+          ctx.commands.register({
+            name: 'quick-goal',
+            description: t.quickDescription,
+            input: { hint: t.quickHint },
+            handler: ({ agent, rawInput }) => {
+              const { rounds, draft } = parseQuickInput(rawInput);
+              if (draft.length === 0) {
+                return { kind: 'error', text: t.quickUsage };
+              }
+              agent.steer(buildQuickCreateMessage(draft, rounds));
+              return { kind: 'success', text: t.quickSuccess };
+            },
+          }),
+        );
+      }
     };
 
     sync(scope.get(), resolveLanguage(ctx));
