@@ -9,7 +9,7 @@
  * 结束时卸载被测插件，profile 恢复干净态。
  *
  * 用法：
- *   pnpm test:e2e                                     # 默认验证 packages/hello-plugin
+ *   pnpm test:e2e                                     # 默认验证 packages/guided-goal
  *   pnpm test:e2e -- packages/foo/src/index.ts        # 验证任意插件入口（可多个）
  *
  * 前提：devDependencies 已安装 @deepseek-ai/dsh（`pnpm install` 即可）。
@@ -17,7 +17,7 @@
  *   E2E_TIMEOUT_MS    启动与断言总超时（默认 180000）
  *   E2E_PORT          Web UI 端口（默认 3865）
  *
- * 插件契约：插件加载时应打印 `[name] ` 前缀格式的日志行（如 `[hello-plugin] plugin loaded`），
+ * 插件契约：插件加载时应打印 `[name] ` 前缀格式的日志行（如 `[guided-goal] plugin loaded`），
  * e2e 以「[插件目录名]」结构化匹配，路径/堆栈中出现裸包名不算加载成功。
  */
 import { spawn, spawnSync } from 'node:child_process';
@@ -67,7 +67,7 @@ function killTree(pid: number | undefined): void {
 const pluginArgs = process.argv.slice(2).filter((a) => a !== '--');
 const plugins = pluginArgs.length
   ? pluginArgs.map((p) => path.resolve(WORKSPACE_ROOT, p))
-  : [path.join(WORKSPACE_ROOT, 'packages', 'hello-plugin', 'src', 'index.ts')];
+  : [path.join(WORKSPACE_ROOT, 'packages', 'guided-goal', 'src', 'index.ts')];
 
 for (const p of plugins) {
   if (!(await exists(p))) {

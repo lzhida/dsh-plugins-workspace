@@ -2,17 +2,17 @@
 
 ## Project Overview
 
-dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/cordis`）插件集合，pnpm workspaces 单层结构。插件以 TS 源码形态被宿主 dsh loader 直接加载——**没有构建步骤，不产出 dist**。当前唯一包 `packages/hello-plugin`，同时是新插件的模板。
+dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/cordis`）插件集合，pnpm workspaces 单层结构。插件以 TS 源码形态被宿主 dsh loader 直接加载——**没有构建步骤，不产出 dist**。当前包含 `packages/guided-goal`。
 
 ## Architecture & Data Flow
 
-- **加载链**：宿主 dsh loader 按插件包 `main` 字段 import TS 源码（`packages/hello-plugin/package.json` → `main: "src/index.ts"`）→ 调用 `apply(ctx)`。
-- **插件契约三符号**（见 `packages/hello-plugin/src/index.ts`）：
+- **加载链**：宿主 dsh loader 按插件包 `main` 字段 import TS 源码（如 `packages/guided-goal/package.json` → `main: "src/index.ts"`）→ 调用 `apply(ctx)`。
+- **插件契约三符号**（见 `packages/guided-goal/src/index.ts`）：
   - `export const name`——loader 依赖的字符串标识，必须与插件语义一致；
   - `export function apply(ctx: Context)`——cordis 安装钩子，在此注册能力/副作用；
   - 业务辅助纯函数（如 `greet`）。
 - **生命周期**：副作用一律用 `ctx.effect(fn)` 注册。`fn` **立即执行**，其返回的函数在插件卸载时被 cordis 自动调用（事件监听、定时器、连接的清理都走这条路径，勿手写 removeListener/clearInterval 之外的反注册逻辑）。
-- **依赖注入**：需要其他服务时 `export const inject = ['tools']`，框架保证 `ctx.tools` 就绪后才调 `apply`（hello-plugin 未用到，但属 cordis 标准模式）。
+- **依赖注入**：需要其他服务时 `export const inject = ['tools']`，框架保证 `ctx.tools` 就绪后才调 `apply`（guided-goal 未用到，但属 cordis 标准模式）。
 - **依赖策略**：`@deepseek-ai/cordis` 只放插件的 `devDependencies` 且仅 `import type` 引入——运行时由宿主提供，插件不打包框架。
 
 ## Key Directories
@@ -29,10 +29,10 @@ pnpm lint           # ESLint 检查（lint:fix 自动修）
 pnpm format         # Prettier 写入（format:check 只校验）
 pnpm typecheck      # 递归各包 tsc --noEmit
 pnpm test           # vitest run（集中在根，子包无 test 脚本）
-pnpm test:e2e       # e2e：真实 dsh Web UI 加载验证（默认 hello-plugin，详见 Testing & QA）
+pnpm test:e2e       # e2e：真实 dsh Web UI 加载验证（默认 guided-goal，详见 Testing & QA）
 ```
 
-新增插件的最小步骤：建 `packages/my-plugin/`，仿照 `packages/hello-plugin/package.json`（`type: "module"`、`main: "src/index.ts"`、`devDependencies` 含 cordis、`scripts.typecheck`），tsconfig extends 根配置即可，无需其他注册动作。
+新增插件的最小步骤：建 `packages/my-plugin/`，仿照 `packages/guided-goal/package.json`（`type: "module"`、`main: "src/index.ts"`、`devDependencies` 含 cordis、`scripts.typecheck`），tsconfig extends 根配置即可，无需其他注册动作。
 
 ## Code Conventions & Common Patterns
 
@@ -45,8 +45,6 @@ pnpm test:e2e       # e2e：真实 dsh Web UI 加载验证（默认 hello-plugin
 
 ## Important Files
 
-- `packages/hello-plugin/src/index.ts`——新插件的模板（最小契约 + effect 清理范例）
-- `packages/hello-plugin/src/index.test.ts`——测试三件套范例（`stubCtx` + fake timers + `vi.spyOn`）
 - `scripts/test-e2e.mjs`——e2e 运行器：真实 dsh Web UI 加载验证，支持任意插件路径参数
 - `lefthook.yml` + 根 `package.json` 的 `lint-staged` 块——钩子与暂存区门禁行为
 - `tsconfig.base.json` / `eslint.config.js` / `.prettierrc.json`——质量门禁，改动需谨慎
@@ -73,9 +71,9 @@ pnpm test:e2e       # e2e：真实 dsh Web UI 加载验证（默认 hello-plugin
 
 ### E2E（Web UI 加载级验证）
 
-- 命令：`pnpm test:e2e`（默认验证 hello-plugin）；验证任意插件：`pnpm test:e2e -- packages/<name>/src/index.ts`（可传多个）
+- 命令：`pnpm test:e2e`（默认验证 guided-goal）；验证任意插件：`pnpm test:e2e -- packages/<name>/src/index.ts`（可传多个）
 - 机制：运行器以仓库内隔离的 `DSH_HOME=.agents/e2e-dsh-home` + 独立 profile（默认 `e2e`，**缺失时自动从官方 web 模板引导**）启动 `pnpm dsh --profile e2e --patch <overlay> --no-open --port <port>`，patch overlay（`- insert` 列表、插件绝对路径）由运行器生成到 `.agents/tmp/e2e/`
-- 三项断言：① 进程输出出现插件加载日志——**契约：插件 `apply` 时须打印 `[name] ` 前缀格式的日志行**（如 `[hello-plugin] plugin loaded`），e2e 按该结构化格式匹配，路径中出现裸包名不算 ② Web 服务端口可访问 ③ 若捕获到带 token 的 UI URL 则页面须返回 <400；结束自动 taskkill 进程树并清理 overlay
+- 三项断言：① 进程输出出现插件加载日志——**契约：插件 `apply` 时须打印 `[name] ` 前缀格式的日志行**（如 `[guided-goal] plugin loaded`），e2e 按该结构化格式匹配，路径中出现裸包名不算 ② Web 服务端口可访问 ③ 若捕获到带 token 的 UI URL 则页面须返回 <400；结束自动 taskkill 进程树并清理 overlay
 - 与本机已运行的 dsh 实例完全隔离：DSH_HOME 重定向（不触碰 `~/.dsh`），默认端口 3865——**3080 是上游默认，3865 只是本机现状产物**（本机 3080 被已运行实例占用）；新机器 3080 空闲时可回归 `E2E_PORT=3080` 或改回默认值
 - 环境变量：`E2E_PORT`（3865）、`E2E_TIMEOUT_MS`（180000）、`E2E_DSH_PROFILE`（e2e）、`E2E_KEEP_MS`（0=断言后立即清理；>0 时保持实例存活 N ms 供浏览器验证，并自动等待/打印带 token 的 UI 地址——dsh 的 banner 可能耗 40s+ 才输出）
 - **浏览器级验证（Web 效果）**：`E2E_KEEP_MS=180000 pnpm test:e2e` → 用 chrome-devtool MCP（或任意浏览器工具）打开运行器打印的 tokened URL，验证：① 页面健康（标题 DeepSeek Harness、console 无错误）② 设置 → 插件 → 插件列表 → 「全局插件」分组中目标插件显示「已启用」③ 工具在会话内被模型实际调用需模型凭证，默认验证不到此层
