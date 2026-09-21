@@ -13,7 +13,7 @@ A guided persistent-goal command. It turns a one-line natural-language intent in
 **Highlights**
 
 - **Guided creation** (`/guided-goal`): the model clarifies five fields one by one — success criteria (must be decidable), verification, round cap, boundaries, stop conditions — then composes the objective and calls `create_goal`;
-- **Quick creation** (`/guided-goal quick <one-line goal>`): skips the interview; the model infers all five fields from the draft plus read-only reconnaissance, marking every inferred field as "Assumption: ..."; the round cap is estimated from workload (small 2–3 / medium 5 / large 8–10 rounds), or set explicitly (a number, or `/` for unlimited with a consumption warning);
+- **Smart interview skip**: when the draft is already sufficiently specific or the user clearly declines to be interviewed, the model may skip clarification and create directly; every inferred field is marked as "Assumption: ...", and the round cap is estimated from workload (small 2–3 / medium 5 / large 8–10 rounds) with the basis explained in the reply;
 - **Structured objective**: five fixed sections `## Objective / ## Success criteria / ## Verification / ## Boundaries / ## Stop conditions`, with the round cap passed as `max_goal_rounds`;
 - **Mandatory completion summary**: the goal's stop conditions embed a summary requirement — modified-file list, per-item verification results, and leftover issues;
 - **Settings panel**: dsh Settings → Plugins → guided-goal, with an "Enable command" toggle (on by default);
@@ -22,11 +22,8 @@ A guided persistent-goal command. It turns a one-line natural-language intent in
 **Usage**
 
 ```
-/guided-goal                          # enter the interview, clarify field by field
-/guided-goal <draft goal>             # interview with a draft; clear fields are not re-asked
-/guided-goal quick <one-line goal>    # no interview, infer and create directly
-/guided-goal quick 3 <one-line goal>  # cap at 3 rounds
-/guided-goal quick / <one-line goal>  # unlimited rounds (consumption warning shown)
+/guided-goal              # enter the interview, clarify field by field
+/guided-goal <draft goal> # interview with a draft; if the draft is specific enough the model may create directly
 ```
 
 ## Installation

@@ -2,12 +2,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { GuidedGoalConfig } from './index.ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apply, inject, name } from './index.ts';
-import {
-  buildClarifyMessage,
-  buildQuickCreateMessage,
-  parseQuickInput,
-  userText,
-} from './protocol.ts';
+import { buildClarifyMessage, userText } from './protocol.ts';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -157,37 +152,7 @@ describe('guided-goal 契约', () => {
     for (const r of state.registered) {
       expect(r.def.input?.hint).not.toMatch(/[\u4e00-\u9fff]/);
     }
-    expect(state.registered[0].def.input?.hint).toBe(
-      '[quick <one-line goal> | <draft>]',
-    );
-  });
-
-  it('handler 子命令路由:quick 走快速协议,普通输入走访谈协议', () => {
-    const state = stubCtx({ enabled: true });
-    const handler = state.registered[0].def.handler;
-    const steer = vi.fn();
-    const invoke = (rawInput: string): void => {
-      handler({
-        agent: { steer },
-        rawInput,
-      } as unknown as Parameters<typeof handler>[0]);
-    };
-
-    invoke('');
-    expect(steer).not.toHaveBeenCalled();
-
-    invoke('quick 3 | 给仓库补 README');
-    expect(steer).toHaveBeenCalledTimes(1);
-    const quickText = (steer.mock.calls[0][0].content[0] as { text: string })
-      .text;
-    expect(quickText).toContain('给仓库补 README');
-
-    invoke('重构鉴权模块');
-    expect(steer).toHaveBeenCalledTimes(2);
-    const clarifyText = (steer.mock.calls[1][0].content[0] as { text: string })
-      .text;
-    expect(clarifyText).toContain('重构鉴权模块');
-    expect(clarifyText).not.toBe(quickText);
+    expect(state.registered[0].def.input?.hint).toBe('[<draft>]');
   });
 
   it('en 语言态下协议消息为英文且不含中文协议正文', () => {
@@ -203,16 +168,6 @@ describe('guided-goal 契约', () => {
     expect(text).toContain('Clarify five fields in order');
     expect(text).not.toContain('请严格按以下协议执行');
     expect(text).toContain('重构鉴权模块'); // 草稿原文保留
-
-    const quick = buildQuickCreateMessage(
-      '补 README',
-      { kind: 'fixed', rounds: 2 },
-      'en',
-    );
-    const quickText = (quick.content[0] as { text: string }).text;
-    expect(quickText).toContain('no interview');
-    expect(quickText).toContain('Round cap: explicitly specified by the user');
-    expect(quickText).not.toContain('不进行任何访谈');
   });
 
   it('跟随官方语言配置:locale preference 驱动命令文案语言', () => {
@@ -259,77 +214,9 @@ describe('guided-goal 契约', () => {
     expect(text).toContain('完成后输出总结');
     expect(text).toContain('修改文件清单');
     expect(text).toContain('一次只问一个');
+    expect(text).toContain('唯一可跳过访谈的情形');
     expect(text).toContain('重构鉴权模块');
     expect(text.endsWith('重构鉴权模块')).toBe(true);
-  });
-
-  it('buildQuickCreateMessage 携带零提问/自填/标注假设/create_goal 约束与草稿', () => {
-    const message = buildQuickCreateMessage('给仓库补 README', {
-      kind: 'estimate',
-    });
-    const text = (message.content[0] as { text: string }).text;
-    expect(text).toContain('不进行任何访谈');
-    expect(text).toContain('自行推断五个字段');
-    expect(text).toContain('假设');
-    expect(text).toContain('create_goal');
-    expect(text).toContain('本回合立即结束');
-    expect(text).toContain('完成后输出总结');
-    expect(text).toContain('修改文件清单');
-    expect(text).toContain('max_goal_rounds');
-    expect(text).toContain('无法安全推断');
-    expect(text.endsWith('给仓库补 README')).toBe(true);
-  });
-
-  it('parseQuickInput 解析三种输入形态', () => {
-    expect(parseQuickInput('8 | 给 X 加功能')).toEqual({
-      rounds: { kind: 'fixed', rounds: 8 },
-      draft: '给 X 加功能',
-    });
-    expect(parseQuickInput('不限 | 给 X 加功能')).toEqual({
-      rounds: { kind: 'unlimited' },
-      draft: '给 X 加功能',
-    });
-    expect(parseQuickInput('Unlimited | 给 X 加功能')).toEqual({
-      rounds: { kind: 'unlimited' },
-      draft: '给 X 加功能',
-    });
-    expect(parseQuickInput(' 给 X 加功能 ')).toEqual({
-      rounds: { kind: 'estimate' },
-      draft: '给 X 加功能',
-    });
-  });
-
-  it('parseQuickInput 非数字前缀视为草稿的一部分', () => {
-    expect(parseQuickInput('重构 | 分隔符左侧没有轮次数字')).toEqual({
-      rounds: { kind: 'estimate' },
-      draft: '重构 | 分隔符左侧没有轮次数字',
-    });
-    expect(parseQuickInput('0 | 草稿')).toEqual({
-      rounds: { kind: 'estimate' },
-      draft: '0 | 草稿',
-    });
-  });
-
-  it('三种轮次来源注入对应的协议约束', () => {
-    const fixed = (
-      buildQuickCreateMessage('草稿', { kind: 'fixed', rounds: 8 })
-        .content[0] as { text: string }
-    ).text;
-    expect(fixed).toContain('用户显式指定,优先采用');
-    const unlimited = (
-      buildQuickCreateMessage('草稿', { kind: 'unlimited' }).content[0] as {
-        text: string;
-      }
-    ).text;
-    expect(unlimited).toContain('仅在用户明确要求时允许');
-    const estimate = (
-      buildQuickCreateMessage('草稿', { kind: 'estimate' }).content[0] as {
-        text: string;
-      }
-    ).text;
-    expect(estimate).toContain('禁止选择"不限轮次"');
-    expect(estimate).toContain('小型改动(文案/单文件小修)2-3 轮');
-    expect(estimate).toContain('大型(跨模块/架构性)8-10 轮');
   });
 });
 
@@ -373,85 +260,6 @@ describe('/guided-goal 命令', () => {
 
     expect(result.kind).toBe('error');
     expect(result.text).toContain('用法');
-    expect(steerCalls).toHaveLength(0);
-  });
-});
-
-describe('/guided-goal quick 子命令', () => {
-  it('带草稿时 steer quick 协议消息并返回 success', () => {
-    const state = stubCtx({ enabled: true });
-    const steerCalls: unknown[] = [];
-    const result = state.registered[0].def.handler({
-      agent: {
-        steer(message: unknown): void {
-          steerCalls.push(message);
-        },
-      },
-      rawInput: 'quick 优化构建缓存',
-    });
-
-    expect(result.kind).toBe('success');
-    expect(result.text).toContain('快速模式');
-    expect(steerCalls).toHaveLength(1);
-    const message = steerCalls[0] as {
-      role: string;
-      source: { kind: string };
-      content: Array<{ text?: string }>;
-    };
-    expect(message.role).toBe('user');
-    expect(message.source.kind).toBe('user');
-    expect(message.content[0]?.text).toContain('不进行任何访谈');
-    expect(message.content[0]?.text).toContain('优化构建缓存');
-  });
-
-  it('显式轮次前缀被剥离后注入且草稿干净', () => {
-    const state = stubCtx({ enabled: true });
-    const steerCalls: unknown[] = [];
-    state.registered[0].def.handler({
-      agent: {
-        steer(message: unknown): void {
-          steerCalls.push(message);
-        },
-      },
-      rawInput: 'quick 3 | 修复登录超时',
-    });
-    const message = steerCalls[0] as { content: Array<{ text?: string }> };
-    const text = message.content[0]?.text ?? '';
-    expect(text).toContain('用户显式指定,优先采用');
-    expect(text.endsWith('修复登录超时')).toBe(true);
-    expect(text).not.toContain('3 |');
-  });
-
-  it('空草稿返回 error 且不 steer', () => {
-    const state = stubCtx({ enabled: true });
-    const steerCalls: unknown[] = [];
-    const result = state.registered[0].def.handler({
-      agent: {
-        steer(message: unknown): void {
-          steerCalls.push(message);
-        },
-      },
-      rawInput: 'quick',
-    });
-
-    expect(result.kind).toBe('error');
-    expect(result.text).toContain('Usage');
-    expect(steerCalls).toHaveLength(0);
-  });
-
-  it('只有前缀没有草稿返回 error 且不 steer', () => {
-    const state = stubCtx({ enabled: true });
-    const steerCalls: unknown[] = [];
-    const result = state.registered[0].def.handler({
-      agent: {
-        steer(message: unknown): void {
-          steerCalls.push(message);
-        },
-      },
-      rawInput: 'quick 8 |   ',
-    });
-
-    expect(result.kind).toBe('error');
     expect(steerCalls).toHaveLength(0);
   });
 });

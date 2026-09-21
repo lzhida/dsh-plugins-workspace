@@ -4,11 +4,7 @@ import type {} from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-commands';
 import type {} from '@deepseek-ai/dsh-settings';
 import Schema from '@deepseek-ai/schemastery';
-import {
-  buildClarifyMessage,
-  buildQuickCreateMessage,
-  parseQuickInput,
-} from './protocol.ts';
+import { buildClarifyMessage } from './protocol.ts';
 
 export const name = 'guided-goal';
 export const inject = ['commands', 'settings'];
@@ -20,7 +16,7 @@ export const inject = ['commands', 'settings'];
  * 不绕过 authority):
  * - `/guided-goal <draft>`:访谈式——模型逐项澄清五字段(Objective /
  *   Success criteria / Verification / Boundaries / Stop conditions)后创建。
- * - `/quick-goal <[N | unlimited |] one-line goal>`:快速式——模型零提问
+
  *   自行推断五字段(假设显式标注)直接创建;语义无法安全推断时停下请求补充。
  *
  * 配置(Settings → Guided Goal,官方 settings 体系持久化):
@@ -61,9 +57,7 @@ interface CommandTexts {
   guidedDescription: string;
   guidedHint: string;
   guidedUsage: string;
-  quickUsage: string;
   guidedSuccess: string;
-  quickSuccess: string;
 }
 
 /** 按 language 配置生成命令文案:auto=双语,zh/en=单语言。 */
@@ -75,26 +69,18 @@ export function commandTexts(language: ConfigLanguage): CommandTexts {
         ? enText
         : `${enText} · ${zhText}`;
   return {
-    guidedHint: '[quick <one-line goal> | <draft>]',
+    guidedHint: '[<draft>]',
     guidedDescription: both(
-      'Guided goal creation: with the quick subcommand, infer all five fields from one line and create_goal; otherwise clarify success criteria / verification / round cap / boundaries / stop conditions first',
-      '引导式创建 goal:子命令 quick 时一句话自填五字段直接创建,否则逐项澄清成功标准 / 验证方式 / 轮次上限 / 边界 / 停止条件后 create_goal',
+      'Guided goal creation: clarify success criteria / verification / round cap / boundaries / stop conditions first, then create_goal; when the draft is already sufficiently specific, the model may skip the interview and create directly',
+      '引导式创建 goal:先逐项澄清成功标准 / 验证方式 / 轮次上限 / 边界 / 停止条件再 create_goal;草稿已足够明确时模型可跳过访谈直接创建',
     ),
     guidedUsage: both(
-      'Usage: /guided-goal [quick <one-line goal> | <draft>]',
-      '用法:/guided-goal [quick <一句话目标> | <草稿目标>]',
-    ),
-    quickUsage: both(
-      'Usage: /guided-goal quick <one-line goal>',
-      '用法:/guided-goal quick <一句话目标>',
+      'Usage: /guided-goal [<draft>]',
+      '用法:/guided-goal [<草稿目标>]',
     ),
     guidedSuccess: both(
       'Guided goal creation started: answer the clarifying questions one by one; the goal will be created once all fields are confirmed',
       '已启动引导式 goal 创建:请逐项回答澄清问题,全部确认后将自动创建 goal',
-    ),
-    quickSuccess: both(
-      'Quick goal creation started: fields will be inferred without interview (assumptions marked in the reply)',
-      '已按快速模式创建 goal:模型将自行推断五字段(假设会在回复中标注)并直接创建,不进行访谈',
     ),
   };
 }
@@ -123,16 +109,6 @@ export function apply(ctx: Context): void {
               const input = rawInput.trim();
               if (input.length === 0) {
                 return { kind: 'error', text: t.guidedUsage };
-              }
-              // 首词子命令路由(与原生 /goal 的 clear/edit 同构)
-              if (/^quick(?=\s|$)/i.test(input)) {
-                const rest = input.replace(/^quick\s*/i, '');
-                const { rounds, draft } = parseQuickInput(rest);
-                if (draft.length === 0) {
-                  return { kind: 'error', text: t.quickUsage };
-                }
-                agent.steer(buildQuickCreateMessage(draft, rounds, language));
-                return { kind: 'success', text: t.quickSuccess };
               }
               agent.steer(buildClarifyMessage(input, language));
               return { kind: 'success', text: t.guidedSuccess };
