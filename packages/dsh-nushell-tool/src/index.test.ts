@@ -124,9 +124,9 @@ function spawnCapture(
   };
 }
 
-describe('nushell-tool 契约', () => {
+describe('dsh-nushell-tool 契约', () => {
   it('导出 loader 依赖的插件符号', () => {
-    expect(name).toBe('nushell-tool');
+    expect(name).toBe('dsh-nushell-tool');
     expect(inject).toEqual(['tools']);
   });
 

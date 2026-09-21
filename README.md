@@ -6,7 +6,7 @@
 
 ## 插件
 
-### @lzhida/guided-goal
+### @lzhida/dsh-guided-goal
 
 引导式持久目标(goal)命令。将一句自然语言意图转化为结构化 goal,由 dsh goal 域在会话内自主执行直至完成。
 
@@ -26,16 +26,32 @@
 /guided-goal <草稿目标>   # 带草稿进入访谈;草稿足够明确时模型可跳过访谈直接创建
 ```
 
+### @lzhida/dsh-nushell-tool
+
+独立 `nushell` 工具,与内置 bash 并存。模型显式调用,命令经 `nu --no-config-file -c <command>` 子进程执行,回传 exit code、stdout、stderr。
+
+**核心特性**
+
+- **干净求值**:`--no-config-file` 禁用用户配置,行为可复现;
+- **超时与取消**:`timeoutMs` 参数(默认 30s,上限 600s,到期 SIGTERM),调用方取消透传;
+- **并行安全**:进程级隔离,可与其他工具调用并行调度;
+- **生命周期清理**:插件卸载时统一终止存活子进程;`nu` 经 PATH 查找,缺失时报错,不打包 nushell。
+
+**工具参数**:`command`(必填)、`cwd`、`timeoutMs`(可选)。
+
+**前置**:本机安装 Nushell(`nu` 在 PATH 中)。
+
 ## 安装
 
 前置:Node ≥ 22、pnpm 11、已安装 dsh。
 
 ```sh
 # 从本仓库以 link 方式安装到指定 profile
-pnpm dsh plugin --profile default add link:packages/guided-goal
+pnpm dsh plugin --profile default add link:packages/dsh-guided-goal
+pnpm dsh plugin --profile default add link:packages/dsh-nushell-tool
 ```
 
-安装后在 dsh Web UI 的设置 → 插件中确认「guided-goal」已启用,即可在会话输入框使用 `/guided-goal`。
+安装后在 dsh Web UI 的设置 → 插件中确认目标插件已启用:guided-goal 在会话输入框使用 `/guided-goal`;dsh-nushell-tool 的 `nushell` 工具由模型按需调用。
 
 ## 开发
 
@@ -45,12 +61,12 @@ pnpm lint           # ESLint(flat config,TS)
 pnpm format         # Prettier 写入(format:check 仅校验)
 pnpm typecheck      # 递归各包 tsc --noEmit
 pnpm test           # Vitest,全仓 src/**/*.test.ts
-pnpm test:e2e       # 真实 dsh Web UI 加载级验证(默认验证 guided-goal)
+pnpm test:e2e       # 真实 dsh Web UI 加载级验证(默认验证 dsh-guided-goal)
 ```
 
 - **纯 TypeScript**:插件无构建步骤,`package.json` 的 `main` 直接指向 `src/index.ts`,由宿主 dsh loader 加载;
 - **E2E**:运行器以隔离 `DSH_HOME` + 独立 profile 启动真实 dsh 实例,断言插件加载日志、Web 端口可达与认证链健康;可用 `E2E_PORT` / `E2E_TIMEOUT_MS` / `E2E_KEEP_MS` 调整行为(见 `scripts/test-e2e.ts`);
-- **新增插件**:仿照 `packages/guided-goal/package.json` 建 `packages/<name>/` 即可,`pnpm-workspace.yaml` 自动收录;
+- **新增插件**:仿照 `packages/dsh-guided-goal/package.json` 建 `packages/<name>/` 即可,`pnpm-workspace.yaml` 自动收录;
 - **提交规范**:中文 Conventional Commits;开发走 `feat/*`、`fix/*` 分支合入 `dev`,验证后合入 `main`。
 
 ## License

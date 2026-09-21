@@ -6,7 +6,7 @@ A collection of plugins for [dsh](https://www.npmjs.com/package/@deepseek-ai/dsh
 
 ## Plugins
 
-### @lzhida/guided-goal
+### @lzhida/dsh-guided-goal
 
 A guided persistent-goal command. It turns a one-line natural-language intent into a structured goal that the dsh goal domain executes autonomously within the session until completion.
 
@@ -26,16 +26,32 @@ A guided persistent-goal command. It turns a one-line natural-language intent in
 /guided-goal <draft goal> # interview with a draft; if the draft is specific enough the model may create directly
 ```
 
+### @lzhida/dsh-nushell-tool
+
+A standalone `nushell` tool alongside the built-in bash. The model invokes it explicitly; commands run via a `nu --no-config-file -c <command>` subprocess and return exit code, stdout, and stderr.
+
+**Highlights**
+
+- **Clean evaluation**: `--no-config-file` disables user config for reproducible behavior;
+- **Timeout & cancellation**: `timeoutMs` argument (default 30s, max 600s, SIGTERM on expiry); caller cancellation is forwarded;
+- **Parallel-safe**: process-level isolation, may run concurrently with other tool calls;
+- **Lifecycle cleanup**: surviving child processes are killed on plugin unload; `nu` is resolved via PATH — errors when missing, never bundled.
+
+**Tool arguments**: `command` (required), `cwd`, `timeoutMs` (optional).
+
+**Prerequisite**: Nushell installed locally (`nu` on PATH).
+
 ## Installation
 
 Prerequisites: Node ≥ 22, pnpm 11, and dsh installed.
 
 ```sh
 # Install into a profile from this repo via link
-pnpm dsh plugin --profile default add link:packages/guided-goal
+pnpm dsh plugin --profile default add link:packages/dsh-guided-goal
+pnpm dsh plugin --profile default add link:packages/dsh-nushell-tool
 ```
 
-After installation, confirm "guided-goal" is enabled under dsh Web UI Settings → Plugins, then use `/guided-goal` from the chat input.
+After installation, confirm the target plugin is enabled under dsh Web UI Settings → Plugins: use `/guided-goal` from the chat input for guided-goal; the `nushell` tool of dsh-nushell-tool is invoked by the model on demand.
 
 ## Development
 
@@ -45,12 +61,12 @@ pnpm lint           # ESLint (flat config, TS)
 pnpm format         # Prettier write (format:check validates only)
 pnpm typecheck      # per-package tsc --noEmit
 pnpm test           # Vitest across all src/**/*.test.ts
-pnpm test:e2e       # real dsh Web UI loading verification (guided-goal by default)
+pnpm test:e2e       # real dsh Web UI loading verification (dsh-guided-goal by default)
 ```
 
 - **Pure TypeScript**: plugins have no build step; `package.json` `main` points straight at `src/index.ts` and is loaded by the host dsh loader;
 - **E2E**: the runner boots a real dsh instance with an isolated `DSH_HOME` and a dedicated profile, asserting the plugin load log, web port reachability, and auth-chain health; tune with `E2E_PORT` / `E2E_TIMEOUT_MS` / `E2E_KEEP_MS` (see `scripts/test-e2e.ts`);
-- **Adding a plugin**: create `packages/<name>/` modeled on `packages/guided-goal/package.json`; `pnpm-workspace.yaml` picks it up automatically;
+- **Adding a plugin**: create `packages/<name>/` modeled on `packages/dsh-guided-goal/package.json`; `pnpm-workspace.yaml` picks it up automatically;
 - **Commits**: Chinese Conventional Commits; develop on `feat/*` / `fix/*` branches merged into `dev`, then into `main` after verification.
 
 ## License

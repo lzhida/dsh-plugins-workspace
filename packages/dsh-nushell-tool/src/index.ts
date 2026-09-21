@@ -7,11 +7,11 @@ import type {
 import type { Context } from '@deepseek-ai/cordis';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
-export const name = 'nushell-tool';
+export const name = 'dsh-nushell-tool';
 export const inject = ['tools'];
 
 /**
- * nushell-tool:为 DeepSeek Harness 注册独立的 `nushell` 工具。
+ * dsh-nushell-tool:为 DeepSeek Harness 注册独立的 `nushell` 工具。
  *
  * 模型显式调用,与内置 bash 工具并存;命令经
  * `nu --no-config-file -c <command>` 子进程执行——禁用用户配置以保证

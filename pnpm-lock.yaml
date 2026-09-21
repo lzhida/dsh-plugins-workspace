@@ -48,7 +48,7 @@ importers:
         specifier: ^5.0.1
         version: 5.0.1(@opentelemetry/api@1.9.1)(@types/node@26.6.2)(vite@8.3.0(@types/node@26.6.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.1))
 
-  packages/guided-goal:
+  packages/dsh-guided-goal:
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.2
@@ -69,7 +69,7 @@ importers:
         specifier: ^3.18.2
         version: 3.18.2
 
-  packages/nushell-tool:
+  packages/dsh-nushell-tool:
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.2

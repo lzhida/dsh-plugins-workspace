@@ -6,11 +6,11 @@ import type {} from '@deepseek-ai/dsh-settings';
 import Schema from '@deepseek-ai/schemastery';
 import { buildClarifyMessage } from './protocol.ts';
 
-export const name = 'guided-goal';
+export const name = 'dsh-guided-goal';
 export const inject = ['commands', 'settings'];
 
 /**
- * guided-goal:基于 dsh 官方 goal 域的 omp guided-goal 等价插件。
+ * dsh-guided-goal:基于 dsh 官方 goal 域的 omp guided-goal 等价插件。
  *
  * 双命令,均为纯会话命令(steer 协议消息,创建复用官方 create_goal,
  * 不绕过 authority):

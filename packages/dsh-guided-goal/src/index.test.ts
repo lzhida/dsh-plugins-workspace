@@ -105,16 +105,16 @@ function stubCtx(
   return state;
 }
 
-describe('guided-goal 契约', () => {
+describe('dsh-guided-goal 契约', () => {
   it('导出插件名(loader 依赖)', () => {
-    expect(name).toBe('guided-goal');
+    expect(name).toBe('dsh-guided-goal');
   });
 
   it('inject 声明 commands 与 settings', () => {
     expect(inject).toEqual(['commands', 'settings']);
   });
 
-  it('settings namespace 以插件名注册', () => {
+  it('settings namespace 保持 guided-goal(用户面不变)', () => {
     const state = stubCtx({ enabled: true });
     expect(state.settingsNs).toBe('guided-goal');
   });
