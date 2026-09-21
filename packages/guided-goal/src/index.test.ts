@@ -4,6 +4,7 @@ import { apply, inject, name } from './index.ts';
 import {
   buildClarifyMessage,
   buildQuickCreateMessage,
+  parseQuickInput,
   userText,
 } from './protocol.ts';
 
@@ -80,7 +81,7 @@ describe('/guided-goal 命令', () => {
     expect(recorded[0].name).toBe('guided-goal');
     expect(recorded[0].input?.hint).toBe('<草稿目标>');
     expect(recorded[1].name).toBe('quick-goal');
-    expect(recorded[1].input?.hint).toBe('<一句话目标>');
+    expect(recorded[1].input?.hint).toBe('<[N | 不限 |] 一句话目标>');
     expect(cleanups).toHaveLength(2);
   });
 
@@ -129,7 +130,9 @@ describe('/guided-goal 命令', () => {
 
 describe('/quick-goal 命令', () => {
   it('buildQuickCreateMessage 携带零提问/自填/标注假设/create_goal 约束与草稿', () => {
-    const message = buildQuickCreateMessage(' 给仓库补 README ');
+    const message = buildQuickCreateMessage('给仓库补 README', {
+      kind: 'estimate',
+    });
     const text = (message.content[0] as { text: string }).text;
     expect(text).toContain('不进行任何访谈');
     expect(text).toContain('自行推断五个字段');
@@ -138,6 +141,54 @@ describe('/quick-goal 命令', () => {
     expect(text).toContain('max_goal_rounds');
     expect(text).toContain('无法安全推断');
     expect(text.endsWith('给仓库补 README')).toBe(true);
+  });
+
+  it('parseQuickInput 解析三种输入形态', () => {
+    expect(parseQuickInput('8 | 给 X 加功能')).toEqual({
+      rounds: { kind: 'fixed', rounds: 8 },
+      draft: '给 X 加功能',
+    });
+    expect(parseQuickInput('不限 | 给 X 加功能')).toEqual({
+      rounds: { kind: 'unlimited' },
+      draft: '给 X 加功能',
+    });
+    expect(parseQuickInput(' 给 X 加功能 ')).toEqual({
+      rounds: { kind: 'estimate' },
+      draft: '给 X 加功能',
+    });
+  });
+
+  it('parseQuickInput 非数字前缀视为草稿的一部分', () => {
+    expect(parseQuickInput('重构 | 分隔符左侧没有轮次数字')).toEqual({
+      rounds: { kind: 'estimate' },
+      draft: '重构 | 分隔符左侧没有轮次数字',
+    });
+    expect(parseQuickInput('0 | 草稿')).toEqual({
+      rounds: { kind: 'estimate' },
+      draft: '0 | 草稿',
+    });
+  });
+
+  it('三种轮次来源注入对应的协议约束', () => {
+    const fixed = (
+      buildQuickCreateMessage('草稿', { kind: 'fixed', rounds: 8 })
+        .content[0] as { text: string }
+    ).text;
+    expect(fixed).toContain('用户显式指定,优先采用');
+    const unlimited = (
+      buildQuickCreateMessage('草稿', { kind: 'unlimited' }).content[0] as {
+        text: string;
+      }
+    ).text;
+    expect(unlimited).toContain('仅在用户明确要求时允许');
+    const estimate = (
+      buildQuickCreateMessage('草稿', { kind: 'estimate' }).content[0] as {
+        text: string;
+      }
+    ).text;
+    expect(estimate).toContain('禁止选择"不限轮次"');
+    expect(estimate).toContain('小型改动(文案/单文件小修)2-3 轮');
+    expect(estimate).toContain('大型(跨模块/架构性)8-10 轮');
   });
 
   it('带草稿时 steer quick 协议消息并返回 success', () => {
@@ -166,6 +217,24 @@ describe('/quick-goal 命令', () => {
     expect(message.content[0]?.text).toContain('优化构建缓存');
   });
 
+  it('显式轮次前缀被剥离后注入且草稿干净', () => {
+    const { recorded } = stubCtx();
+    const steerCalls: unknown[] = [];
+    recorded[1].handler({
+      agent: {
+        steer(message: unknown): void {
+          steerCalls.push(message);
+        },
+      },
+      rawInput: '3 | 修复登录超时',
+    });
+    const message = steerCalls[0] as { content: Array<{ text?: string }> };
+    const text = message.content[0]?.text ?? '';
+    expect(text).toContain('用户显式指定,优先采用');
+    expect(text.endsWith('修复登录超时')).toBe(true);
+    expect(text).not.toContain('3 |');
+  });
+
   it('空草稿返回 error 且不 steer', () => {
     const { recorded } = stubCtx();
     const steerCalls: unknown[] = [];
@@ -180,6 +249,22 @@ describe('/quick-goal 命令', () => {
 
     expect(result.kind).toBe('error');
     expect(result.text).toContain('用法');
+    expect(steerCalls).toHaveLength(0);
+  });
+
+  it('只有前缀没有草稿返回 error 且不 steer', () => {
+    const { recorded } = stubCtx();
+    const steerCalls: unknown[] = [];
+    const result = recorded[1].handler({
+      agent: {
+        steer(message: unknown): void {
+          steerCalls.push(message);
+        },
+      },
+      rawInput: '8 |   ',
+    });
+
+    expect(result.kind).toBe('error');
     expect(steerCalls).toHaveLength(0);
   });
 });
