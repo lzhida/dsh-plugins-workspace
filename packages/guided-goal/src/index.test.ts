@@ -79,10 +79,19 @@ describe('/guided-goal 命令', () => {
     const { recorded, cleanups } = stubCtx();
     expect(recorded).toHaveLength(2);
     expect(recorded[0].name).toBe('guided-goal');
-    expect(recorded[0].input?.hint).toBe('<草稿目标>');
+    expect(recorded[0].input?.hint).toBe('<draft>');
     expect(recorded[1].name).toBe('quick-goal');
-    expect(recorded[1].input?.hint).toBe('<[N | 不限 |] 一句话目标>');
+    expect(recorded[1].input?.hint).toBe('<[N | unlimited |] one-line goal>');
     expect(cleanups).toHaveLength(2);
+  });
+
+  it('命令元数据英文化:hint 无中文,description 为英文/中文双语', () => {
+    const { recorded } = stubCtx();
+    for (const cmd of recorded) {
+      expect(cmd.input?.hint).not.toMatch(/[\u4e00-\u9fff]/);
+      expect(cmd.description).toMatch(/[\u4e00-\u9fff]/);
+      expect(cmd.description).toMatch(/create_goal/);
+    }
   });
 
   it('带草稿时 steer 一条含协议与草稿的 user 消息并返回 success', () => {
@@ -149,6 +158,10 @@ describe('/quick-goal 命令', () => {
       draft: '给 X 加功能',
     });
     expect(parseQuickInput('不限 | 给 X 加功能')).toEqual({
+      rounds: { kind: 'unlimited' },
+      draft: '给 X 加功能',
+    });
+    expect(parseQuickInput('Unlimited | 给 X 加功能')).toEqual({
       rounds: { kind: 'unlimited' },
       draft: '给 X 加功能',
     });

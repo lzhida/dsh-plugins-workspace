@@ -57,7 +57,7 @@ export function parseQuickInput(raw: string): {
   if (pipe > 0) {
     const head = text.slice(0, pipe).trim();
     const draft = text.slice(pipe + 1).trim();
-    if (/^(不限|无限|∞)$/.test(head))
+    if (/^(unlimited|不限|无限|∞)$/i.test(head))
       return { rounds: { kind: 'unlimited' }, draft };
     const n = Number(head);
     if (head.length > 0 && Number.isInteger(n) && n > 0) {
