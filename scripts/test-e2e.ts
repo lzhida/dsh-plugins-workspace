@@ -2,6 +2,12 @@
 /**
  * e2e：把工作区插件加载进真实 dsh harness Web UI，验证「加载级别可用」。
  *
+ * 流程：官方 `dsh plugin --profile <p> add link:<包目录>` 安装被测插件
+ * （包内 `dsh.bundle.patch` 声明使其自动进入 profile 层栈）→ 隔离 DSH_HOME
+ * 下启动 `dsh web` → 三断言（插件加载日志 / 端口可达 / UI 页面）→
+ * 打印 tokened URL 并按 E2E_KEEP_MS 保活（浏览器级检查由会话内 MCP 执行）。
+ * 结束时卸载被测插件，profile 恢复干净态。
+ *
  * 用法：
  *   pnpm test:e2e                                     # 默认验证 packages/hello-plugin
  *   pnpm test:e2e -- packages/foo/src/index.ts        # 验证任意插件入口（可多个）
@@ -15,8 +21,7 @@
  * e2e 以「[插件目录名]」结构化匹配，路径/堆栈中出现裸包名不算加载成功。
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
-import { access } from 'node:fs/promises';
+import { access, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 
@@ -71,6 +76,18 @@ for (const p of plugins) {
   }
 }
 
+// 安装目标 = 插件包目录(入口文件上两级),包名取自其 package.json
+const pluginPkgs: { dir: string; name: string }[] = [];
+for (const p of plugins) {
+  const dir = path.dirname(path.dirname(p));
+  const manifest = JSON.parse(
+    await readFile(path.join(dir, 'package.json'), 'utf8'),
+  ) as {
+    name?: string;
+  };
+  pluginPkgs.push({ dir, name: manifest.name ?? path.basename(dir) });
+}
+
 // 端口占用预检：目标端口已有监听会造成断言假阳性
 try {
   await fetch(WEB_URL);
@@ -119,34 +136,34 @@ if (!(await exists(profileDir))) {
   console.log('[e2e] ✓ profile 引导完成');
 }
 
-// 生成 patch overlay（格式见 develop/basic 文档：- insert 列表，插件路径必须绝对）
-const overlayDir = path.join(WORKSPACE_ROOT, '.agents', 'tmp', 'e2e');
-await mkdir(overlayDir, { recursive: true });
-const overlayPath = path.join(overlayDir, 'plugins.cordis.yml');
-const overlay = [
-  '- insert:',
-  ...plugins.map((p, i) => {
-    const id = `e2e-${path.basename(path.dirname(path.dirname(p)))}-${i}`;
-    return `    - id: ${id}\n      name: '${p.replaceAll('\\', '/')}'`;
-  }),
-  '',
-].join('\n');
-await writeFile(overlayPath, overlay);
+// 安装插件:官方 dsh plugin 命令装入 profile——包内 dsh.bundle.patch 声明
+// 使其自动进入 profile 层栈(reconcilePlugins),无需 overlay 注入
+for (const pkg of pluginPkgs) {
+  const spec = `link:${pkg.dir.replaceAll('\\', '/')}`;
+  console.log(
+    `[e2e] 安装插件: dsh plugin --profile ${DSH_PROFILE} add ${spec}`,
+  );
+  const add = spawnSync(
+    'cmd.exe',
+    ['/c', 'pnpm', 'dsh', 'plugin', '--profile', DSH_PROFILE, 'add', spec],
+    {
+      cwd: WORKSPACE_ROOT,
+      env: { ...process.env, DSH_HOME },
+      stdio: 'inherit',
+    },
+  );
+  if (add.status !== 0) {
+    console.error(
+      `[e2e] 插件安装失败: ${pkg.name}(exit=${add.status ?? add.signal})`,
+    );
+    process.exit(1);
+  }
+  console.log(`[e2e] ✓ 已装入 profile "${DSH_PROFILE}": ${pkg.name}`);
+}
 
 const web = spawn(
   'cmd.exe',
-  [
-    '/c',
-    'pnpm',
-    'dsh',
-    '--profile',
-    DSH_PROFILE,
-    '--patch',
-    overlayPath,
-    '--no-open',
-    '--port',
-    PORT,
-  ],
+  ['/c', 'pnpm', 'dsh', '--profile', DSH_PROFILE, '--no-open', '--port', PORT],
   {
     cwd: WORKSPACE_ROOT,
     env: { ...process.env, BROWSER: 'none', DSH_HOME },
@@ -180,7 +197,6 @@ function fail(message: string): never {
   console.error(`[e2e] ===== web 进程输出（尾部 4000 字符）=====`);
   console.error(output.slice(-4000));
   killTree(web.pid);
-  rm(overlayPath, { force: true }).catch(() => {});
   process.exit(1);
 }
 
@@ -243,7 +259,6 @@ while (Date.now() < deadline) {
       await new Promise<void>((resolve) => setTimeout(resolve, KEEP_MS));
     }
     killTree(web.pid);
-    await rm(overlayPath, { force: true });
     // 等待子进程树退出，避免残留
     await new Promise<void>((resolve) => {
       const t = setTimeout(resolve, 3000);
@@ -252,6 +267,28 @@ while (Date.now() < deadline) {
         resolve();
       });
     });
+    // 卸载被测插件,恢复 profile 干净态(下次运行 add 幂等重装)
+    for (const pkg of pluginPkgs) {
+      spawnSync(
+        'cmd.exe',
+        [
+          '/c',
+          'pnpm',
+          'dsh',
+          'plugin',
+          '--profile',
+          DSH_PROFILE,
+          'remove',
+          pkg.name,
+        ],
+        {
+          cwd: WORKSPACE_ROOT,
+          env: { ...process.env, DSH_HOME },
+          stdio: 'pipe',
+        },
+      );
+    }
+    console.log('[e2e] ✓ 已卸载被测插件,profile 恢复干净态');
     process.exit(0);
   }
 

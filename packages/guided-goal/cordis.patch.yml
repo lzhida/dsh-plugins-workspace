@@ -1,0 +1,6 @@
+# guided-goal bundle 层:dsh plugin add 安装本包时自动激活的插件行。
+# name 用包名(profile 依赖树已 link 安装),格式对齐官方 dsh-acp-app。
+
+- insert:
+    - id: guided-goal
+      name: '@dsh-plugins/guided-goal'
