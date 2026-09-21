@@ -231,6 +231,8 @@ describe('guided-goal 契约', () => {
     const text = (message.content[0] as { text: string }).text;
     expect(text).toContain('create_goal');
     expect(text).toContain('本回合立即结束');
+    expect(text).toContain('完成后输出总结');
+    expect(text).toContain('修改文件清单');
     expect(text).toContain('一次只问一个');
     expect(text).toContain('重构鉴权模块');
     expect(text.endsWith('重构鉴权模块')).toBe(true);
@@ -246,6 +248,8 @@ describe('guided-goal 契约', () => {
     expect(text).toContain('假设');
     expect(text).toContain('create_goal');
     expect(text).toContain('本回合立即结束');
+    expect(text).toContain('完成后输出总结');
+    expect(text).toContain('修改文件清单');
     expect(text).toContain('max_goal_rounds');
     expect(text).toContain('无法安全推断');
     expect(text.endsWith('给仓库补 README')).toBe(true);
