@@ -1,4 +1,5 @@
 import type { Context } from '@deepseek-ai/cordis';
+import type { GuidedGoalConfig } from './index.ts';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apply, inject, name } from './index.ts';
 import {
@@ -25,13 +26,129 @@ interface RecordedCommand {
   handler(input: CommandHandlerInput): { kind: string; text?: string };
 }
 
+interface RegisterRecord {
+  def: RecordedCommand;
+  dispose: ReturnType<typeof vi.fn>;
+}
+
+interface StubState {
+  registered: RegisterRecord[];
+  cleanups: Array<() => void>;
+  settingsNs: string | null;
+  notify(next: GuidedGoalConfig): void;
+}
+
+function stubCtx(initial: GuidedGoalConfig): StubState {
+  const registered: RegisterRecord[] = [];
+  const cleanups: Array<() => void> = [];
+  let settingsNs: string | null = null;
+  let watcher: ((next: GuidedGoalConfig) => void) | null = null;
+  let current = initial;
+  const ctx = {
+    effect(fn: () => (() => void) | void): void {
+      const cleanup = fn();
+      if (cleanup) cleanups.push(cleanup);
+    },
+    commands: {
+      register(def: RecordedCommand): () => void {
+        const dispose = vi.fn();
+        registered.push({ def, dispose });
+        return () => dispose();
+      },
+    },
+    settings: {
+      register(ns: string): {
+        get(): GuidedGoalConfig;
+        watch(cb: (next: GuidedGoalConfig) => void): () => void;
+      } {
+        settingsNs = ns;
+        return {
+          get: () => current,
+          watch: (cb) => {
+            watcher = cb;
+            return () => {
+              watcher = null;
+            };
+          },
+        };
+      },
+    },
+  } as unknown as Context;
+  apply(ctx);
+  return {
+    registered,
+    cleanups,
+    settingsNs,
+    notify(next: GuidedGoalConfig) {
+      current = next;
+      watcher?.(next);
+    },
+  };
+}
+
 describe('guided-goal 契约', () => {
   it('导出插件名(loader 依赖)', () => {
     expect(name).toBe('guided-goal');
   });
 
-  it('inject 只声明 commands(纯会话命令插件)', () => {
-    expect(inject).toEqual(['commands']);
+  it('inject 声明 commands 与 settings', () => {
+    expect(inject).toEqual(['commands', 'settings']);
+  });
+
+  it('settings namespace 以插件名注册', () => {
+    const state = stubCtx({ enabled: true, language: 'auto' });
+    expect(state.settingsNs).toBe('guided-goal');
+  });
+
+  it('enabled=true 时注册两条命令,副作用进 effect 清理', () => {
+    const state = stubCtx({ enabled: true, language: 'auto' });
+    expect(state.registered.map((r) => r.def.name)).toEqual([
+      'guided-goal',
+      'quick-goal',
+    ]);
+    expect(state.cleanups).toHaveLength(1);
+  });
+
+  it('enabled=false 时不注册任何命令', () => {
+    const state = stubCtx({ enabled: false, language: 'auto' });
+    expect(state.registered).toHaveLength(0);
+  });
+
+  it('watch 到 enabled=false 时注销全部命令,恢复 true 时重注册', () => {
+    const state = stubCtx({ enabled: true, language: 'auto' });
+    expect(state.registered).toHaveLength(2);
+    state.notify({ enabled: false, language: 'auto' });
+    expect(
+      state.registered.every((r) => r.dispose.mock.calls.length === 1),
+    ).toBe(true);
+    state.notify({ enabled: true, language: 'zh' });
+    expect(state.registered).toHaveLength(4);
+    expect(
+      state.registered.slice(2).every((r) => r.dispose.mock.calls.length === 0),
+    ).toBe(true);
+  });
+
+  it('language=zh 时命令描述为纯中文,auto 时为双语', () => {
+    const zhState = stubCtx({ enabled: true, language: 'zh' });
+    const zhDesc = zhState.registered[0].def.description ?? '';
+    expect(zhDesc).toContain('引导式创建');
+    expect(zhDesc).not.toContain('Guided goal creation');
+
+    const autoState = stubCtx({ enabled: true, language: 'auto' });
+    const autoDesc = autoState.registered[0].def.description ?? '';
+    expect(autoDesc).toContain('Guided goal creation');
+    expect(autoDesc).toContain('引导式创建');
+  });
+
+  it('命令 hint 全英文(语法性占位符不翻译)', () => {
+    const state = stubCtx({ enabled: true, language: 'zh' });
+    for (const r of state.registered) {
+      expect(r.def.input?.hint).not.toMatch(/[\u4e00-\u9fff]/);
+    }
+    expect(state.registered[0].def.input?.hint).toBe('<draft>');
+    expect(state.registered[1].def.input?.hint).toBe(
+      '<[N | unlimited |] one-line goal>',
+    );
   });
 
   it('userText 构造 user 角色、user 来源的文本消息', () => {
@@ -49,95 +166,7 @@ describe('guided-goal 契约', () => {
     expect(text).toContain('重构鉴权模块');
     expect(text.endsWith('重构鉴权模块')).toBe(true);
   });
-});
 
-function stubCtx(): {
-  recorded: RecordedCommand[];
-  cleanups: Array<() => void>;
-  ctx: Context;
-} {
-  const recorded: RecordedCommand[] = [];
-  const cleanups: Array<() => void> = [];
-  const ctx = {
-    effect(fn: () => (() => void) | void): void {
-      const cleanup = fn();
-      if (cleanup) cleanups.push(cleanup);
-    },
-    commands: {
-      register(def: RecordedCommand): () => void {
-        recorded.push(def);
-        return () => {};
-      },
-    },
-  } as unknown as Context;
-  apply(ctx);
-  return { recorded, cleanups, ctx };
-}
-
-describe('/guided-goal 命令', () => {
-  it('注册 guided-goal 与 quick-goal 两条命令,副作用进 effect 清理', () => {
-    const { recorded, cleanups } = stubCtx();
-    expect(recorded).toHaveLength(2);
-    expect(recorded[0].name).toBe('guided-goal');
-    expect(recorded[0].input?.hint).toBe('<draft>');
-    expect(recorded[1].name).toBe('quick-goal');
-    expect(recorded[1].input?.hint).toBe('<[N | unlimited |] one-line goal>');
-    expect(cleanups).toHaveLength(2);
-  });
-
-  it('命令元数据英文化:hint 无中文,description 为英文/中文双语', () => {
-    const { recorded } = stubCtx();
-    for (const cmd of recorded) {
-      expect(cmd.input?.hint).not.toMatch(/[\u4e00-\u9fff]/);
-      expect(cmd.description).toMatch(/[\u4e00-\u9fff]/);
-      expect(cmd.description).toMatch(/create_goal/);
-    }
-  });
-
-  it('带草稿时 steer 一条含协议与草稿的 user 消息并返回 success', () => {
-    const { recorded } = stubCtx();
-    const steerCalls: unknown[] = [];
-    const result = recorded[0].handler({
-      agent: {
-        steer(message: unknown): void {
-          steerCalls.push(message);
-        },
-      },
-      rawInput: ' 重构鉴权模块 ',
-    });
-
-    expect(result.kind).toBe('success');
-    expect(steerCalls).toHaveLength(1);
-    const message = steerCalls[0] as {
-      role: string;
-      source: { kind: string };
-      content: Array<{ text?: string }>;
-    };
-    expect(message.role).toBe('user');
-    expect(message.source.kind).toBe('user');
-    expect(message.content[0]?.text).toContain('引导方式创建');
-    expect(message.content[0]?.text).toContain('重构鉴权模块');
-  });
-
-  it('空草稿返回 error 且不 steer', () => {
-    const { recorded } = stubCtx();
-    const steerCalls: unknown[] = [];
-    const result = recorded[0].handler({
-      agent: {
-        steer(message: unknown): void {
-          steerCalls.push(message);
-        },
-      },
-      rawInput: '   ',
-    });
-
-    expect(result.kind).toBe('error');
-    expect(result.text).toContain('用法');
-    expect(steerCalls).toHaveLength(0);
-  });
-});
-
-describe('/quick-goal 命令', () => {
   it('buildQuickCreateMessage 携带零提问/自填/标注假设/create_goal 约束与草稿', () => {
     const message = buildQuickCreateMessage('给仓库补 README', {
       kind: 'estimate',
@@ -203,11 +232,57 @@ describe('/quick-goal 命令', () => {
     expect(estimate).toContain('小型改动(文案/单文件小修)2-3 轮');
     expect(estimate).toContain('大型(跨模块/架构性)8-10 轮');
   });
+});
 
-  it('带草稿时 steer quick 协议消息并返回 success', () => {
-    const { recorded } = stubCtx();
+describe('/guided-goal 命令', () => {
+  it('带草稿时 steer 一条含协议与草稿的 user 消息并返回 success', () => {
+    const state = stubCtx({ enabled: true, language: 'en' });
     const steerCalls: unknown[] = [];
-    const result = recorded[1].handler({
+    const result = state.registered[0].def.handler({
+      agent: {
+        steer(message: unknown): void {
+          steerCalls.push(message);
+        },
+      },
+      rawInput: ' 重构鉴权模块 ',
+    });
+
+    expect(result.kind).toBe('success');
+    expect(steerCalls).toHaveLength(1);
+    const message = steerCalls[0] as {
+      role: string;
+      source: { kind: string };
+      content: Array<{ text?: string }>;
+    };
+    expect(message.role).toBe('user');
+    expect(message.source.kind).toBe('user');
+    expect(message.content[0]?.text).toContain('引导方式创建');
+    expect(message.content[0]?.text).toContain('重构鉴权模块');
+  });
+
+  it('空草稿返回 error 且不 steer', () => {
+    const state = stubCtx({ enabled: true, language: 'zh' });
+    const steerCalls: unknown[] = [];
+    const result = state.registered[0].def.handler({
+      agent: {
+        steer(message: unknown): void {
+          steerCalls.push(message);
+        },
+      },
+      rawInput: '   ',
+    });
+
+    expect(result.kind).toBe('error');
+    expect(result.text).toContain('用法');
+    expect(steerCalls).toHaveLength(0);
+  });
+});
+
+describe('/quick-goal 命令', () => {
+  it('带草稿时 steer quick 协议消息并返回 success', () => {
+    const state = stubCtx({ enabled: true, language: 'auto' });
+    const steerCalls: unknown[] = [];
+    const result = state.registered[1].def.handler({
       agent: {
         steer(message: unknown): void {
           steerCalls.push(message);
@@ -231,9 +306,9 @@ describe('/quick-goal 命令', () => {
   });
 
   it('显式轮次前缀被剥离后注入且草稿干净', () => {
-    const { recorded } = stubCtx();
+    const state = stubCtx({ enabled: true, language: 'auto' });
     const steerCalls: unknown[] = [];
-    recorded[1].handler({
+    state.registered[1].def.handler({
       agent: {
         steer(message: unknown): void {
           steerCalls.push(message);
@@ -249,9 +324,9 @@ describe('/quick-goal 命令', () => {
   });
 
   it('空草稿返回 error 且不 steer', () => {
-    const { recorded } = stubCtx();
+    const state = stubCtx({ enabled: true, language: 'auto' });
     const steerCalls: unknown[] = [];
-    const result = recorded[1].handler({
+    const result = state.registered[1].def.handler({
       agent: {
         steer(message: unknown): void {
           steerCalls.push(message);
@@ -261,14 +336,14 @@ describe('/quick-goal 命令', () => {
     });
 
     expect(result.kind).toBe('error');
-    expect(result.text).toContain('用法');
+    expect(result.text).toContain('Usage');
     expect(steerCalls).toHaveLength(0);
   });
 
   it('只有前缀没有草稿返回 error 且不 steer', () => {
-    const { recorded } = stubCtx();
+    const state = stubCtx({ enabled: true, language: 'auto' });
     const steerCalls: unknown[] = [];
-    const result = recorded[1].handler({
+    const result = state.registered[1].def.handler({
       agent: {
         steer(message: unknown): void {
           steerCalls.push(message);
