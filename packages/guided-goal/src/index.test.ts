@@ -1,7 +1,11 @@
 import type { Context } from '@deepseek-ai/cordis';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { apply, inject, name } from './index.ts';
-import { buildClarifyMessage, userText } from './protocol.ts';
+import {
+  buildClarifyMessage,
+  buildQuickCreateMessage,
+  userText,
+} from './protocol.ts';
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -46,36 +50,38 @@ describe('guided-goal 契约', () => {
   });
 });
 
-describe('/guided-goal 命令', () => {
-  function stubCtx(): {
-    recorded: RecordedCommand[];
-    cleanups: Array<() => void>;
-    ctx: Context;
-  } {
-    const recorded: RecordedCommand[] = [];
-    const cleanups: Array<() => void> = [];
-    const ctx = {
-      effect(fn: () => (() => void) | void): void {
-        const cleanup = fn();
-        if (cleanup) cleanups.push(cleanup);
+function stubCtx(): {
+  recorded: RecordedCommand[];
+  cleanups: Array<() => void>;
+  ctx: Context;
+} {
+  const recorded: RecordedCommand[] = [];
+  const cleanups: Array<() => void> = [];
+  const ctx = {
+    effect(fn: () => (() => void) | void): void {
+      const cleanup = fn();
+      if (cleanup) cleanups.push(cleanup);
+    },
+    commands: {
+      register(def: RecordedCommand): () => void {
+        recorded.push(def);
+        return () => {};
       },
-      commands: {
-        register(def: RecordedCommand): () => void {
-          recorded.push(def);
-          return () => {};
-        },
-      },
-    } as unknown as Context;
-    apply(ctx);
-    return { recorded, cleanups, ctx };
-  }
+    },
+  } as unknown as Context;
+  apply(ctx);
+  return { recorded, cleanups, ctx };
+}
 
-  it('注册 guided-goal 命令,副作用进 effect 清理', () => {
+describe('/guided-goal 命令', () => {
+  it('注册 guided-goal 与 quick-goal 两条命令,副作用进 effect 清理', () => {
     const { recorded, cleanups } = stubCtx();
-    expect(recorded).toHaveLength(1);
+    expect(recorded).toHaveLength(2);
     expect(recorded[0].name).toBe('guided-goal');
     expect(recorded[0].input?.hint).toBe('<草稿目标>');
-    expect(cleanups).toHaveLength(1);
+    expect(recorded[1].name).toBe('quick-goal');
+    expect(recorded[1].input?.hint).toBe('<一句话目标>');
+    expect(cleanups).toHaveLength(2);
   });
 
   it('带草稿时 steer 一条含协议与草稿的 user 消息并返回 success', () => {
@@ -113,6 +119,63 @@ describe('/guided-goal 命令', () => {
         },
       },
       rawInput: '   ',
+    });
+
+    expect(result.kind).toBe('error');
+    expect(result.text).toContain('用法');
+    expect(steerCalls).toHaveLength(0);
+  });
+});
+
+describe('/quick-goal 命令', () => {
+  it('buildQuickCreateMessage 携带零提问/自填/标注假设/create_goal 约束与草稿', () => {
+    const message = buildQuickCreateMessage(' 给仓库补 README ');
+    const text = (message.content[0] as { text: string }).text;
+    expect(text).toContain('不进行任何访谈');
+    expect(text).toContain('自行推断五个字段');
+    expect(text).toContain('假设');
+    expect(text).toContain('create_goal');
+    expect(text).toContain('max_goal_rounds');
+    expect(text).toContain('无法安全推断');
+    expect(text.endsWith('给仓库补 README')).toBe(true);
+  });
+
+  it('带草稿时 steer quick 协议消息并返回 success', () => {
+    const { recorded } = stubCtx();
+    const steerCalls: unknown[] = [];
+    const result = recorded[1].handler({
+      agent: {
+        steer(message: unknown): void {
+          steerCalls.push(message);
+        },
+      },
+      rawInput: ' 优化构建缓存 ',
+    });
+
+    expect(result.kind).toBe('success');
+    expect(result.text).toContain('快速模式');
+    expect(steerCalls).toHaveLength(1);
+    const message = steerCalls[0] as {
+      role: string;
+      source: { kind: string };
+      content: Array<{ text?: string }>;
+    };
+    expect(message.role).toBe('user');
+    expect(message.source.kind).toBe('user');
+    expect(message.content[0]?.text).toContain('不进行任何访谈');
+    expect(message.content[0]?.text).toContain('优化构建缓存');
+  });
+
+  it('空草稿返回 error 且不 steer', () => {
+    const { recorded } = stubCtx();
+    const steerCalls: unknown[] = [];
+    const result = recorded[1].handler({
+      agent: {
+        steer(message: unknown): void {
+          steerCalls.push(message);
+        },
+      },
+      rawInput: '',
     });
 
     expect(result.kind).toBe('error');
