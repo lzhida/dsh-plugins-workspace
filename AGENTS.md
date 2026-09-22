@@ -71,9 +71,9 @@ pnpm test           # vitest run（集中在根，子包无 test 脚本）
 ### E2E（Web UI 加载级验证）
 
 - 命令：`npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts`（默认验证 dsh-guided-goal）；验证任意插件：追加 `-- packages/<name>/src/index.ts`（可传多个）
-- 机制：运行器以仓库内隔离的 `DSH_HOME=.agents/tmp`（profile 落在 `.agents/tmp/profiles/<name>`，与 `~/.dsh` 零接触）+ 独立 profile（默认 `e2e`，**缺失时自动从官方 web 模板引导**）以 `dsh plugin add link:<包目录>` 装入 profile——包内 `dsh.bundle.patch`（cordis.patch.yml 的 `- insert` 行）使其自动激活为 profile 层，无需 overlay 注入
+- 机制：运行器走真实 dsh——全局 `~/.dsh` + 独立 profile（默认 `e2e`，**缺失时自动从官方 web 模板引导**；profile 隔离插件列表，模型凭证全局共享）以 `dsh plugin add link:<包目录>` 装入 profile——包内 `dsh.bundle.patch`（cordis.patch.yml 的 `- insert` 行）使其自动激活为 profile 层，无需 overlay 注入
 - 三项断言：① 进程输出出现插件加载日志——**契约：插件 `apply` 时须打印 `[name] ` 前缀格式的日志行**（如 `[guided-goal] plugin loaded`），e2e 按该结构化格式匹配，路径中出现裸包名不算 ② Web 服务端口可访问 ③ 若捕获到带 token 的 UI URL 则页面须返回 <400；结束卸载被测插件、taskkill 进程树并恢复 profile 干净态
-- 与本机已运行的 dsh 实例完全隔离：DSH_HOME 重定向（不触碰 `~/.dsh`），默认端口 3865——**3080 是上游默认，3865 只是本机现状产物**（本机 3080 被已运行实例占用）；新机器 3080 空闲时可回归 `E2E_PORT=3080` 或改回默认值
+- 与本机已运行的 dsh 实例互不干扰：profile 隔离插件列表（不触碰默认 profile），默认端口 3865——**3080 是上游默认，3865 只是本机现状产物**（本机 3080 被已运行实例占用）；新机器 3080 空闲时可回归 `E2E_PORT=3080` 或改回默认值
 - 环境变量：`E2E_PORT`（3865）、`E2E_TIMEOUT_MS`（180000）、`E2E_DSH_PROFILE`（e2e）、`E2E_KEEP_MS`（0=断言后立即清理；>0 时保持实例存活 N ms 供浏览器验证，并自动等待/打印带 token 的 UI 地址——dsh 的 banner 可能耗 40s+ 才输出）
-- **浏览器级验证（Web 效果）**：`E2E_KEEP_MS=180000 npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts` → 用 chrome-devtool MCP（或任意浏览器工具）打开运行器打印的 tokened URL，验证：① 页面健康（标题 DeepSeek Harness、console 无错误）② 设置 → 插件 → 插件列表 → 「全局插件」分组中目标插件显示「已启用」③ 工具在会话内被模型实际调用需模型凭证，默认验证不到此层
+- **浏览器级验证（Web 效果）**：`E2E_KEEP_MS=180000 npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts` → 用 chrome-devtool MCP（或任意浏览器工具）打开运行器打印的 tokened URL，验证：① 页面健康（标题 DeepSeek Harness、console 无错误）② 设置 → 插件 → 插件列表 → 「全局插件」分组中目标插件显示「已启用」③ 工具实际调用：凭证全局共享，同 profile 发会话任务即可验证到这一层
 - 前提：`@deepseek-ai/dsh` 在根 devDependencies；`pnpm-workspace.yaml` 的 `allowBuilds` 已批准其原生依赖（node-pty/koffi/protobufjs/@google/genai/dsh-subprocess-local），新增依赖需构建脚本时照此追加

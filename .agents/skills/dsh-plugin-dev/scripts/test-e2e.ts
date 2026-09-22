@@ -3,8 +3,9 @@
  * e2e：把工作区插件加载进真实 dsh harness Web UI，验证「加载级别可用」。
  *
  * 流程：官方 `dsh plugin --profile <p> add link:<包目录>` 安装被测插件
- * （包内 `dsh.bundle.patch` 声明使其自动进入 profile 层栈）→ 隔离 DSH_HOME
- * 下启动 `dsh web` → 三断言（插件加载日志 / 端口可达 / UI 页面）→
+ * （包内 `dsh.bundle.patch` 声明使其自动进入 profile 层栈）→ 在全局 ~/.dsh
+ * 下以独立 profile 启动 `dsh web`（profile 隔离插件列表，模型凭证共享）→
+ * 三断言（插件加载日志 / 端口可达 / UI 页面）→
  * 打印 tokened URL 并按 E2E_KEEP_MS 保活（浏览器级检查由会话内 MCP 执行）。
  * 结束时卸载被测插件，profile 恢复干净态。
  *
@@ -23,6 +24,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { access, readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import os from 'node:os';
 import path from 'node:path';
 
 const WORKSPACE_ROOT = path.resolve(
@@ -33,7 +35,7 @@ const WORKSPACE_ROOT = path.resolve(
   '..',
 );
 const PORT = process.env.E2E_PORT ?? '3865';
-const DSH_HOME = path.join(WORKSPACE_ROOT, '.agents', 'tmp');
+const DSH_HOME = path.join(os.homedir(), '.dsh');
 const DSH_PROFILE = process.env.E2E_DSH_PROFILE ?? 'e2e';
 const WEB_URL = `http://127.0.0.1:${PORT}`;
 const TIMEOUT_MS = Number(process.env.E2E_TIMEOUT_MS ?? 180_000);
