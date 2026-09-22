@@ -10,6 +10,7 @@ import type {
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools';
 import {
   apply,
+  applyOutputFormat,
   canonicalNushellResult,
   DEFAULT_TIMEOUT_MS,
   inject,
@@ -282,6 +283,97 @@ describe('参数与纯函数', () => {
     expect(resolveWorkdir(undefined, bare)).toBeUndefined();
     expect(resolveWorkdir('sub/dir', exec)).toBe('F:\\session\\sub\\dir');
     expect(resolveWorkdir('F:/abs', exec)).toBe('F:/abs');
+  });
+
+  it('validateNushellArgs 拒绝非法 outputFormat,合法值放行', () => {
+    expect(() =>
+      validateNushellArgs({
+        command: 'ls',
+        description: 'ok',
+        outputFormat: 'xml' as never,
+      }),
+    ).toThrow("invalid outputFormat: expected 'json', 'nuon' or 'text'");
+    expect(() =>
+      validateNushellArgs({
+        command: 'ls',
+        description: 'ok',
+        outputFormat: 'json',
+      }),
+    ).not.toThrow();
+  });
+
+  it('applyOutputFormat:text/缺省原样,json/nuon 包 do 块接序列化器', () => {
+    expect(applyOutputFormat('ls | length', undefined)).toBe('ls | length');
+    expect(applyOutputFormat('ls | length', 'text')).toBe('ls | length');
+    expect(applyOutputFormat('ls', 'json')).toBe('do { ls } | to json --raw');
+    expect(applyOutputFormat('ls', 'nuon')).toBe('do { ls } | to nuon');
+  });
+});
+
+describe('结构化输出与 stdin', () => {
+  it('前台请求应用 outputFormat 包装并透传 stdin', async () => {
+    const state = stubCtx();
+    state.shell.run.mockResolvedValue(foreground());
+    const { exec } = fakeExec();
+    await state.tool.execute(
+      {
+        command: 'ls | length',
+        description: '数一数',
+        outputFormat: 'json',
+        stdin: 'abc',
+      },
+      exec,
+    );
+    const request = state.shell.resolve.mock
+      .calls[0][0] as unknown as ShellExecRequest;
+    expect(request.command).toBe('do { ls | length } | to json --raw');
+    expect(request.stdin).toBe('abc');
+  });
+
+  it('后台请求同样应用包装,label 保留原始命令', async () => {
+    const jobs: StubJobs = { start: vi.fn(() => 'job-1') };
+    const state = stubCtx({ jobs });
+    state.shell.start.mockReturnValue(fakeProc());
+    const { exec } = fakeExec();
+    await state.tool.execute(
+      {
+        command: 'open a.csv | length',
+        description: '数行',
+        run_in_background: true,
+        outputFormat: 'nuon',
+      },
+      exec,
+    );
+    const request = state.shell.resolve.mock
+      .calls[0][0] as unknown as ShellExecRequest;
+    expect(request.command).toBe('do { open a.csv | length } | to nuon');
+    expect(request.stdin).toBeUndefined();
+    expect(jobs.start).toHaveBeenCalledWith(
+      expect.objectContaining({ label: 'open a.csv | length' }),
+    );
+  });
+
+  it('outputFormat 缺省时请求命令保持原样(stdin 仍透传)', async () => {
+    const state = stubCtx();
+    state.shell.run.mockResolvedValue(foreground());
+    const { exec } = fakeExec();
+    await state.tool.execute(
+      { command: 'ls', description: '列目录', stdin: 'x' },
+      exec,
+    );
+    const request = state.shell.resolve.mock
+      .calls[0][0] as unknown as ShellExecRequest;
+    expect(request.command).toBe('ls');
+    expect(request.stdin).toBe('x');
+  });
+
+  it('系统提示 section 含 complete 捕获、命令替换与 outputFormat 指引', () => {
+    const state = stubCtx();
+    expect(state.sections[0]!.text).toContain('do -i { ^cmd } | complete');
+    expect(state.sections[0]!.text).toContain('`(cmd)`');
+    expect(state.sections[0]!.text).toContain('outputFormat');
+    expect(state.sections[0]!.text).toContain('$env.NAME? | default X');
+    expect(state.tool.description).toContain('outputFormat');
   });
 });
 

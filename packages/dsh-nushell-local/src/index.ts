@@ -117,6 +117,40 @@ function finalOutput(reader: {
   };
 }
 
+/**
+ * 已知 nu 包装层特征 → 诊断注记。案例:本机 scoop 版 nu 被 pi-natives
+ * 注入包装,`nu -c` 对部分 payload(metadata/error make/带引号 print)报
+ * syntax error 且错误列号漂移超过命令长度——注入代码有解析缺陷,脚本
+ * 文件方式不受影响。命中特征时在 stderr 尾部附提示,引导换官方 nu。
+ */
+const WRAPPED_NU_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+  [
+    /pi-natives/i,
+    'the nu binary appears to be wrapped by an injected "pi-natives" layer; ' +
+      '`nu -c` mis-parses some payloads (metadata, error make, quoted print) ' +
+      'with column numbers drifting past the command length — ' +
+      'point nuPath at an official nu build',
+  ],
+];
+
+/** stderr 命中已知包装特征时附诊断注记,否则原样返回。 */
+export function annotateWrappedNu(stderrText: string): string {
+  for (const [pattern, note] of WRAPPED_NU_PATTERNS) {
+    if (pattern.test(stderrText)) {
+      const glue =
+        stderrText.length > 0 && !stderrText.endsWith('\n') ? '\n' : '';
+      return `${stderrText}${glue}[nushell-local: ${note}]`;
+    }
+  }
+  return stderrText;
+}
+
+/** 对 collect 流形状做 stderr 注记(前台结算与后台增量共用),保持其余字段。 */
+function annotateStream<T extends { text: string }>(stream: T): T {
+  const annotated = annotateWrappedNu(stream.text);
+  return annotated === stream.text ? stream : { ...stream, text: annotated };
+}
+
 export class NushellLocalExecutor extends ShellExecutor {
   static inject = ['subprocess'];
 
@@ -234,7 +268,7 @@ export class NushellLocalExecutor extends ShellExecutor {
         aborted,
         timeoutMs: spec.timeoutMs,
         stdout: finalOutput(collected.stdout),
-        stderr: finalOutput(collected.stderr),
+        stderr: annotateStream(finalOutput(collected.stderr)),
       };
     } finally {
       d[Symbol.dispose]();
@@ -290,11 +324,14 @@ export class NushellLocalExecutor extends ShellExecutor {
         const err = collected.stderr.readFrom(stderrOffset);
         stdoutOffset = out.nextOffset;
         stderrOffset = err.nextOffset;
+        const annotatedErr = annotateStream(err);
         const providerFailure = consumeProviderFailure();
         const failureSeparator =
-          err.text.length > 0 && !err.text.endsWith('\n') ? '\n' : '';
+          annotatedErr.text.length > 0 && !annotatedErr.text.endsWith('\n')
+            ? '\n'
+            : '';
         const errText =
-          err.text +
+          annotatedErr.text +
           (providerFailure.length > 0
             ? `${failureSeparator}${providerFailure}`
             : '');

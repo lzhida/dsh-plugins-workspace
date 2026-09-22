@@ -31,6 +31,9 @@ declare module '@deepseek-ai/dsh-jobs' {
  * escalation 为 PowerShell 专属通道,不提供。
  */
 
+/** `nushell` 工具的结构化输出格式:非 text 时命令最终值经 nu 序列化返回。 */
+export type NushellOutputFormat = 'json' | 'nuon' | 'text';
+
 /** `nushell` 工具的模型参数(形状与 parameters schema 一致)。 */
 export interface NushellArgs {
   command: string;
@@ -38,6 +41,8 @@ export interface NushellArgs {
   timeoutMs?: number;
   workdir?: string;
   run_in_background?: boolean;
+  outputFormat?: NushellOutputFormat;
+  stdin?: string;
 }
 
 /** 单流输出的 canonical 形态:模型可见文本 + 截断标记 + 完整输出落盘路径。 */
@@ -68,8 +73,14 @@ export const MAX_TIMEOUT_MS = 600_000;
 /** 系统提示 section 位置:SECTION_ORDERS.TOOL_PWSH(1010)与 TOOL_READ(1100)之间的空位。 */
 const NUSHELL_SECTION_ORDER = 1015;
 
-/** 语义校验(文案对齐官方 validatePwshArgs);schema 校验由 defineTool 负责。 */
-export function validateNushellArgs(args: NushellArgs): void {
+/**
+ * 语义校验(文案对齐官方 validatePwshArgs);schema 校验由 defineTool 负责。
+ * 参数接受 defineTool 从 parameters schema 推导的宽形状——outputFormat
+ * 值域在此收窄为三值枚举,canonical 类型(NushellArgs)由调用方持有。
+ */
+export function validateNushellArgs(
+  args: Omit<NushellArgs, 'outputFormat'> & { outputFormat?: string },
+): void {
   if (args.command.trim().length === 0) {
     throw new Error('invalid command: expected a non-empty string');
   }
@@ -84,6 +95,37 @@ export function validateNushellArgs(args: NushellArgs): void {
       `invalid timeoutMs: expected a positive number, got ${JSON.stringify(args.timeoutMs)}`,
     );
   }
+  if (
+    args.outputFormat !== undefined &&
+    args.outputFormat !== 'json' &&
+    args.outputFormat !== 'nuon' &&
+    args.outputFormat !== 'text'
+  ) {
+    throw new Error(
+      `invalid outputFormat: expected 'json', 'nuon' or 'text', got ${JSON.stringify(args.outputFormat)}`,
+    );
+  }
+}
+
+/**
+ * 结构化输出包装:非 text 时把命令包进 `do { … }` 块并对最终值求
+ * `to json --raw`/`to nuon`——do 块保证多语句命令整体求值(直接管道
+ * 只会作用于末语句),最后表达式的值(nu 任意类型)被序列化为机器可读
+ * 文本;副作用(print/环境修改/save)行为不变,文本仍走原 stdout。
+ * format 为 json/nuon 之外的值(含缺省)一律按 text 原样返回;值域
+ * 校验由 validateNushellArgs 负责,此处防御性回退。
+ */
+export function applyOutputFormat(
+  command: string,
+  format: string | undefined,
+): string {
+  if (format === 'json') {
+    return `do { ${command} } | to json --raw`;
+  }
+  if (format === 'nuon') {
+    return `do { ${command} } | to nuon`;
+  }
+  return command;
 }
 
 /** 会话工作目录载体(窄化访问,避免对 dsh-agent 的类型依赖)。 */
@@ -273,10 +315,18 @@ export function apply(ctx: Context, config: Config = {}): void {
         "`type`/`cat` → `open`, `findstr` → `where`/`find`, `echo x > f` → `'x' | save f`. " +
         "Windows paths: single quotes ('C:\\Users\\AI') or forward slashes (C:/Users/AI); " +
         'double-quoted strings process backslash escapes, so `\\U`, `\\A` etc. are parse errors. ' +
-        'Environment variables read as `$env.NAME` (not `$env:NAME`). ' +
+        'Environment variables read as `$env.NAME` (not `$env:NAME`); maybe-missing keys `$env.NAME? | default X`. ' +
         'Non-zero exits are reported as `[exit code: N]` markers; investigate failures before moving on. ' +
         'A killed process is reported as `[killed by signal: X]` and a timeout as `[timed out after Nms]`. ' +
-        'Each call runs in a fresh process: no state persists between calls — pass `workdir` instead of `cd`.',
+        'Each call runs in a fresh process: no state persists between calls — pass `workdir` instead of `cd`. ' +
+        "Nu is parsed, not eval'd: command substitution `$(cmd)` does not exist — use `(cmd)`; " +
+        'spread a command\'s output as arguments with `...(cmd)`; interpolate strings as `$"...(expr)"` ' +
+        '(plain `"..."` never interpolates); no `&&` — separate with `;`; logical ops are keywords `and`/`or`; ' +
+        'redirection is `out>`/`o+e>|` (not `>`/`2>&1`); discard output with `ignore`; ' +
+        '`$?` is `$env.LAST_EXIT_CODE`, but prefer `do -i { ^cmd } | complete` for a struct {exit_code, stdout, stderr}. ' +
+        '`mkdir` is recursive by default; `head -n`/`tail` are `first n`/`last`; text → table via `lines | split column`. ' +
+        'For machine-readable results pass `outputFormat: "json"` (or pipe through `to json --raw`/`to nuon`) ' +
+        'instead of parsing rendered tables.',
     });
 
     const nushellTool = defineTool({
@@ -293,6 +343,8 @@ export function apply(ctx: Context, config: Config = {}): void {
         "Windows paths: single quotes ('C:\\Users\\AI') or forward slashes (C:/Users/AI); " +
         'double-quoted strings process backslash escapes, so `\\U` is a parse error. ' +
         'Read env vars as `$env.NAME`. ' +
+        'For machine-readable output (lists, records, tables) set `outputFormat` to "json"/"nuon" ' +
+        'instead of parsing rendered tables. ' +
         'Use it for nushell-native pipelines and structured data handling; the built-in bash tool stays available.',
       parameters: {
         command: {
@@ -301,6 +353,7 @@ export function apply(ctx: Context, config: Config = {}): void {
           description:
             'Nu-native source: builtins and pipelines only; never shell out (`^cmd`, `^powershell`, `^bash`). ' +
             "No cmd/bash syntax (`dir`, `copy`, `type`, `echo x > f` → use `ls`, `cp`, `open`, `'x' | save f`). " +
+            'No `$(cmd)` substitution (use `(cmd)`), no `&&` (use `;`), interpolation via `$"...(expr)"`. ' +
             'Windows paths in single quotes or with forward slashes; `\\U` etc. in double quotes are parse errors. ' +
             'Env vars: `$env.NAME`.',
         },
@@ -324,6 +377,18 @@ export function apply(ctx: Context, config: Config = {}): void {
           type: 'boolean',
           description:
             'Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.',
+        },
+        outputFormat: {
+          type: 'string',
+          description:
+            "Serialization of the command's final value: 'text' (default) returns raw stdout; " +
+            "'json' pipes the final value through `to json --raw`; 'nuon' through `to nuon`. " +
+            'Use "json" when the result is structured data (lists/records/tables) so it comes back machine-readable.',
+        },
+        stdin: {
+          type: 'string',
+          description:
+            "Optional text piped to the command's stdin (e.g. input for a filter or a script read via `str join` after `lines`).",
         },
       },
       // 声明即承诺:execute 把 exec.signal 转发给 executor,可在预算内静默。
@@ -393,6 +458,7 @@ export function apply(ctx: Context, config: Config = {}): void {
         validateNushellArgs(args);
         const workdir = resolveWorkdir(args.workdir, exec);
         const dshEnv = collectShellEnv(ctx, exec);
+        const command = applyOutputFormat(args.command, args.outputFormat);
         if (args.run_in_background === true) {
           if (!backgroundEnabled) {
             throw new Error(
@@ -409,8 +475,9 @@ export function apply(ctx: Context, config: Config = {}): void {
             );
           }
           const request: ShellExecRequest = {
-            command: args.command,
+            command,
             ...(workdir !== undefined ? { workdir } : {}),
+            ...(args.stdin !== undefined ? { stdin: args.stdin } : {}),
             dshEnv,
           };
           // 后台无超时(接缝契约):resolve 后不携带 timeoutMs。
@@ -430,11 +497,12 @@ export function apply(ctx: Context, config: Config = {}): void {
           } as const;
         }
         const request: ShellExecRequest = {
-          command: args.command,
+          command,
           ...(workdir !== undefined ? { workdir } : {}),
           ...(args.timeoutMs !== undefined
             ? { timeoutMs: args.timeoutMs }
             : {}),
+          ...(args.stdin !== undefined ? { stdin: args.stdin } : {}),
           dshEnv,
         };
         const result = await ctx.shell.run(ctx.shell.resolve(request));

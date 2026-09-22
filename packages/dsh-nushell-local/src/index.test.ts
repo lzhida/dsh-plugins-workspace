@@ -7,6 +7,7 @@ import type {
   ShellRunResult,
 } from '@deepseek-ai/dsh-shell';
 import {
+  annotateWrappedNu,
   assertServiceableNushellConfig,
   DEFAULT_NUSHELL_CONFIG,
   NushellLocalExecutor,
@@ -430,5 +431,44 @@ describe('nushell-local ShellRunResult 形状', () => {
         'stderr',
       ]),
     );
+  });
+});
+
+describe('nushell-local nu 包装层检测', () => {
+  it('annotateWrappedNu 无特征原样返回', () => {
+    expect(annotateWrappedNu('')).toBe('');
+    expect(annotateWrappedNu('error: syntax error')).toBe(
+      'error: syntax error',
+    );
+  });
+
+  it('annotateWrappedNu 命中 pi-natives 特征附诊断注记', () => {
+    const annotated = annotateWrappedNu('pi-natives:command: syntax error');
+    expect(annotated).toContain('[nushell-local:');
+    expect(annotated).toContain('official nu build');
+  });
+
+  it('前台 run 的 stderr 命中特征时被注记,stdout 不受影响', async () => {
+    const { ctx, handle } = stubCtx('out', 'pi-natives:command: syntax error');
+    const executor = makeExecutor({}, ctx);
+    const spec = executor.resolve({ command: 'metadata 100' });
+    const pending = executor.run(spec);
+    handle.resolveDone({ exitCode: 1, signal: null });
+    const result = await pending;
+    expect(result.stdout.text).toBe('out');
+    expect(result.stderr.text).toContain('[nushell-local:');
+    expect(result.stderr.text).toContain('pi-natives:command: syntax error');
+    expect(result.stderr.truncated).toBe(false);
+  });
+
+  it('后台增量读的 stderr 命中特征时被注记', async () => {
+    const { ctx, handle } = stubCtx('', 'pi-natives:command: syntax error');
+    const executor = makeExecutor({}, ctx);
+    const proc = executor.start(executor.resolve({ command: 'metadata 100' }));
+    handle.resolveDone({ exitCode: 1, signal: null });
+    await proc.done;
+    const read = proc.readOutput();
+    expect(read.delta).toContain('[stderr]');
+    expect(read.delta).toContain('[nushell-local:');
   });
 });

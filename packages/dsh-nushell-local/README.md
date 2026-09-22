@@ -8,7 +8,8 @@
 - **nu 方言**:`nu --no-config-file -c <command>`,禁用用户配置保证可复现的干净求值环境;`nuPath` 可配置,缺省走 PATH;
 - **前台 `run`**:经 `dsh-timeout` 的 `deadline` 融合调用方取消与超时(`BASH_TIMEOUT` 能力码,与 bash/pwsh 家族共享);非零退出/超时杀/中止都正常 resolve,仅基础设施失败 reject;
 - **后台 `start`**:无 executor 超时(接缝契约),返回 `ShellProcess` 句柄(`done` 永不 reject,provider 拒绝降级为 killed + 失败注记;`readOutput` 消费式增量,stderr 以 `[stderr]` 段并入);
-- **沙箱**:nu 无语言级沙箱等价物,保持 `sandboxMode` 缺省(无沙箱),不做 confining 子类。
+- **沙箱**:nu 无语言级沙箱等价物,保持 `sandboxMode` 缺省(无沙箱),不做 confining 子类;
+- **包装层检测**:stderr 命中已知注入特征(如 `pi-natives`)时自动附诊断注记,提示 `nu` 可能被包装、建议 `nuPath` 指向官方构建。
 
 ## 配置
 

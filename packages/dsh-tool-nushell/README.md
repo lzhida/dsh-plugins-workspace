@@ -21,13 +21,17 @@
 
 ## 工具参数
 
-| 参数                | 类型    | 必填 | 说明                                                           |
-| ------------------- | ------- | ---- | -------------------------------------------------------------- |
-| `command`           | string  | 是   | Nushell 源码,作为单条 `nu --no-config-file -c` 程序执行        |
-| `description`       | string  | 是   | 命令用途的简短说明(5-10 词,展示在 UI 卡片)                     |
-| `workdir`           | string  | 否   | 工作目录,缺省为会话工作目录;相对路径基于会话工作目录解析       |
-| `timeoutMs`         | number  | 否   | 超时毫秒数,默认 30000,上限 600000;`run_in_background` 时不生效 |
-| `run_in_background` | boolean | 否   | 后台运行并立即返回 job id(`job_output` 收集、`job_kill` 停止)  |
+| 参数                | 类型    | 必填 | 说明                                                                                                                   |
+| ------------------- | ------- | ---- | ---------------------------------------------------------------------------------------------------------------------- |
+| `command`           | string  | 是   | Nushell 源码,作为单条 `nu --no-config-file -c` 程序执行                                                                |
+| `description`       | string  | 是   | 命令用途的简短说明(5-10 词,展示在 UI 卡片)                                                                             |
+| `workdir`           | string  | 否   | 工作目录,缺省为会话工作目录;相对路径基于会话工作目录解析                                                               |
+| `timeoutMs`         | number  | 否   | 超时毫秒数,默认 30000,上限 600000;`run_in_background` 时不生效                                                         |
+| `run_in_background` | boolean | 否   | 后台运行并立即返回 job id(`job_output` 收集、`job_kill` 停止)                                                          |
+| `outputFormat`      | string  | 否   | 最终值序列化:`text`(默认,原样 stdout)/`json`(`to json --raw`)/`nuon`(`to nuon`);结构化数据建议 `json`,返回机器可读结果 |
+| `stdin`             | string  | 否   | 可选文本,作为命令 stdin 喂入                                                                                           |
+
+`outputFormat` 非 `text` 时命令被包进 `do { … }` 块并对最终值序列化(多语句整体求值,副作用行为不变),因此 `ls \| get name` 配 `json` 直接得到 JSON 数组而非表格渲染文本。
 
 ## 插件配置
 
