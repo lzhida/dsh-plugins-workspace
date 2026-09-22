@@ -1,5 +1,6 @@
 {
-  "name": "@lzhida/dsh-nushell-tool",
+  "name": "@lzhida/dsh-tool-nushell",
+  "description": "Nushell tool for DeepSeek Harness — model-facing shell tool backed by ctx.shell",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -15,6 +16,7 @@
     "@deepseek-ai/cordis": "^4.0.2",
     "@deepseek-ai/dsh-jobs": "0.1.5-rc.2",
     "@deepseek-ai/dsh-llm": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-shell": "0.1.5-rc.2",
     "@deepseek-ai/dsh-shell-env": "0.1.5-rc.2",
     "@deepseek-ai/dsh-system-prompt": "0.1.5-rc.2",
     "@deepseek-ai/dsh-tools": "0.1.5-rc.2"

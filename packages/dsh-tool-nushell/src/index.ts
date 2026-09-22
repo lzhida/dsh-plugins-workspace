@@ -1,24 +1,21 @@
-import {
-  execFile,
-  spawn,
-  type ChildProcess,
-  type ExecFileException,
-  type ExecFileOptions,
-} from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
-import { HarnessError } from '@deepseek-ai/dsh-llm';
 import type { JobHooks, JobOutcome } from '@deepseek-ai/dsh-jobs';
+import { HarnessError } from '@deepseek-ai/dsh-llm';
+import type {
+  ShellExecRequest,
+  ShellProcess,
+  ShellProcessRead,
+  ShellRunResult,
+} from '@deepseek-ai/dsh-shell';
 import {
   defineTool,
   TOOL_ABORTED,
   type ToolRunContext,
 } from '@deepseek-ai/dsh-tools';
 
-export const name = 'dsh-nushell-tool';
-export const inject = ['tools', 'systemPrompt', 'shellEnv'];
+export const name = 'dsh-tool-nushell';
+export const inject = ['tools', 'systemPrompt', 'shellEnv', 'shell'];
 
 declare module '@deepseek-ai/dsh-jobs' {
   interface JobKindMap {
@@ -27,14 +24,11 @@ declare module '@deepseek-ai/dsh-jobs' {
 }
 
 /**
- * dsh-nushell-tool:为 DeepSeek Harness 注册独立的 `nushell` 工具,能力对齐
- * 官方 tool-pwsh(0.1.5-rc.2):前台/后台执行、canonical 结构化输出、
- * marker 渲染、截断 + spill 落盘、DSH_* 环境注入、系统提示 section、
- * 终端卡片 UI 呈现。命令经 `nu --no-config-file -c <command>` 子进程执行——
- * 禁用用户配置以保证可复现的干净求值环境。`nu` 通过 PATH 查找,缺失时报错,
- * 不打包 nushell。与官方 pwsh 的差异:nu 直接由本插件 spawn(无 ctx.shell
- * executor 中介),沙箱 escalation 通道不存在(PowerShell 专属),故不广告
- * `sandbox_permissions`/`justification`。
+ * tool-nushell:为 DeepSeek Harness 注册独立的 `nushell` 工具,执行经
+ * `ctx.shell` 能力接缝——nushell-local executor 负责进程管理与预算,本
+ * 插件只负责模型契约(参数校验、canonical 输出、marker 渲染、后台 job、
+ * 系统提示 section、UI 呈现)。能力面与官方 tool-pwsh 对齐;沙箱
+ * escalation 为 PowerShell 专属通道,不提供。
  */
 
 /** `nushell` 工具的模型参数(形状与 parameters schema 一致)。 */
@@ -44,21 +38,6 @@ export interface NushellArgs {
   timeoutMs?: number;
   workdir?: string;
   run_in_background?: boolean;
-}
-
-/** 单次 nu 执行的结构化结果(spawn 内部形态,渲染前的原始流)。 */
-export interface NushellRunResult {
-  command: string;
-  /** 进程退出码;被信号终止或未能启动时为 null。 */
-  exitCode: number | null;
-  /** 终止进程的信号名;正常退出为 null。 */
-  signal: NodeJS.Signals | null;
-  /** 是否因 timeout 参数被 Node 终止(区别于调用方取消)。 */
-  timedOut: boolean;
-  /** 实际生效的超时预算(默认/钳制后),渲染 timeout marker 用。 */
-  timeoutMs: number;
-  stdout: string;
-  stderr: string;
 }
 
 /** 单流输出的 canonical 形态:模型可见文本 + 截断标记 + 完整输出落盘路径。 */
@@ -86,25 +65,8 @@ export type NushellToolOutput =
 
 export const DEFAULT_TIMEOUT_MS = 30_000;
 export const MAX_TIMEOUT_MS = 600_000;
-const MAX_BUFFER_BYTES = 10 * 1024 * 1024;
-const MAX_OUTPUT_CHARS = 20_000;
-/** 后台增量缓冲上限;超出丢头部并记为有损读(对齐官方 lossy read 语义)。 */
-const MAX_JOB_BUFFER_CHARS = 200_000;
 /** 系统提示 section 位置:SECTION_ORDERS.TOOL_PWSH(1010)与 TOOL_READ(1100)之间的空位。 */
 const NUSHELL_SECTION_ORDER = 1015;
-
-/** 请求超时钳制:非法值回退默认,下限 1ms,上限 MAX_TIMEOUT_MS。 */
-export function resolveTimeoutMs(timeoutMs?: number): number {
-  if (timeoutMs === undefined || !Number.isFinite(timeoutMs)) {
-    return DEFAULT_TIMEOUT_MS;
-  }
-  return Math.min(Math.max(Math.trunc(timeoutMs), 1), MAX_TIMEOUT_MS);
-}
-
-/** 拼装 nu 参数行:`--no-config-file -c <command>`。 */
-export function buildNuArgs(command: string): string[] {
-  return ['--no-config-file', '-c', command];
-}
 
 /** 语义校验(文案对齐官方 validatePwshArgs);schema 校验由 defineTool 负责。 */
 export function validateNushellArgs(args: NushellArgs): void {
@@ -131,7 +93,7 @@ interface SessionCwdCarrier {
 
 /**
  * 解析显式 workdir:相对路径基于会话工作目录;未给时回退会话工作目录,
- * 再由 executor(execFile)默认进程 cwd。语义对齐官方 resolveWorkdir。
+ * 再由 executor 默认进程 cwd。语义对齐官方 resolveWorkdir。
  */
 export function resolveWorkdir(
   workdir: string | undefined,
@@ -148,138 +110,75 @@ export function resolveWorkdir(
   return workdir;
 }
 
-type ExecFileCallback = (
-  error: ExecFileException | null,
-  stdout: string,
-  stderr: string,
-) => void;
-type ExecFileLike = (
-  file: string,
-  args: readonly string[],
-  options: ExecFileOptions,
-  callback: ExecFileCallback,
-) => ChildProcess;
-
-// execFile 的重载联合与单签名 ExecFileLike 无法被 TS 直接统一(回调变型),单点断言收敛。
-const execFileLike = execFile as unknown as ExecFileLike;
-
-/** 前台执行请求(workdir 已解析;env 为合并前的 DSH_* 增量)。 */
-export interface NushellRunRequest {
-  command: string;
-  workdir?: string;
-  timeoutMs?: number;
-  dshEnv?: Record<string, string>;
-}
-
 function abortError(): Error {
   const error = new HarnessError('tool call aborted', TOOL_ABORTED);
   error.name = 'AbortError';
   return error;
 }
 
-/** spawn 选项组装:dshEnv 非空时并入进程 env。 */
-function childEnv(
-  dshEnv: Record<string, string> | undefined,
-): NodeJS.ProcessEnv | undefined {
-  if (dshEnv === undefined || Object.keys(dshEnv).length === 0) {
-    return undefined;
-  }
-  return { ...process.env, ...dshEnv };
-}
-
-/**
- * 执行一条 nushell 命令(前台)。非零退出与信号终止属正常工具结果(正常
- * resolve);基础设施失败(ENOENT、无法启动)与调用方取消时 reject——
- * 对齐官方"仅基础设施失败作为 isError 结果"的边界。子进程登记进
- * `children`,供插件卸载时统一击杀。
- */
-export function runNushell(
-  request: NushellRunRequest,
-  exec: { signal: AbortSignal },
-  children?: Set<ChildProcess>,
-  spawnFn: ExecFileLike = execFileLike,
-): Promise<NushellRunResult> {
-  const timeoutMs = resolveTimeoutMs(request.timeoutMs);
-  const env = childEnv(request.dshEnv);
-  return new Promise<NushellRunResult>((resolve, reject) => {
-    let child: ChildProcess;
-    try {
-      child = spawnFn(
-        'nu',
-        buildNuArgs(request.command),
-        {
-          ...(request.workdir !== undefined ? { cwd: request.workdir } : {}),
-          timeout: timeoutMs,
-          maxBuffer: MAX_BUFFER_BYTES,
-          windowsHide: true,
-          signal: exec.signal,
-          ...(env !== undefined ? { env } : {}),
-        },
-        (error, stdout, stderr) => {
-          children?.delete(child);
-          if (error?.code === 'ENOENT') {
-            reject(
-              new Error(
-                'nu executable not found: install Nushell and make sure it is on PATH (https://www.nushell.sh/)',
-              ),
-            );
-            return;
-          }
-          if (exec.signal.aborted) {
-            reject(abortError());
-            return;
-          }
-          if (
-            error !== null &&
-            !error.killed &&
-            child.exitCode === null &&
-            child.signalCode === null
-          ) {
-            reject(new Error(`failed to start nu: ${error.message}`));
-            return;
-          }
-          resolve({
-            command: request.command,
-            exitCode: child.exitCode,
-            signal: child.signalCode,
-            timedOut: Boolean(error?.killed),
-            timeoutMs,
-            stdout,
-            stderr,
-          });
-        },
-      );
-    } catch (err) {
-      reject(err instanceof Error ? err : new Error(String(err)));
-      return;
+function collectShellEnv(
+  ctx: Context,
+  exec: ToolRunContext,
+): Record<string, string> {
+  const registry = (
+    ctx as unknown as {
+      shellEnv?: { collect(e: ToolRunContext): Record<string, string> };
     }
-    children?.add(child);
-  });
+  ).shellEnv;
+  return registry?.collect(exec) ?? {};
 }
 
-/** 超限单流落盘(spill);落盘失败时 spillPath 缺省,渲染回退 (unavailable)。 */
-async function toStreamOutput(
-  stream: 'stdout' | 'stderr',
-  raw: string,
-): Promise<NushellStreamOutput> {
-  if (raw.length <= MAX_OUTPUT_CHARS) {
-    return { text: raw, truncated: false };
-  }
-  let spillPath: string | undefined;
-  try {
-    const dir = await mkdtemp(path.join(tmpdir(), 'dsh-nushell-tool-'));
-    spillPath = path.join(dir, `${stream}.out.txt`);
-    await writeFile(spillPath, raw, 'utf8');
-  } catch {
-    spillPath = undefined;
-  }
-  return { text: raw.slice(0, MAX_OUTPUT_CHARS), truncated: true, spillPath };
+/** 后台 job 注册契约(窄化 ctx.get('jobs') 的返回,避免对宿主类型布局的依赖)。 */
+interface NushellJobRegistry {
+  start(spec: {
+    kind: 'nushell';
+    label: string;
+    owner?: unknown;
+    run(): JobHooks;
+  }): string;
 }
 
-/** 前台结果 → canonical 输出(aborted 恒 false:取消走 reject 路径)。 */
-export async function canonicalNushellResult(
-  result: NushellRunResult,
-): Promise<NushellForegroundOutput> {
+function getJobs(ctx: Context): NushellJobRegistry | undefined {
+  return (ctx as unknown as { get?(key: string): unknown }).get?.('jobs') as
+    NushellJobRegistry | undefined;
+}
+
+/** 后台进程结算 → job outcome;信号终止记 killed,非零退出照报不判失败。 */
+export function nushellJobOutcome(
+  proc: Pick<ShellProcess, 'status' | 'exitCode' | 'signal'>,
+): JobOutcome {
+  if (proc.status === 'killed') {
+    return {
+      status: 'killed',
+      detail:
+        proc.signal !== null ? `signal: ${proc.signal}` : 'killed before exit',
+    };
+  }
+  return { status: 'completed', detail: `exit code: ${proc.exitCode ?? 0}` };
+}
+
+/** 后台增量读 → `job_output` delta;有损读附 spill 路径提示(无沙箱注记)。 */
+export function renderNushellProcessRead(read: ShellProcessRead): string {
+  const notices: string[] = [];
+  if (read.lossy) {
+    const paths = [read.stdoutSpillPath, read.stderrSpillPath].filter(
+      (p) => p !== undefined,
+    );
+    notices.push(
+      `[some output was dropped from memory; full output: ${paths.length > 0 ? paths.join(', ') : '(unavailable)'}]`,
+    );
+  }
+  if (notices.length === 0) {
+    return read.delta;
+  }
+  const glue = read.delta.length > 0 && !read.delta.endsWith('\n') ? '\n' : '';
+  return `${read.delta}${glue}${notices.join('\n')}`;
+}
+
+/** 前台 shell 结果 → canonical 输出(aborted 恒 false:取消走 reject 路径)。 */
+export function canonicalNushellResult(
+  result: ShellRunResult,
+): NushellForegroundOutput {
   return {
     kind: 'foreground',
     exitCode: result.exitCode,
@@ -287,8 +186,8 @@ export async function canonicalNushellResult(
     timedOut: result.timedOut,
     aborted: false,
     timeoutMs: result.timeoutMs,
-    stdout: await toStreamOutput('stdout', result.stdout),
-    stderr: await toStreamOutput('stderr', result.stderr),
+    stdout: result.stdout,
+    stderr: result.stderr,
   };
 }
 
@@ -344,109 +243,6 @@ export function renderNushellResult(value: NushellToolOutput): string {
   return body + markers.join('\n');
 }
 
-/** 后台进程结算 → job outcome;信号终止记 killed,非零退出照报不判失败。 */
-export function nushellJobOutcome(
-  code: number | null,
-  signal: NodeJS.Signals | null,
-): JobOutcome {
-  if (signal !== null) {
-    return { status: 'killed', detail: `signal: ${signal}` };
-  }
-  return { status: 'completed', detail: `exit code: ${code ?? 0}` };
-}
-
-/** 后台 job 注册契约(窄化 ctx.get('jobs') 的返回,避免对宿主类型布局的依赖)。 */
-interface NushellJobRegistry {
-  start(spec: {
-    kind: 'nushell';
-    label: string;
-    owner?: unknown;
-    run(): JobHooks;
-  }): string;
-}
-
-function getJobs(ctx: Context): NushellJobRegistry | undefined {
-  return (ctx as unknown as { get?(key: string): unknown }).get?.('jobs') as
-    NushellJobRegistry | undefined;
-}
-
-function collectShellEnv(
-  ctx: Context,
-  exec: ToolRunContext,
-): Record<string, string> {
-  const registry = (
-    ctx as unknown as {
-      shellEnv?: { collect(e: ToolRunContext): Record<string, string> };
-    }
-  ).shellEnv;
-  return registry?.collect(exec) ?? {};
-}
-
-/**
- * 启动后台 nu 进程并产出 job 句柄:增量缓冲由 readOutput 消费,积压超限
- * 记有损并在下次读取时附提示;cancel 击杀进程;close/error 结算 outcome。
- */
-function startNushellProcess(request: NushellRunRequest): JobHooks {
-  const child = spawn('nu', buildNuArgs(request.command), {
-    ...(request.workdir !== undefined ? { cwd: request.workdir } : {}),
-    ...(childEnv(request.dshEnv) !== undefined
-      ? { env: childEnv(request.dshEnv) }
-      : {}),
-    windowsHide: true,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  const buffer = { pending: '', lossy: false };
-  const append = (chunk: string): void => {
-    buffer.pending += chunk;
-    if (buffer.pending.length > MAX_JOB_BUFFER_CHARS) {
-      buffer.pending = buffer.pending.slice(-MAX_JOB_BUFFER_CHARS);
-      buffer.lossy = true;
-    }
-  };
-  child.stdout!.setEncoding('utf8');
-  child.stdout!.on('data', append);
-  child.stderr!.setEncoding('utf8');
-  child.stderr!.on('data', append);
-  let settled = false;
-  const done = new Promise<JobOutcome>((resolve) => {
-    child.once('error', (err: Error) => {
-      if (settled) {
-        return;
-      }
-      settled = true;
-      resolve({ status: 'failed', detail: err.message });
-    });
-    child.once(
-      'close',
-      (code: number | null, signal: NodeJS.Signals | null) => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        resolve(nushellJobOutcome(code, signal));
-      },
-    );
-  });
-  return {
-    cancel: () => {
-      if (!settled) {
-        child.kill();
-      }
-    },
-    done,
-    readOutput: (): string => {
-      const delta = buffer.pending;
-      buffer.pending = '';
-      if (!buffer.lossy) {
-        return delta;
-      }
-      buffer.lossy = false;
-      const glue = delta.length > 0 && !delta.endsWith('\n') ? '\n' : '';
-      return `${delta}${glue}[some output was dropped from memory; full output: (unavailable)]`;
-    },
-  };
-}
-
 /** 插件运行时配置;enableRunInBackground 默认开启,对齐官方 Config 语义。 */
 export interface Config {
   enableRunInBackground?: boolean;
@@ -473,8 +269,6 @@ export function apply(ctx: Context, config: Config = {}): void {
         'A killed process is reported as `[killed by signal: X]` and a timeout as `[timed out after Nms]`. ' +
         'Each call runs in a fresh process: no state persists between calls.',
     });
-
-    const children = new Set<ChildProcess>();
 
     const nushellTool = defineTool({
       name: 'nushell',
@@ -513,7 +307,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             'Run in the background and return a job id immediately (collect with job_output, stop with job_kill). No timeout applies.',
         },
       },
-      // 声明即承诺:execute 把 exec.signal 转发给子进程,可在预算内静默。
+      // 声明即承诺:execute 把 exec.signal 转发给 executor,可在预算内静默。
       timeoutMs: MAX_TIMEOUT_MS,
       // 无共享可变状态,进程级隔离,可并行调度。
       isConcurrencySafe: () => true,
@@ -595,33 +389,39 @@ export function apply(ctx: Context, config: Config = {}): void {
               'background jobs unavailable: load @deepseek-ai/dsh-jobs and @deepseek-ai/dsh-tool-jobs',
             );
           }
-          const request: NushellRunRequest = {
+          const request: ShellExecRequest = {
             command: args.command,
             ...(workdir !== undefined ? { workdir } : {}),
             dshEnv,
           };
+          // 后台无超时(接缝契约):resolve 后不携带 timeoutMs。
+          const proc = ctx.shell.start(ctx.shell.resolve(request));
           return {
             kind: 'background',
             jobId: jobs.start({
               kind: 'nushell',
               label: args.command,
               ...(exec.agent !== undefined ? { owner: exec.agent } : {}),
-              run: () => startNushellProcess(request),
+              run: () => ({
+                cancel: () => proc.kill(),
+                done: proc.done.then(() => nushellJobOutcome(proc)),
+                readOutput: () => renderNushellProcessRead(proc.readOutput()),
+              }),
             }),
           } as const;
         }
-        const result = await runNushell(
-          {
-            command: args.command,
-            ...(workdir !== undefined ? { workdir } : {}),
-            ...(args.timeoutMs !== undefined
-              ? { timeoutMs: args.timeoutMs }
-              : {}),
-            dshEnv,
-          },
-          exec,
-          children,
-        );
+        const request: ShellExecRequest = {
+          command: args.command,
+          ...(workdir !== undefined ? { workdir } : {}),
+          ...(args.timeoutMs !== undefined
+            ? { timeoutMs: args.timeoutMs }
+            : {}),
+          dshEnv,
+        };
+        const result = await ctx.shell.run(ctx.shell.resolve(request));
+        if (result.aborted) {
+          throw abortError();
+        }
         return canonicalNushellResult(result);
       },
       presentCall: (args) => {
@@ -674,12 +474,9 @@ export function apply(ctx: Context, config: Config = {}): void {
     });
 
     const dispose = ctx.tools.register(nushellTool);
+    // 后台进程生命周期归 ctx.subprocess(cordis 组合销毁统一终止)。
     return () => {
       dispose();
-      for (const child of children) {
-        child.kill();
-      }
-      children.clear();
     };
-  }, 'nushell-tool: prompt section, tool registration and child cleanup');
+  }, 'tool-nushell: prompt section and tool registration');
 }

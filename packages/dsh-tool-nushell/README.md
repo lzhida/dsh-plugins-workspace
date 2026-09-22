@@ -1,4 +1,4 @@
-# @lzhida/dsh-nushell-tool
+# @lzhida/dsh-tool-nushell
 
 为 DeepSeek Harness 注册独立的 `nushell` 工具:模型显式调用,命令经 `nu --no-config-file -c <command>` 子进程执行。能力对齐官方 `tool-pwsh`(0.1.5-rc.2):前台/后台执行、canonical 结构化输出、marker 渲染、截断落盘、`DSH_*` 环境注入、系统提示 section、终端卡片 UI 呈现。
 
@@ -14,10 +14,10 @@
 - **UI 呈现**:前台调用渲染终端卡片(命令 + 说明 + 工作目录 + 退出状态),后台调用降级 generic 卡片;
 - **超时控制**:`timeoutMs` 参数(默认 30s,上限 600s),到期终止进程;后台任务不设超时;
 - **并行安全**:进程级隔离、无共享可变状态,声明 `isConcurrencySafe` 可与其他工具调用并行调度;
-- **生命周期清理**:插件卸载时经 `ctx.effect` 统一注销工具并终止存活子进程;
+- **生命周期清理**:插件卸载时经 `ctx.effect` 统一注销工具(后台进程由 `ctx.subprocess` 组合销毁统一终止);
 - **零打包**:`nu` 经 PATH 查找,缺失时返回安装指引报错,不打包 nushell。
 
-与官方 tool-pwsh 的已知差异:沙箱 escalation(`sandbox_permissions`/`justification`)为 PowerShell 专属通道(依赖宿主 sandbox executor 中介),nushell 直启进程无此中介,故不提供。
+执行链:命令经 `ctx.shell` 能力接缝交由配套 executor `@lzhida/dsh-nushell-local` 执行(nu 进程管理/预算/spill 下沉于 executor),本插件只负责模型契约。与官方 tool-pwsh 的已知差异:沙箱 escalation(`sandbox_permissions`/`justification`)为 PowerShell 专属通道(依赖宿主 sandbox executor 中介与 PowerShell 语言级沙箱),nushell 无等价物,故不提供。
 
 ## 工具参数
 
@@ -40,20 +40,20 @@
 前置:Node ≥ 22、pnpm 11、已安装 dsh、本机装有 Nushell(`nu` 在 PATH 中)。
 
 ```sh
-pnpm dsh plugin --profile default add link:packages/dsh-nushell-tool
+pnpm dsh plugin --profile default add link:packages/dsh-tool-nushell
 ```
 
-安装后在 dsh Web UI 的设置 → 插件中确认「dsh-nushell-tool」已启用,即可由模型在会话中按需调用 `nushell` 工具。
+安装后在 dsh Web UI 的设置 → 插件中确认「tool-nushell」已启用,即可由模型在会话中按需调用 `nushell` 工具。
 
 ## 开发
 
 ```sh
 pnpm install    # 仓库根执行
 pnpm test       # vitest(含本包 src/index.test.ts)
-pnpm test:e2e -- packages/dsh-nushell-tool/src/index.ts   # 真实 dsh Web UI 加载验证
+pnpm test:e2e -- packages/dsh-nushell-local/src/index.ts packages/dsh-tool-nushell/src/index.ts   # 真实 dsh Web UI 加载验证(executor + tool)
 ```
 
-插件契约(`src/index.ts`):`export const name = 'dsh-nushell-tool'`、`inject = ['tools', 'systemPrompt', 'shellEnv']`(jobs 经 `ctx.get` 动态解析以支持降级报错),`apply(ctx, config)` 内注册系统提示 section 与工具,`ctx.effect` 收口注册 disposer 与子进程清理。
+插件契约(`src/index.ts`):`export const name = 'tool-nushell'`、`inject = ['tools', 'systemPrompt', 'shellEnv']`(jobs 经 `ctx.get` 动态解析以支持降级报错),`apply(ctx, config)` 内注册系统提示 section 与工具,`ctx.effect` 收口注册 disposer 与子进程清理。
 
 ## License
 

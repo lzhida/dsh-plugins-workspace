@@ -2,5 +2,5 @@
 # name 用包名(profile 依赖树已 link 安装),格式对齐官方 dsh-acp-app。
 
 - insert:
-    - id: dsh-nushell-tool
-      name: '@lzhida/dsh-nushell-tool'
+    - id: tool-nushell
+      name: '@lzhida/dsh-tool-nushell'
