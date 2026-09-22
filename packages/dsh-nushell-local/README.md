@@ -29,7 +29,17 @@
 pnpm dsh plugin --profile <name> add link:packages/dsh-nushell-local
 ```
 
-与 `@lzhida/dsh-tool-nushell` 配套使用(tool 消费本包注入的 `ctx.shell`)。
+与 `@lzhida/dsh-tool-nushell` 配套使用(tool 消费本包注入的 `ctx.shell`);与 `@lzhida/dsh-nushell-sandbox` 互斥——`ctx.shell` 为单实现接缝,二选一。安装即经 bundle patch 停用官方 shell 家族(pwsh-sandbox / bash-sandbox)与 tool-bash / tool-pwsh。
+
+## 开发
+
+```sh
+pnpm install    # 仓库根执行
+pnpm test       # vitest(含本包 src/index.test.ts)
+npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts -- packages/dsh-nushell-local/src/index.ts packages/dsh-tool-nushell/src/index.ts   # 真实 dsh Web UI 加载验证(executor + tool)
+```
+
+插件契约(`src/index.ts`):`default export` `NushellLocalExecutor`(`static inject = ['subprocess']`),另导出 `DEFAULT_NUSHELL_CONFIG`、`assertServiceableNushellConfig`、`annotateWrappedNu`;模块装载时输出 `[dsh-nushell-local] ` 前缀日志行(e2e 契约)。
 
 ## License
 
