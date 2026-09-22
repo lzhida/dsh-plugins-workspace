@@ -29,7 +29,6 @@ pnpm lint           # ESLint 检查（lint:fix 自动修）
 pnpm format         # Prettier 写入（format:check 只校验）
 pnpm typecheck      # 递归各包 tsc --noEmit
 pnpm test           # vitest run（集中在根，子包无 test 脚本）
-pnpm test:e2e       # e2e：真实 dsh Web UI 加载验证（默认 dsh-guided-goal，详见 Testing & QA）
 ```
 
 新增插件的最小步骤：建 `packages/my-plugin/`，仿照 `packages/dsh-guided-goal/package.json`（`type: "module"`、`main: "src/index.ts"`、`devDependencies` 含 cordis、`scripts.typecheck`），tsconfig extends 根配置即可，无需其他注册动作。
@@ -45,7 +44,7 @@ pnpm test:e2e       # e2e：真实 dsh Web UI 加载验证（默认 dsh-guided-g
 
 ## Important Files
 
-- `scripts/test-e2e.ts`——e2e 运行器：真实 dsh Web UI 加载验证，支持任意插件路径参数
+- `.agents/skills/dsh-plugin-dev/scripts/test-e2e.ts`——e2e 运行器（随 dsh-plugin-dev skill 分发）：真实 dsh Web UI 加载验证，支持任意插件路径参数
 - `lefthook.yml` + 根 `package.json` 的 `lint-staged` 块——钩子与暂存区门禁行为
 - `tsconfig.base.json` / `eslint.config.ts` / `.prettierrc.json`——质量门禁，改动需谨慎
 - `pnpm-workspace.yaml`——包收录 + `allowBuilds`；新依赖需要构建脚本时必须在此追加白名单（pnpm 11 默认拦截构建脚本）
@@ -71,10 +70,10 @@ pnpm test:e2e       # e2e：真实 dsh Web UI 加载验证（默认 dsh-guided-g
 
 ### E2E（Web UI 加载级验证）
 
-- 命令：`pnpm test:e2e`（默认验证 dsh-guided-goal）；验证任意插件：`pnpm test:e2e -- packages/<name>/src/index.ts`（可传多个）
+- 命令：`npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts`（默认验证 dsh-guided-goal）；验证任意插件：追加 `-- packages/<name>/src/index.ts`（可传多个）
 - 机制：运行器以仓库内隔离的 `DSH_HOME=.agents/e2e-dsh-home` + 独立 profile（默认 `e2e`，**缺失时自动从官方 web 模板引导**）以 `dsh plugin add link:<包目录>` 装入 profile——包内 `dsh.bundle.patch`（cordis.patch.yml 的 `- insert` 行）使其自动激活为 profile 层，无需 overlay 注入
 - 三项断言：① 进程输出出现插件加载日志——**契约：插件 `apply` 时须打印 `[name] ` 前缀格式的日志行**（如 `[guided-goal] plugin loaded`），e2e 按该结构化格式匹配，路径中出现裸包名不算 ② Web 服务端口可访问 ③ 若捕获到带 token 的 UI URL 则页面须返回 <400；结束卸载被测插件、taskkill 进程树并恢复 profile 干净态
 - 与本机已运行的 dsh 实例完全隔离：DSH_HOME 重定向（不触碰 `~/.dsh`），默认端口 3865——**3080 是上游默认，3865 只是本机现状产物**（本机 3080 被已运行实例占用）；新机器 3080 空闲时可回归 `E2E_PORT=3080` 或改回默认值
 - 环境变量：`E2E_PORT`（3865）、`E2E_TIMEOUT_MS`（180000）、`E2E_DSH_PROFILE`（e2e）、`E2E_KEEP_MS`（0=断言后立即清理；>0 时保持实例存活 N ms 供浏览器验证，并自动等待/打印带 token 的 UI 地址——dsh 的 banner 可能耗 40s+ 才输出）
-- **浏览器级验证（Web 效果）**：`E2E_KEEP_MS=180000 pnpm test:e2e` → 用 chrome-devtool MCP（或任意浏览器工具）打开运行器打印的 tokened URL，验证：① 页面健康（标题 DeepSeek Harness、console 无错误）② 设置 → 插件 → 插件列表 → 「全局插件」分组中目标插件显示「已启用」③ 工具在会话内被模型实际调用需模型凭证，默认验证不到此层
+- **浏览器级验证（Web 效果）**：`E2E_KEEP_MS=180000 npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts` → 用 chrome-devtool MCP（或任意浏览器工具）打开运行器打印的 tokened URL，验证：① 页面健康（标题 DeepSeek Harness、console 无错误）② 设置 → 插件 → 插件列表 → 「全局插件」分组中目标插件显示「已启用」③ 工具在会话内被模型实际调用需模型凭证，默认验证不到此层
 - 前提：`@deepseek-ai/dsh` 在根 devDependencies；`pnpm-workspace.yaml` 的 `allowBuilds` 已批准其原生依赖（node-pty/koffi/protobufjs/@google/genai/dsh-subprocess-local），新增依赖需构建脚本时照此追加

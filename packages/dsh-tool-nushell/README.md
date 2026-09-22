@@ -54,7 +54,7 @@ pnpm dsh plugin --profile default add link:packages/dsh-tool-nushell
 ```sh
 pnpm install    # 仓库根执行
 pnpm test       # vitest(含本包 src/index.test.ts)
-pnpm test:e2e -- packages/dsh-nushell-local/src/index.ts packages/dsh-tool-nushell/src/index.ts   # 真实 dsh Web UI 加载验证(executor + tool)
+npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts -- packages/dsh-nushell-local/src/index.ts packages/dsh-tool-nushell/src/index.ts   # 真实 dsh Web UI 加载验证(executor + tool)
 ```
 
 插件契约(`src/index.ts`):`export const name = 'tool-nushell'`、`inject = ['tools', 'systemPrompt', 'shellEnv']`(jobs 经 `ctx.get` 动态解析以支持降级报错),`apply(ctx, config)` 内注册系统提示 section 与工具,`ctx.effect` 收口注册 disposer 与子进程清理。

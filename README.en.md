@@ -61,11 +61,10 @@ pnpm lint           # ESLint (flat config, TS)
 pnpm format         # Prettier write (format:check validates only)
 pnpm typecheck      # per-package tsc --noEmit
 pnpm test           # Vitest across all src/**/*.test.ts
-pnpm test:e2e       # real dsh Web UI loading verification (dsh-guided-goal by default)
 ```
 
 - **Pure TypeScript**: plugins have no build step; `package.json` `main` points straight at `src/index.ts` and is loaded by the host dsh loader;
-- **E2E**: the runner boots a real dsh instance with an isolated `DSH_HOME` and a dedicated profile, asserting the plugin load log, web port reachability, and auth-chain health; tune with `E2E_PORT` / `E2E_TIMEOUT_MS` / `E2E_KEEP_MS` (see `scripts/test-e2e.ts`);
+- **E2E**: the runner boots a real dsh instance with an isolated `DSH_HOME` and a dedicated profile, asserting the plugin load log, web port reachability, and auth-chain health; tune with `E2E_PORT` / `E2E_TIMEOUT_MS` / `E2E_KEEP_MS` (runner at `.agents/skills/dsh-plugin-dev/scripts/test-e2e.ts`, run via `npx tsx`);
 - **Adding a plugin**: create `packages/<name>/` modeled on `packages/dsh-guided-goal/package.json`; `pnpm-workspace.yaml` picks it up automatically;
 - **Commits**: Chinese Conventional Commits; develop on `feat/*` / `fix/*` branches merged into `dev`, then into `main` after verification.
 

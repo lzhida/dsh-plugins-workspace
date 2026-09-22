@@ -8,9 +8,9 @@
  * 打印 tokened URL 并按 E2E_KEEP_MS 保活（浏览器级检查由会话内 MCP 执行）。
  * 结束时卸载被测插件，profile 恢复干净态。
  *
- * 用法：
- *   pnpm test:e2e                                     # 默认验证 packages/dsh-guided-goal
- *   pnpm test:e2e -- packages/foo/src/index.ts        # 验证任意插件入口（可多个）
+ * 用法（仓库根目录执行）：
+ *   npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts                                     # 默认验证 packages/dsh-guided-goal
+ *   npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts -- packages/foo/src/index.ts        # 验证任意插件入口（可多个）
  *
  * 前提：devDependencies 已安装 @deepseek-ai/dsh（`pnpm install` 即可）。
  * 环境变量：
@@ -27,6 +27,9 @@ import path from 'node:path';
 
 const WORKSPACE_ROOT = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+  '..',
+  '..',
   '..',
 );
 const PORT = process.env.E2E_PORT ?? '3865';

@@ -33,7 +33,7 @@ pnpm dsh plugin --profile default add link:packages/dsh-guided-goal
 ```sh
 pnpm install    # 仓库根执行
 pnpm test       # vitest(含本包 src/index.test.ts)
-pnpm test:e2e -- packages/dsh-guided-goal/src/index.ts   # 真实 dsh Web UI 加载验证
+npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts -- packages/dsh-guided-goal/src/index.ts   # 真实 dsh Web UI 加载验证
 ```
 
 插件契约(`src/index.ts`):`export const name = 'dsh-guided-goal'`、`inject = ['commands', 'settings']`、`apply(ctx)` 内经 `ctx.effect` 注册 settings 驱动的命令同步。

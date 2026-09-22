@@ -1,6 +1,6 @@
 ---
 name: dsh-plugin-dev
-description: 开发 DeepSeek Harness (dsh) 插件：从零脚手架新插件包、cordis 契约与 ctx.effect 生命周期、defineTool 工具开发，到 pnpm test:e2e 的 Web UI 级自验与提交门禁。当任务涉及创建、修改或验证 dsh 插件（packages/*/src、apply(ctx)、ctx.effect、defineTool、test:e2e）时使用。
+description: 开发 DeepSeek Harness (dsh) 插件：从零脚手架新插件包、cordis 契约与 ctx.effect 生命周期、defineTool 工具开发，到 e2e 实例编排脚本的 Web UI 级自验与提交门禁。当任务涉及创建、修改或验证 dsh 插件（packages/*/src、apply(ctx)、ctx.effect、defineTool、e2e 自验）时使用。
 ---
 
 # dsh 插件开发工作流
@@ -100,27 +100,28 @@ export function apply(ctx: Context): void {
 
 ## 5. e2e 自验（Web UI 加载级）
 
+e2e 编排脚本随本 skill 分发：`.agents/skills/dsh-plugin-dev/scripts/test-e2e.ts`（以仓库根为工作目录运行）：
+
 ```sh
-pnpm test:e2e                                  # 默认验证 packages/hello-plugin
-pnpm test:e2e -- packages/my-plugin/src/index.ts        # 任意插件（packages 内）
-pnpm test:e2e -- .agents/tmp/my-plugin/src/index.ts     # 临时插件（.agents/tmp）
+npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts                                  # 默认验证 packages/hello-plugin
+npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts -- packages/my-plugin/src/index.ts     # 任意插件（可传多个）
+npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts -- .agents/tmp/my-plugin/src/index.ts  # 临时插件（.agents/tmp）
 ```
 
-- 机制：以隔离 `DSH_HOME=.agents/e2e-dsh-home` + 独立 profile（缺失时自动从官方 web 模板引导）启动真实 dsh Web UI，断言后自动清理进程。
-- **加载日志契约**：插件 `apply` 时必须打印 `[name] ` 前缀格式的日志行（如 `[my-plugin] plugin loaded`）。e2e 按 `\[name\]` 结构化正则匹配——路径/堆栈中出现裸包名**不算**加载成功。
+- 机制：以隔离 `DSH_HOME=.agents/e2e-dsh-home` + 独立 profile（缺失时自动从官方 web 模板引导）启动真实 dsh Web UI，断言后自动清理进程。脚本只做**实例编排**（启动+装插件+三断言+保活）；真实效果验证由 AI 经浏览器工具接管（见下）。
+- **加载日志契约**：插件 `apply` 时必须打印 `[name] ` 前缀格式的日志行（如 `[my-plugin] plugin loaded`）。e2e 按 `\[name\]` 结构化正则匹配——路径/堆栈中出现裸包名**不算**加载成功。类式插件（`extends Service`，如 shell executor）为惰性实例化，装载日志须打在**模块顶层**。
 - 首次运行会引导 profile（约 30-60s）；默认端口 3865（`E2E_PORT` 可覆盖）；与 `~/.dsh` 零接触。
 
-### 浏览器级验证（Web 效果，可选）
+### 真实测试操作（chrome devtool MCP 接管，核心方法论）
 
-```sh
-E2E_KEEP_MS=180000 pnpm test:e2e -- packages/my-plugin/src/index.ts
-```
+脚本断言只覆盖「装载」；「真实效果」用浏览器工具完成。`E2E_KEEP_MS=180000` 保活实例并拿 tokened URL 后：
 
-断言通过后实例保持存活，运行器打印带 token 的 UI 地址（dsh 的 banner 可能耗 40s+，运行器会自动等待）。用 chrome-devtool MCP 之类的浏览器工具打开该地址：
-
-1. 页面健康：标题 `DeepSeek Harness`，console 无错误；
-2. 插件效果可见：设置 → 插件 → 插件列表 → 「全局插件」分组中目标插件显示「已启用」；
-3. 工具被模型实际调用需模型凭证——纯本地验证到此为止。
+1. **页面健康**：标题 `DeepSeek Harness`，console 无与目标插件相关的错误（web-all/git-graph 等生态噪音可忽略）；
+2. **插件面板**：设置/全局面板 → 插件 →「已安装」分组中目标插件 switch 显示「已启用」；
+3. **真实调用**：新会话发自然任务（如需专测语法合规则加「用 nushell 工具」前缀），发送后等响应，展开「N 次工具调用」核查 command；
+4. **轨迹核查（比 UI 可靠）**：从 `~/.dsh/sessions/--<cwd-dir>--/session-*/session.v3.jsonl.zstd` 流式解压（Node `zstandard` 多帧流式读，`decompress()` 只出首帧），提取 `tool/call` 的 `arguments.command` 逐项核查；
+5. **纯净 profile 对比法**（排除 hindsight 记忆污染）：记忆会把过往成功经验注入新会话——验证「默认行为」必须用无记忆环境。建独立 profile（`pnpm dsh --profile <name> --from-default-profile web` 引导 + add 被测包），跑零工具暗示的任务，从该 profile 轨迹核实工具选择；
+6. **提示词契约**：description/section 等引导文案是行为定义，测试里加「存在性断言」（如 `toContain('Do NOT shell out')`）防回归删除。
 
 ## 6. 门禁链（提交前必过）
 

@@ -61,11 +61,10 @@ pnpm lint           # ESLint(flat config,TS)
 pnpm format         # Prettier 写入(format:check 仅校验)
 pnpm typecheck      # 递归各包 tsc --noEmit
 pnpm test           # Vitest,全仓 src/**/*.test.ts
-pnpm test:e2e       # 真实 dsh Web UI 加载级验证(默认验证 dsh-guided-goal)
 ```
 
 - **纯 TypeScript**:插件无构建步骤,`package.json` 的 `main` 直接指向 `src/index.ts`,由宿主 dsh loader 加载;
-- **E2E**:运行器以隔离 `DSH_HOME` + 独立 profile 启动真实 dsh 实例,断言插件加载日志、Web 端口可达与认证链健康;可用 `E2E_PORT` / `E2E_TIMEOUT_MS` / `E2E_KEEP_MS` 调整行为(见 `scripts/test-e2e.ts`);
+- **E2E**:运行器以隔离 `DSH_HOME` + 独立 profile 启动真实 dsh 实例,断言插件加载日志、Web 端口可达与认证链健康;可用 `E2E_PORT` / `E2E_TIMEOUT_MS` / `E2E_KEEP_MS` 调整行为(运行器见 `.agents/skills/dsh-plugin-dev/scripts/test-e2e.ts`,经 `npx tsx` 执行);
 - **新增插件**:仿照 `packages/dsh-guided-goal/package.json` 建 `packages/<name>/` 即可,`pnpm-workspace.yaml` 自动收录;
 - **提交规范**:中文 Conventional Commits;开发走 `feat/*`、`fix/*` 分支合入 `dev`,验证后合入 `main`。
 
