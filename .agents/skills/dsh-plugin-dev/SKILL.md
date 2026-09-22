@@ -108,9 +108,18 @@ npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts -- packages/my-plugin/
 npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts -- .agents/tmp/my-plugin/src/index.ts  # 临时插件（.agents/tmp）
 ```
 
-- 机制：以隔离 `DSH_HOME=.agents/e2e-dsh-home` + 独立 profile（缺失时自动从官方 web 模板引导）启动真实 dsh Web UI，断言后自动清理进程。脚本只做**实例编排**（启动+装插件+三断言+保活）；真实效果验证由 AI 经浏览器工具接管（见下）。
+- 机制：以隔离 `DSH_HOME=.agents/tmp`（profile 落在 `.agents/tmp/profiles/<name>`，不污染用户目录）+ 独立 profile（缺失时自动从官方 web 模板引导）启动真实 dsh Web UI，断言后自动清理进程。脚本只做**实例编排**（启动+装插件+三断言+保活）；真实效果验证由 AI 经浏览器工具接管（见下）。
 - **加载日志契约**：插件 `apply` 时必须打印 `[name] ` 前缀格式的日志行（如 `[my-plugin] plugin loaded`）。e2e 按 `\[name\]` 结构化正则匹配——路径/堆栈中出现裸包名**不算**加载成功。类式插件（`extends Service`，如 shell executor）为惰性实例化，装载日志须打在**模块顶层**。
 - 首次运行会引导 profile（约 30-60s）；默认端口 3865（`E2E_PORT` 可覆盖）；与 `~/.dsh` 零接触。
+
+### 两级验证分工（凭证边界）
+
+| 级别 | 环境 | 模型凭证 | 用途 |
+| --- | --- | --- | --- |
+| 装载级 | 本脚本：`DSH_HOME=.agents/tmp`（项目内空 home，gitignored） | **无**（不发起模型调用，无需配置） | 插件装载、端口、UI 健康断言 |
+| 真实调用级 | 全局 `~/.dsh` + `pnpm dsh --profile <name>` | 共享 `~/.dsh/settings.yaml`（凭证不出用户目录） | 模型实际调用工具、行为验证 |
+
+真实调用级注意：profile 只隔离**插件列表**，模型配置全局共享；**验证完必须清理**——`pnpm dsh plugin --profile <name> remove <包名>`，避免被测插件残留进后续会话。
 
 ### 真实测试操作（chrome devtool MCP 接管，核心方法论）
 

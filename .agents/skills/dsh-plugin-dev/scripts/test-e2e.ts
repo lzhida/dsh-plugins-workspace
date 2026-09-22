@@ -33,7 +33,7 @@ const WORKSPACE_ROOT = path.resolve(
   '..',
 );
 const PORT = process.env.E2E_PORT ?? '3865';
-const DSH_HOME = path.join(WORKSPACE_ROOT, '.agents', 'e2e-dsh-home');
+const DSH_HOME = path.join(WORKSPACE_ROOT, '.agents', 'tmp');
 const DSH_PROFILE = process.env.E2E_DSH_PROFILE ?? 'e2e';
 const WEB_URL = `http://127.0.0.1:${PORT}`;
 const TIMEOUT_MS = Number(process.env.E2E_TIMEOUT_MS ?? 180_000);
