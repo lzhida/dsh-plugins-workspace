@@ -222,6 +222,12 @@ describe('dsh-tool-nushell 契约', () => {
     expect(state.sections[0]!.name).toBe('tool:nushell');
     expect(state.sections[0]!.order).toBe(1015);
     expect(state.sections[0]!.text).toContain('[exit code: N]');
+    // 提示词契约:nu 原生语法引导必须存在——防回归删除导致模型回落 cmd/bash 习惯。
+    expect(state.sections[0]!.text).toContain('Do NOT shell out to `^cmd`');
+    expect(state.sections[0]!.text).toContain("single quotes ('C:");
+    expect(state.sections[0]!.text).toContain('$env.NAME');
+    expect(state.tool.description).toContain('Do NOT shell out to `^cmd`');
+    expect(state.tool.description).toContain('$env.NAME');
   });
 
   it('工具经 effect 登记:卸载时注销工具', () => {

@@ -264,10 +264,19 @@ export function apply(ctx: Context, config: Config = {}): void {
       name: 'tool:nushell',
       order: NUSHELL_SECTION_ORDER,
       text:
-        'The `nushell` tool runs a command with the Nushell (nu) shell (`nu --no-config-file -c`). ' +
+        'The `nushell` tool runs Nushell (nu) source via `nu --no-config-file -c`. ' +
+        'Write nu-native code: builtins and pipelines (`ls`, `glob`, `where`, `sort-by`, `get`, `select`, ' +
+        '`each`, `open`, `save`, `lines`, `split row`, `uniq`, `length`). ' +
+        'Do NOT shell out to `^cmd`, `^powershell`, or `^bash` for tasks nu covers — ' +
+        'external calls lose structured pipelines and usually fail on quoting. ' +
+        'Translations: cmd/bash `dir` → `ls`, `copy` → `cp`, `move` → `mv`, `del` → `rm`, ' +
+        "`type`/`cat` → `open`, `findstr` → `where`/`find`, `echo x > f` → `'x' | save f`. " +
+        "Windows paths: single quotes ('C:\\Users\\AI') or forward slashes (C:/Users/AI); " +
+        'double-quoted strings process backslash escapes, so `\\U`, `\\A` etc. are parse errors. ' +
+        'Environment variables read as `$env.NAME` (not `$env:NAME`). ' +
         'Non-zero exits are reported as `[exit code: N]` markers; investigate failures before moving on. ' +
         'A killed process is reported as `[killed by signal: X]` and a timeout as `[timed out after Nms]`. ' +
-        'Each call runs in a fresh process: no state persists between calls.',
+        'Each call runs in a fresh process: no state persists between calls — pass `workdir` instead of `cd`.',
     });
 
     const nushellTool = defineTool({
@@ -278,12 +287,22 @@ export function apply(ctx: Context, config: Config = {}): void {
         'pass `workdir` instead of using `cd`. Non-zero exits are reported as `[exit code: N]`. ' +
         'Current harness environment facts are exposed through managed `DSH_*` environment variables. ' +
         'Long output is truncated; the full output is saved to a file whose path is reported. ' +
+        'Write nu-native code — builtins and pipelines (`ls`, `glob`, `where`, `sort-by`, `open`, `save`, `get`, `length`). ' +
+        'Do NOT shell out to `^cmd`/`^powershell`/`^bash` for tasks nu builtins cover, ' +
+        'and do not use cmd/bash syntax (`dir`, `copy`, `move`, `del`, `type`, `findstr`, `echo x > f`). ' +
+        "Windows paths: single quotes ('C:\\Users\\AI') or forward slashes (C:/Users/AI); " +
+        'double-quoted strings process backslash escapes, so `\\U` is a parse error. ' +
+        'Read env vars as `$env.NAME`. ' +
         'Use it for nushell-native pipelines and structured data handling; the built-in bash tool stays available.',
       parameters: {
         command: {
           type: 'string',
           required: true,
-          description: 'The Nushell command to execute.',
+          description:
+            'Nu-native source: builtins and pipelines only; never shell out (`^cmd`, `^powershell`, `^bash`). ' +
+            "No cmd/bash syntax (`dir`, `copy`, `type`, `echo x > f` → use `ls`, `cp`, `open`, `'x' | save f`). " +
+            'Windows paths in single quotes or with forward slashes; `\\U` etc. in double quotes are parse errors. ' +
+            'Env vars: `$env.NAME`.',
         },
         description: {
           type: 'string',
