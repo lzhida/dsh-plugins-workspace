@@ -7,7 +7,17 @@ import type {
   ShellProcess,
   ShellProcessRead,
   ShellRunResult,
+  ShellSandboxInfo,
 } from '@deepseek-ai/dsh-shell';
+import {
+  approveEscalation,
+  escalationHintMarker,
+  ESCALATION_TARGETS,
+  sandboxDenialMarker,
+  validateEscalationArgs,
+} from '@deepseek-ai/dsh-sandbox';
+import type { SandboxExecutionPolicy } from '@deepseek-ai/dsh-sandbox';
+import type { SandboxEnforcement, SandboxMode } from '@deepseek-ai/dsh-sandbox';
 import {
   defineTool,
   TOOL_ABORTED,
@@ -25,10 +35,12 @@ declare module '@deepseek-ai/dsh-jobs' {
 
 /**
  * tool-nushell:为 DeepSeek Harness 注册独立的 `nushell` 工具,执行经
- * `ctx.shell` 能力接缝——nushell-local executor 负责进程管理与预算,本
- * 插件只负责模型契约(参数校验、canonical 输出、marker 渲染、后台 job、
- * 系统提示 section、UI 呈现)。能力面与官方 tool-pwsh 对齐;沙箱
- * escalation 为 PowerShell 专属通道,不提供。
+ * `ctx.shell` 能力接缝——nushell-local / nushell-sandbox executor 负责
+ * 进程管理与(沙箱形态的)受限包装,本插件只负责模型契约(参数校验、
+ * canonical 输出、marker 渲染、后台 job、系统提示 section、UI 呈现)。
+ * 能力面与官方 tool-pwsh 对齐;沙箱升权字段只在挂载 confining executor
+ * (nushell-sandbox)时公布,词汇与审批次序复用共享的 dsh-sandbox
+ * escalation 通道。
  */
 
 /** `nushell` 工具的结构化输出格式:非 text 时命令最终值经 nu 序列化返回。 */
@@ -43,6 +55,10 @@ export interface NushellArgs {
   run_in_background?: boolean;
   outputFormat?: NushellOutputFormat;
   stdin?: string;
+  /** 升权目标模式;只在挂载 confining executor 的组合里公布。 */
+  sandbox_permissions?: string;
+  /** 升权理由;与 sandbox_permissions 配对必填。 */
+  justification?: string;
 }
 
 /** 单流输出的 canonical 形态:模型可见文本 + 截断标记 + 完整输出落盘路径。 */
@@ -52,7 +68,7 @@ export interface NushellStreamOutput {
   spillPath?: string;
 }
 
-/** 前台运行的 canonical 输出(字段集对齐官方 tool-pwsh foreground 分支,无 sandbox)。 */
+/** 前台运行的 canonical 输出(字段集对齐官方 tool-bash/pwsh foreground 分支)。 */
 export interface NushellForegroundOutput {
   kind: 'foreground';
   exitCode: number | null;
@@ -62,6 +78,13 @@ export interface NushellForegroundOutput {
   timeoutMs: number;
   stdout: NushellStreamOutput;
   stderr: NushellStreamOutput;
+  /** 沙箱事实;非沙箱 executor 不携带。 */
+  sandbox?: {
+    mode: SandboxMode;
+    denied: boolean;
+    enforcement?: SandboxEnforcement;
+    runnerFailed?: boolean;
+  };
 }
 
 /** `nushell` 工具的 canonical 输出(oneOf:后台句柄 | 前台结果)。 */
@@ -185,6 +208,26 @@ function getJobs(ctx: Context): NushellJobRegistry | undefined {
     NushellJobRegistry | undefined;
 }
 
+/** 共享沙箱策略服务(窄化访问,避免对宿主类型布局的依赖)。 */
+interface NushellPolicyService {
+  resolve(request?: { session?: unknown }): SandboxExecutionPolicy;
+}
+
+function getPolicyService(ctx: Context): NushellPolicyService | undefined {
+  return (ctx as unknown as { get?(key: string): unknown }).get?.(
+    'sandboxPolicy',
+  ) as NushellPolicyService | undefined;
+}
+
+/** 用户审批通道(EscalationApprover 的最小结构形状)。 */
+type ApprovalChannel = Parameters<typeof approveEscalation>[1]['approver'];
+
+function getApproval(ctx: Context): ApprovalChannel | undefined {
+  return (ctx as unknown as { get?(key: string): unknown }).get?.(
+    'approval',
+  ) as ApprovalChannel | undefined;
+}
+
 /** 后台进程结算 → job outcome;信号终止记 killed,非零退出照报不判失败。 */
 export function nushellJobOutcome(
   proc: Pick<ShellProcess, 'status' | 'exitCode' | 'signal'>,
@@ -199,8 +242,15 @@ export function nushellJobOutcome(
   return { status: 'completed', detail: `exit code: ${proc.exitCode ?? 0}` };
 }
 
-/** 后台增量读 → `job_output` delta;有损读附 spill 路径提示(无沙箱注记)。 */
-export function renderNushellProcessRead(read: ShellProcessRead): string {
+/**
+ * 后台增量读 → `job_output` delta;有损读附 spill 路径提示,沙箱事实
+ * (runner 失败优先于策略拒绝)按官方 renderProcessRead 语义附注。
+ */
+export function renderNushellProcessRead(
+  read: ShellProcessRead,
+  sandbox?: ShellSandboxInfo,
+  escalationModes: readonly string[] = [],
+): string {
   const notices: string[] = [];
   if (read.lossy) {
     const paths = [read.stdoutSpillPath, read.stderrSpillPath].filter(
@@ -209,6 +259,16 @@ export function renderNushellProcessRead(read: ShellProcessRead): string {
     notices.push(
       `[some output was dropped from memory; full output: ${paths.length > 0 ? paths.join(', ') : '(unavailable)'}]`,
     );
+  }
+  if (sandbox?.runnerFailed) {
+    notices.push(
+      `[sandbox: the sandbox runner itself failed under ${sandbox.mode} mode — the command did not run; this is a sandbox problem, not a command failure]`,
+    );
+  } else if (sandbox?.denied) {
+    notices.push(sandboxDenialMarker(sandbox.mode));
+    if (escalationModes.length > 0) {
+      notices.push(escalationHintMarker('command'));
+    }
   }
   if (notices.length === 0) {
     return read.delta;
@@ -230,6 +290,20 @@ export function canonicalNushellResult(
     timeoutMs: result.timeoutMs,
     stdout: result.stdout,
     stderr: result.stderr,
+    ...(result.sandbox !== undefined
+      ? {
+          sandbox: {
+            mode: result.sandbox.mode,
+            denied: result.sandbox.denied,
+            ...(result.sandbox.enforcement !== undefined
+              ? { enforcement: result.sandbox.enforcement }
+              : {}),
+            ...(result.sandbox.runnerFailed !== undefined
+              ? { runnerFailed: result.sandbox.runnerFailed }
+              : {}),
+          },
+        }
+      : {}),
   };
 }
 
@@ -259,15 +333,30 @@ export function renderNushellBody(value: NushellForegroundOutput): string {
 }
 
 /**
- * canonical 输出 → 模型可见文本:主体 + timeout/signal/exit marker,
- * 干净退出(0、无信号)无 marker——对齐官方 renderPwshResult(无沙箱分支)。
+ * canonical 输出 → 模型可见文本:主体 + 沙箱拒绝/runner 失败、timeout/
+ * signal/exit marker,干净退出(0、无信号)无 marker——对齐官方
+ * renderResult(拒绝 marker 位于状态 marker 之前,升权 hint 只在
+ * 公布了升权字段的组合里追加)。
  */
-export function renderNushellResult(value: NushellToolOutput): string {
+export function renderNushellResult(
+  value: NushellToolOutput,
+  escalationModes: readonly string[] = [],
+): string {
   if (value.kind === 'background') {
     return `started background job ${value.jobId}`;
   }
   let body = renderNushellBody(value);
   const markers: string[] = [];
+  if (value.sandbox?.runnerFailed) {
+    markers.push(
+      `[sandbox: the sandbox runner itself failed under ${value.sandbox.mode} mode — the command did not run; this is a sandbox problem, not a command failure]`,
+    );
+  } else if (value.sandbox?.denied) {
+    markers.push(sandboxDenialMarker(value.sandbox.mode));
+    if (escalationModes.length > 0) {
+      markers.push(escalationHintMarker('command'));
+    }
+  }
   if (value.timedOut) {
     markers.push(`[timed out after ${value.timeoutMs}ms]`);
   }
@@ -293,6 +382,63 @@ export interface Config {
 export function apply(ctx: Context, config: Config = {}): void {
   console.log(`[${name}] plugin loaded`);
   const backgroundEnabled = config.enableRunInBackground ?? true;
+
+  // 沙箱组合探测(官方语义:只在挂载 confining executor 时公布升权字段;
+  // 组合分裂——confining executor 在而共享策略服务缺——load 即 fail loud)。
+  const defaultMode: string | undefined = ctx.shell.sandboxMode;
+  const escalationModes =
+    defaultMode === undefined ? [] : [...ESCALATION_TARGETS];
+  const sandboxPolicy =
+    defaultMode === undefined ? undefined : getPolicyService(ctx);
+  if (defaultMode !== undefined && sandboxPolicy === undefined) {
+    throw new Error(
+      'tool-nushell: the mounted nushell executor confines but ctx.sandboxPolicy is missing',
+    );
+  }
+  /** confining 组合下解析本次调用的完整 standing policy。 */
+  const resolveSandboxPolicy = (
+    exec: ToolRunContext,
+  ): SandboxExecutionPolicy | undefined =>
+    sandboxPolicy?.resolve(
+      exec.agent === undefined ? {} : { session: exec.agent.session },
+    );
+  /**
+   * 在任何执行发生前把升权请求走完共享的 fail-closed 审批序列
+   * (严格放宽、通道解析、结果映射),本工具只贡献组合守卫与审批材料。
+   */
+  const approveNushellEscalation = async (
+    mode: string,
+    justification: string,
+    exec: ToolRunContext,
+    standingPolicy: SandboxExecutionPolicy,
+  ): Promise<SandboxExecutionPolicy['mode']> => {
+    if (escalationModes.length === 0) {
+      throw new Error(
+        'sandbox_permissions is not available in this composition (no sandboxing executor to escalate)',
+      );
+    }
+    const approver = getApproval(ctx);
+    if (approver === undefined) {
+      throw new Error(
+        'sandbox_permissions is not available in this composition (no approval channel)',
+      );
+    }
+    return approveEscalation(
+      {
+        requestedMode: mode,
+        justification,
+        effectiveMode: standingPolicy.mode,
+        subject: 'command',
+      },
+      {
+        approver,
+        agent: exec.agent,
+        callId: exec.callId,
+        toolName: 'nushell',
+        signal: exec.signal,
+      },
+    );
+  };
 
   ctx.effect(() => {
     // 系统提示 section:解释退出码 marker 语义(位置紧邻官方 pwsh section)。
@@ -326,7 +472,13 @@ export function apply(ctx: Context, config: Config = {}): void {
         '`$?` is `$env.LAST_EXIT_CODE`, but prefer `do -i { ^cmd } | complete` for a struct {exit_code, stdout, stderr}. ' +
         '`mkdir` is recursive by default; `head -n`/`tail` are `first n`/`last`; text → table via `lines | split column`. ' +
         'For machine-readable results pass `outputFormat: "json"` (or pipe through `to json --raw`/`to nuon`) ' +
-        'instead of parsing rendered tables.',
+        'instead of parsing rendered tables. ' +
+        (escalationModes.length > 0
+          ? 'Commands run under a file sandbox; a blocked file operation is reported as ' +
+            '`[sandbox: file access denied under <mode> mode]` — a policy denial, not a bug in the command. ' +
+            'When a denial would clear with a wider mode, retry the exact same command once with `sandbox_permissions` ' +
+            '(the narrowest wider mode that suffices) plus a one-sentence `justification`; never escalate speculatively.'
+          : ''),
     });
 
     const nushellTool = defineTool({
@@ -345,7 +497,12 @@ export function apply(ctx: Context, config: Config = {}): void {
         'Read env vars as `$env.NAME`. ' +
         'For machine-readable output (lists, records, tables) set `outputFormat` to "json"/"nuon" ' +
         'instead of parsing rendered tables. ' +
-        'Use it for nushell-native pipelines and structured data handling; the built-in bash tool stays available.',
+        (escalationModes.length > 0
+          ? 'Commands may run under a file sandbox; a blocked file operation is reported as ' +
+            '`[sandbox: file access denied under <mode> mode]` — a policy denial, not a bug in the command; do not retry another way. ' +
+            'Attempting a command the sandbox may deny is safe and expected: run it and read the marker rather than assuming the denial.'
+          : '') +
+        ' Use it for nushell-native pipelines and structured data handling; the built-in bash tool stays available.',
       parameters: {
         command: {
           type: 'string',
@@ -390,6 +547,21 @@ export function apply(ctx: Context, config: Config = {}): void {
           description:
             "Optional text piped to the command's stdin (e.g. input for a filter or a script read via `str join` after `lines`).",
         },
+        ...(escalationModes.length > 0
+          ? {
+              sandbox_permissions: {
+                type: 'string',
+                enum: escalationModes,
+                description:
+                  'The wider sandbox mode this command needs. Only valid as a one-shot retry of a command the sandbox just denied; requires justification and user approval.',
+              },
+              justification: {
+                type: 'string',
+                description:
+                  'Required with sandbox_permissions: one sentence for the user explaining why this exact command needs the wider access.',
+              },
+            }
+          : {}),
       },
       // 声明即承诺:execute 把 exec.signal 转发给 executor,可在预算内静默。
       timeoutMs: MAX_TIMEOUT_MS,
@@ -442,6 +614,18 @@ export function apply(ctx: Context, config: Config = {}): void {
                     spillPath: { type: 'string' },
                   },
                 },
+                // confining 组合下 canonicalNushellResult 会输出沙箱事实,
+                // 声明必须覆盖实际输出(对齐官方 tool-bash 的 sandbox schema)。
+                sandbox: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    mode: { type: 'string', required: true },
+                    denied: { type: 'boolean', required: true },
+                    enforcement: { type: 'string' },
+                    runnerFailed: { type: 'boolean' },
+                  },
+                },
               },
             },
           ],
@@ -449,13 +633,46 @@ export function apply(ctx: Context, config: Config = {}): void {
         render: (_args, value) => [
           {
             type: 'text',
-            text: renderNushellResult(value as NushellToolOutput),
+            text: renderNushellResult(
+              value as NushellToolOutput,
+              escalationModes,
+            ),
           },
         ],
         presentationMeta: (_args, value) => value,
       },
       async execute(args, exec) {
         validateNushellArgs(args);
+        // 参数配对校验(schema 表达不了的关联):单字段出现即抛。
+        validateEscalationArgs(args.sandbox_permissions, args.justification);
+        const standingPolicy = resolveSandboxPolicy(exec);
+        let approvedMode: SandboxExecutionPolicy['mode'] | undefined;
+        if (
+          args.sandbox_permissions !== undefined &&
+          args.justification !== undefined
+        ) {
+          if (standingPolicy === undefined) {
+            throw new Error(
+              'sandbox_permissions is not available in this composition (no sandboxing executor to escalate)',
+            );
+          }
+          approvedMode = await approveNushellEscalation(
+            args.sandbox_permissions,
+            args.justification,
+            exec,
+            standingPolicy,
+          );
+        }
+        let policy: SandboxExecutionPolicy | undefined = standingPolicy;
+        if (approvedMode !== undefined && standingPolicy !== undefined) {
+          policy = {
+            mode: approvedMode,
+            workspaceRoot: standingPolicy.workspaceRoot,
+            ...(standingPolicy.sessionId !== undefined
+              ? { sessionId: standingPolicy.sessionId }
+              : {}),
+          };
+        }
         const workdir = resolveWorkdir(args.workdir, exec);
         const dshEnv = collectShellEnv(ctx, exec);
         const command = applyOutputFormat(args.command, args.outputFormat);
@@ -479,6 +696,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             ...(workdir !== undefined ? { workdir } : {}),
             ...(args.stdin !== undefined ? { stdin: args.stdin } : {}),
             dshEnv,
+            ...(policy !== undefined ? { sandboxPolicy: policy } : {}),
           };
           // 后台无超时(接缝契约):resolve 后不携带 timeoutMs。
           const proc = ctx.shell.start(ctx.shell.resolve(request));
@@ -491,7 +709,12 @@ export function apply(ctx: Context, config: Config = {}): void {
               run: () => ({
                 cancel: () => proc.kill(),
                 done: proc.done.then(() => nushellJobOutcome(proc)),
-                readOutput: () => renderNushellProcessRead(proc.readOutput()),
+                readOutput: () =>
+                  renderNushellProcessRead(
+                    proc.readOutput(),
+                    proc.sandbox,
+                    escalationModes,
+                  ),
               }),
             }),
           } as const;
@@ -504,6 +727,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             : {}),
           ...(args.stdin !== undefined ? { stdin: args.stdin } : {}),
           dshEnv,
+          ...(policy !== undefined ? { sandboxPolicy: policy } : {}),
         };
         const result = await ctx.shell.run(ctx.shell.resolve(request));
         if (result.aborted) {

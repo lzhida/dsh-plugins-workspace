@@ -1,8 +1,8 @@
-# dsh-nushell-local bundle 层:dsh plugin add 安装本包时自动激活的插件行。
+# dsh-nushell-sandbox bundle 层:dsh plugin add 安装本包时自动激活的插件行。
 #
 # ctx.shell 是单实现接缝(cordis 重复注册 fail loud):宿主 base 组合按平台
 # 挂 shell 沙箱执行器(win32=pwsh-sandbox,POSIX=bash-sandbox),本包作为
-# nushell 的本地 provider 必须独占该接缝——无条件停用官方 shell 家族
+# nushell 的 confining provider 必须独占该接缝——无条件停用官方 shell 家族
 # 行(last write wins;在本就禁用的平台上重复停用无害)。
 # tool-bash/tool-pwsh 同停:bash/pwsh 语义工具配 nu 执行器是无意义组合;
 # 模型保留 nushell 工具与 fs/jobs/skill 等其余能力。
@@ -20,5 +20,5 @@
   disabled: true
 
 - insert:
-    - id: nushell-local
-      name: '@lzhida/dsh-nushell-local'
+    - id: nushell-sandbox
+      name: '@lzhida/dsh-nushell-sandbox'

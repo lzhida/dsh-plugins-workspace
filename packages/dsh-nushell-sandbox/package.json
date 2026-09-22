@@ -1,6 +1,6 @@
 {
-  "name": "@lzhida/dsh-tool-nushell",
-  "description": "Nushell tool for DeepSeek Harness — model-facing shell tool backed by ctx.shell",
+  "name": "@lzhida/dsh-nushell-sandbox",
+  "description": "Sandboxed Nushell shell executor for DeepSeek Harness — confining ctx.shell provider backed by ctx.sandbox + ctx.subprocess",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -14,13 +14,11 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.2",
-    "@deepseek-ai/dsh-jobs": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-llm": "0.1.5-rc.2",
     "@deepseek-ai/dsh-sandbox": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-sandbox-policy": "0.1.5-rc.2",
     "@deepseek-ai/dsh-shell": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-shell-env": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-system-prompt": "0.1.5-rc.2",
-    "@deepseek-ai/dsh-tools": "0.1.5-rc.2"
+    "@deepseek-ai/dsh-subprocess": "0.1.5-rc.2",
+    "@deepseek-ai/dsh-timeout": "0.1.5-rc.2"
   },
   "dsh": {
     "bundle": {

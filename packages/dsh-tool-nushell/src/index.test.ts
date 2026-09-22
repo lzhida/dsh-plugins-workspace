@@ -1,6 +1,7 @@
 import path from 'node:path';
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import type { Context } from '@deepseek-ai/cordis';
+import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools';
 import type {
   ShellExecRequest,
   ShellExecSpec,
@@ -34,6 +35,10 @@ interface AppliedTool {
   name: string;
   description: string;
   timeoutMs?: number;
+  parameters?: Record<string, unknown>;
+  output?: {
+    schema?: unknown;
+  };
   isConcurrencySafe?(args: unknown): boolean;
   execute(
     args: Record<string, unknown>,
@@ -58,6 +63,8 @@ interface StubState {
   disposers: Array<ReturnType<typeof vi.fn>>;
   cleanups: Array<() => void>;
   tool: AppliedTool;
+  /** 注册工具的 parameters schema(直通 definition)。 */
+  schema: AppliedTool['parameters'];
   sections: Array<{ name: string; order: number; text: string }>;
   collectCalls: unknown[];
   shell: StubShell;
@@ -67,6 +74,12 @@ interface StubOptions {
   jobs?: StubJobs;
   dshEnv?: Record<string, string>;
   config?: Config;
+  /** ctx.shell.sandboxMode:confining executor 探测结果。 */
+  sandboxMode?: string;
+  /** ctx.get('sandboxPolicy'):共享策略服务假体。 */
+  sandboxPolicyResolve?: ReturnType<typeof vi.fn>;
+  /** ctx.get('approval'):审批通道假体。 */
+  approval?: unknown;
 }
 
 /** identity resolve:spec 即 request,断言直接针对构造的请求形状。 */
@@ -114,8 +127,20 @@ function stubCtx(options: StubOptions = {}): StubState {
         return options.dshEnv ?? {};
       }),
     },
-    get: vi.fn((key: string) => (key === 'jobs' ? options.jobs : undefined)),
-    shell,
+    get: vi.fn((key: string) =>
+      key === 'jobs'
+        ? options.jobs
+        : key === 'sandboxPolicy'
+          ? options.sandboxPolicyResolve !== undefined
+            ? { resolve: options.sandboxPolicyResolve }
+            : undefined
+          : key === 'approval'
+            ? options.approval
+            : undefined,
+    ),
+    shell: Object.assign(shell, {
+      sandboxMode: options.sandboxMode,
+    }),
   } as unknown as Context;
   apply(ctx, options.config);
   return {
@@ -123,6 +148,7 @@ function stubCtx(options: StubOptions = {}): StubState {
     disposers,
     cleanups,
     tool: registered[0]!,
+    schema: registered[0]!.parameters,
     sections,
     collectCalls,
     shell,
@@ -135,7 +161,11 @@ function fakeExec(agent?: unknown): {
 } {
   const controller = new AbortController();
   return {
-    exec: { signal: controller.signal, agent } as unknown as ToolRunContext,
+    exec: {
+      callId: 'call-1',
+      signal: controller.signal,
+      agent,
+    } as unknown as ToolRunContext,
     signal: controller.signal,
   };
 }
@@ -433,6 +463,282 @@ describe('前台执行', () => {
     const request = state.shell.resolve.mock.calls[0]![0] as ShellExecRequest;
     expect(request.workdir).toBeUndefined();
     expect(request.timeoutMs).toBeUndefined();
+  });
+});
+
+describe('沙箱组合与升权', () => {
+  it('非沙箱组合不公布升权字段,请求不带 sandboxPolicy', async () => {
+    const state = stubCtx();
+    // state.schema 即编译后 JSON Schema:{type:'object', properties, required}。
+    const plain = state.schema as unknown as {
+      properties: Record<string, unknown>;
+    };
+    expect(plain.properties.sandbox_permissions).toBeUndefined();
+    expect(plain.properties.justification).toBeUndefined();
+    state.shell.run.mockResolvedValue(foreground());
+    const { exec } = fakeExec();
+    await state.tool.execute({ command: 'ls', description: '列目录' }, exec);
+    const request = state.shell.resolve.mock.calls[0]![0] as ShellExecRequest;
+    expect(request.sandboxPolicy).toBeUndefined();
+  });
+
+  it('confining executor 缺共享策略服务时 apply 失败', () => {
+    expect(() => stubCtx({ sandboxMode: 'read-only' })).toThrow(
+      'ctx.sandboxPolicy is missing',
+    );
+  });
+
+  /** 注册工具 output.schema 的 foreground 分支(编译后 JSON Schema)。 */
+  function foregroundBranchOf(outputSchema: unknown) {
+    const schema = outputSchema as {
+      oneOf: Array<{
+        properties?: Record<string, { const?: string }>;
+      }>;
+    };
+    const branch = schema.oneOf.find(
+      (item) => item.properties?.kind?.const === 'foreground',
+    );
+    expect(branch).toBeDefined();
+    return branch!;
+  }
+
+  it('输出 schema 的 foreground 分支声明 sandbox 事实', () => {
+    // canonicalNushellResult 在 confining 组合下输出 sandbox 字段,
+    // additionalProperties:false 的声明必须覆盖之(否则校验失败)。
+    const state = stubCtx();
+    const foreground = foregroundBranchOf(state.registered[0]!.output!.schema);
+    // 编译器把字段级 required:true 折叠为对象级 required 数组。
+    expect(foreground.properties!.sandbox).toEqual({
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        mode: { type: 'string' },
+        denied: { type: 'boolean' },
+        enforcement: { type: 'string' },
+        runnerFailed: { type: 'boolean' },
+      },
+      required: ['mode', 'denied'],
+    });
+  });
+
+  it('confining 前台输出经官方校验器零违规(声明覆盖实际输出)', () => {
+    // 运行期 dsh 核心对每个成功返回值跑 validateJsonSchemaValue,违规即
+    // ToolOutputError——confining 组合输出恒带 sandbox,必须通过校验。
+    const state = stubCtx();
+    const foreground = foregroundBranchOf(state.registered[0]!.output!.schema);
+    const confining = canonicalNushellResult({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      aborted: false,
+      timeoutMs: 1_000,
+      stdout: { text: '42', truncated: false },
+      stderr: { text: '', truncated: false },
+      sandbox: { mode: 'read-only', denied: false, enforcement: 'partial' },
+    });
+    expect(
+      validateJsonSchemaValue(foreground as never, confining, 'value'),
+    ).toEqual([]);
+    // 防空转:声明外键必须被同一校验器抓到。
+    const violations = validateJsonSchemaValue(
+      foreground as never,
+      { ...confining, extra: 1 },
+      'value',
+    );
+    expect(violations.length).toBeGreaterThan(0);
+  });
+
+  it('沙箱组合公布升权字段并在 execute 解析 standing policy', async () => {
+    const resolvePolicy = vi.fn(() => ({
+      mode: 'read-only',
+      workspaceRoot: 'F:/work',
+    }));
+    const state = stubCtx({
+      sandboxMode: 'read-only',
+      sandboxPolicyResolve: resolvePolicy,
+    });
+    // schema 公布升权字段(编译后 JSON Schema;枚举为完整升权目标词汇)。
+    const properties = state.schema as unknown as {
+      properties: Record<string, { enum?: string[] }>;
+    };
+    expect(properties.properties.sandbox_permissions).toMatchObject({
+      enum: ['workspace-write', 'danger-full-access'],
+    });
+    expect(properties.properties.justification).toBeDefined();
+    const { exec } = fakeExec({ session: { id: 's1' } });
+    state.shell.run.mockResolvedValue(foreground());
+    await state.tool.execute({ command: 'ls', description: '列目录' }, exec);
+    expect(resolvePolicy).toHaveBeenCalledWith({
+      session: { id: 's1' },
+    });
+    const request = state.shell.resolve.mock.calls[0]![0] as ShellExecRequest;
+    expect(request.sandboxPolicy).toEqual({
+      mode: 'read-only',
+      workspaceRoot: 'F:/work',
+    });
+  });
+
+  it('升权请求经审批后以放宽模式执行', async () => {
+    const resolvePolicy = vi.fn(() => ({
+      mode: 'read-only',
+      workspaceRoot: 'F:/work',
+    }));
+    const requestApproval = vi.fn().mockResolvedValue('allowed-once');
+    const state = stubCtx({
+      sandboxMode: 'read-only',
+      sandboxPolicyResolve: resolvePolicy,
+      approval: { request: requestApproval },
+    });
+    const { exec, signal } = fakeExec({ session: { id: 's1' } });
+    state.shell.run.mockResolvedValue(foreground());
+    await state.tool.execute(
+      {
+        command: `'x' | save ../out.txt`,
+        description: '写工作区外',
+        sandbox_permissions: 'workspace-write',
+        justification: '需要把导出文件写到工作区外',
+      },
+      exec,
+    );
+    expect(requestApproval).toHaveBeenCalledTimes(1);
+    expect(requestApproval.mock.calls[0]![0]).toMatchObject({
+      toolName: 'nushell',
+      callId: exec.callId,
+      signal,
+    });
+    const request = state.shell.resolve.mock.calls[0]![0] as ShellExecRequest;
+    expect(request.sandboxPolicy).toEqual({
+      mode: 'workspace-write',
+      workspaceRoot: 'F:/work',
+    });
+  });
+
+  it('拒绝的升权中止执行(approveEscalation fail-closed)', async () => {
+    const resolvePolicy = vi.fn(() => ({
+      mode: 'read-only',
+      workspaceRoot: 'F:/work',
+    }));
+    const state = stubCtx({
+      sandboxMode: 'read-only',
+      sandboxPolicyResolve: resolvePolicy,
+      approval: { request: vi.fn().mockResolvedValue('rejected') },
+    });
+    const { exec } = fakeExec({ session: { id: 's1' } });
+    state.shell.run.mockResolvedValue(foreground());
+    await expect(
+      state.tool.execute(
+        {
+          command: 'ls',
+          description: '列目录',
+          sandbox_permissions: 'workspace-write',
+          justification: '想写外面',
+        },
+        exec,
+      ),
+    ).rejects.toThrow(/rejected escalating this command/);
+    expect(state.shell.run).not.toHaveBeenCalled();
+  });
+
+  it('升权理由缺失时参数配对校验抛错', async () => {
+    const state = stubCtx({
+      sandboxMode: 'read-only',
+      sandboxPolicyResolve: vi.fn(() => ({
+        mode: 'read-only',
+        workspaceRoot: 'F:/work',
+      })),
+    });
+    const { exec } = fakeExec();
+    await expect(
+      state.tool.execute(
+        {
+          command: 'ls',
+          description: '列目录',
+          sandbox_permissions: 'workspace-write',
+        },
+        exec,
+      ),
+    ).rejects.toThrow(/justification/i);
+  });
+
+  it('非沙箱组合收到未公布的升权参数时组合守卫抛错', async () => {
+    const state = stubCtx();
+    const { exec } = fakeExec();
+    await expect(
+      state.tool.execute(
+        {
+          command: 'ls',
+          description: '列目录',
+          sandbox_permissions: 'workspace-write',
+          justification: 'x',
+        },
+        exec,
+      ),
+    ).rejects.toThrow(/no sandboxing executor to escalate/);
+  });
+
+  it('拒绝与 runner 失败按官方语义渲染 marker', () => {
+    const denied = foreground({
+      sandbox: { mode: 'read-only', denied: true },
+    });
+    expect(renderNushellResult(denied)).toBe(
+      'hello\n[sandbox: file access denied under read-only mode]',
+    );
+    expect(
+      renderNushellResult(denied, ['workspace-write', 'danger-full-access']),
+    ).toBe(
+      'hello\n[sandbox: file access denied under read-only mode]\n' +
+        '[sandbox: escalation available — retry this exact command once with ' +
+        'sandbox_permissions (the narrowest wider mode that suffices) + justification; the approval prompt asks the user]',
+    );
+    const runnerFailed = foreground({
+      sandbox: {
+        mode: 'read-only',
+        denied: false,
+        runnerFailed: true,
+      },
+    });
+    expect(renderNushellResult(runnerFailed, ['workspace-write'])).toContain(
+      '[sandbox: the sandbox runner itself failed under read-only mode',
+    );
+    expect(
+      renderNushellProcessRead(
+        { delta: 'x', lossy: false },
+        { mode: 'read-only', denied: true },
+        ['workspace-write'],
+      ),
+    ).toBe(
+      'x\n[sandbox: file access denied under read-only mode]\n' +
+        '[sandbox: escalation available — retry this exact command once with ' +
+        'sandbox_permissions (the narrowest wider mode that suffices) + justification; the approval prompt asks the user]',
+    );
+  });
+
+  it('canonical 输出透传沙箱事实,非沙箱结果不带字段', () => {
+    expect(
+      canonicalNushellResult(foreground() as unknown as ShellRunResult).sandbox,
+    ).toBeUndefined();
+    const result = canonicalNushellResult({
+      kind: 'foreground',
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      aborted: false,
+      timeoutMs: 1_000,
+      stdout: { text: '', truncated: false },
+      stderr: { text: 'denied', truncated: false },
+      sandbox: {
+        mode: 'read-only',
+        denied: true,
+        enforcement: 'partial',
+        runnerFailed: false,
+      },
+    } as unknown as ShellRunResult);
+    expect(result.sandbox).toEqual({
+      mode: 'read-only',
+      denied: true,
+      enforcement: 'partial',
+      runnerFailed: false,
+    });
   });
 });
 
