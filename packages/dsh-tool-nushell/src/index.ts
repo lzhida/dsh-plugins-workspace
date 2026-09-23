@@ -502,7 +502,7 @@ export function apply(ctx: Context, config: Config = {}): void {
             '`[sandbox: file access denied under <mode> mode]` — a policy denial, not a bug in the command; do not retry another way. ' +
             'Attempting a command the sandbox may deny is safe and expected: run it and read the marker rather than assuming the denial.'
           : '') +
-        ' Use it for nushell-native pipelines and structured data handling; the built-in bash tool stays available.',
+        ' Use it for nushell-native pipelines and structured data handling.',
       parameters: {
         command: {
           type: 'string',

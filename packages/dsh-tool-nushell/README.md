@@ -6,13 +6,13 @@
 
 - **干净求值环境**:`--no-config-file` 禁用用户 nushell 配置,每次全新进程,状态不跨调用保留;
 - **前台/后台执行**:`run_in_background` 立即返回 job id,经通用 `ctx.jobs` 收集(`job_output`/`job_kill`);`Config.enableRunInBackground`(默认开启)可整体关闭;
-- **结构化输出**:canonical oneOf(后台句柄 | 前台 `{exitCode, signal, timedOut, aborted, timeoutMs, stdout, stderr}`),单流超 20 000 字符截断,完整输出落盘并在结果中报告 `spillPath`;
+- **结构化输出**:canonical oneOf(后台句柄 | 前台 `{exitCode, signal, timedOut, aborted, timeoutMs, stdout, stderr}`),单流超默认 64 000 字节截断(`maxOutputBytes`,stdout/stderr 各自计),完整输出落盘(上限 64 MiB)并在结果中报告 `spillPath`;
 - **marker 渲染**:非零退出 `[exit code: N]`、信号终止 `[killed by signal: X]`、超时 `[timed out after Nms]`,干净退出无 marker,空输出 `(no output)`——非零退出是报告而非失败,由模型决定后续动作;
 - **取消语义**:调用方取消以 `HarnessError(TOOL_ABORTED)` 中止,AbortSignal 透传给子进程;
 - **环境注入**:经 `ctx.shellEnv` 注入托管的 `DSH_*` 变量到子进程;
 - **系统提示**:注册 `tool:nushell` section(紧邻官方 pwsh section),说明退出码 marker 语义;
 - **UI 呈现**:前台调用渲染终端卡片(命令 + 说明 + 工作目录 + 退出状态),后台调用降级 generic 卡片;
-- **超时控制**:`timeoutMs` 参数(默认 30s,上限 600s),到期终止进程;后台任务不设超时;
+- **超时控制**:`timeoutMs` 参数(默认 30s,上限 600s),到期终止进程;后台任务不设超时。默认 30s 较官方 `dsh-pwsh-local` 的 120s 更保守,长任务请显式传大 `timeoutMs`;
 - **沙箱感知**:confining 组合下,被策略拒绝的文件操作以 `[sandbox: file access denied under <mode> mode]` marker 呈现——是策略拒绝而非命令 bug;
 - **并行安全**:进程级隔离、无共享可变状态,声明 `isConcurrencySafe` 可与其他工具调用并行调度;
 - **生命周期清理**:插件卸载时经 `ctx.effect` 统一注销工具(后台进程由 `ctx.subprocess` 组合销毁统一终止);
