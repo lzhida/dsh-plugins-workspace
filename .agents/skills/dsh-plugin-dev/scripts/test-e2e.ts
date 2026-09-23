@@ -17,12 +17,22 @@
  * 环境变量：
  *   E2E_TIMEOUT_MS    启动与断言总超时（默认 180000）
  *   E2E_PORT          Web UI 端口（默认 3865）
+ *   E2E_KEEP_MS       断言通过后保活窗口 ms（默认 0=立即清理）；浏览器级验证用
+ *   E2E_RELEASE_FILE  设置时保活改为「文件出现即收尾」（仍受 E2E_KEEP_MS 上限），
+ *                     供外部驱动（如浏览器对话测试）完成后通知运行器收尾
  *
  * 插件契约：插件加载时应打印 `[name] ` 前缀格式的日志行（如 `[dsh-guided-goal] plugin loaded`），
  * e2e 以「[插件目录名]」结构化匹配，路径/堆栈中出现裸包名不算加载成功。
  */
-import { spawn, spawnSync } from 'node:child_process';
-import { access, readFile } from 'node:fs/promises';
+import {
+  spawn,
+  spawnSync,
+  type ChildProcess,
+  type SpawnOptions,
+  type SpawnSyncOptions,
+  type SpawnSyncReturns,
+} from 'node:child_process';
+import { access, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import os from 'node:os';
 import path from 'node:path';
@@ -40,6 +50,8 @@ const DSH_PROFILE = process.env.E2E_DSH_PROFILE ?? 'e2e';
 const WEB_URL = `http://127.0.0.1:${PORT}`;
 const TIMEOUT_MS = Number(process.env.E2E_TIMEOUT_MS ?? 180_000);
 const KEEP_MS = Number(process.env.E2E_KEEP_MS ?? 0);
+/** 设置时保活改为「文件出现即收尾」(仍受 KEEP_MS 上限)——供浏览器对话测试等外部驱动完成后通知运行器。 */
+const RELEASE_FILE = process.env.E2E_RELEASE_FILE ?? '';
 const POLL_MS = 500;
 
 async function exists(p: string): Promise<boolean> {
@@ -53,6 +65,24 @@ async function exists(p: string): Promise<boolean> {
 
 function escapeRegExp(s: string): string {
   return s.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+const IS_WIN = process.platform === 'win32';
+
+/** 跨平台拉起 pnpm：Windows 经 cmd.exe /c 转发，POSIX 直接按 PATH 解析执行。 */
+function spawnPnpm(args: string[], opts: SpawnOptions = {}): ChildProcess {
+  return IS_WIN
+    ? spawn('cmd.exe', ['/c', 'pnpm', ...args], opts)
+    : spawn('pnpm', args, opts);
+}
+
+function spawnPnpmSync(
+  args: string[],
+  opts: SpawnSyncOptions = {},
+): SpawnSyncReturns<Buffer> {
+  return IS_WIN
+    ? spawnSync('cmd.exe', ['/c', 'pnpm', ...args], opts)
+    : spawnSync('pnpm', args, opts);
 }
 
 function killTree(pid: number | undefined): void {
@@ -116,17 +146,8 @@ if (!(await exists(profileDir))) {
   console.log(
     `[e2e] profile "${DSH_PROFILE}" 不存在，正在从官方 web 模板引导（首次约 30-60s）...`,
   );
-  const boot = spawnSync(
-    'cmd.exe',
-    [
-      '/c',
-      'pnpm',
-      'dsh',
-      '--profile',
-      DSH_PROFILE,
-      '--from-default-profile',
-      'web',
-    ],
+  const boot = spawnPnpmSync(
+    ['dsh', '--profile', DSH_PROFILE, '--from-default-profile', 'web'],
     {
       cwd: WORKSPACE_ROOT,
       env: { ...process.env, DSH_HOME },
@@ -149,6 +170,28 @@ if (!(await exists(profileDir))) {
   console.log('[e2e] ✓ profile 引导完成');
 }
 
+// e2e 组合补丁:被测 dsh-nushell-local 按设计非禁闭(其 bundle patch 停用官方
+// 沙箱执行器家族并独占 ctx.shell),与 dsh-base 的 permission presets(构造期
+// 要求禁闭执行器)互斥——不禁用则 web 启动即崩(plugin tree failed to load)。
+// e2e 不覆盖 permission 升权流。幂等:patch 已含该行则跳过。
+const patchFile = path.join(profileDir, 'cordis.patch.yml');
+const currentPatch = (await exists(patchFile)) ? await readFile(patchFile, 'utf8') : '';
+if (!/^-\s+id:\s+permission\s*$/m.test(currentPatch)) {
+  const E2E_PATCH_ROWS = [
+    '# e2e patch 层:被测 local 执行器按设计非禁闭(独占 ctx.shell),与 dsh-base',
+    '# 的 permission presets(要求禁闭执行器)互斥,禁用之;e2e 不测升权流。',
+    '- id: permission',
+    '  disabled: true',
+    '',
+  ].join('\n');
+  const isEmptyList = currentPatch.trim() === '' || currentPatch.trim() === '[]';
+  await writeFile(
+    patchFile,
+    isEmptyList ? E2E_PATCH_ROWS : `${currentPatch.replace(/\s*$/, '\n')}\n${E2E_PATCH_ROWS}`,
+  );
+  console.log('[e2e] ✓ 已在 profile patch 层禁用 permission presets(local 执行器组合要求)');
+}
+
 // 安装插件:官方 dsh plugin 命令装入 profile——包内 dsh.bundle.patch 声明
 // 使其自动进入 profile 层栈(reconcilePlugins),无需 overlay 注入
 for (const pkg of pluginPkgs) {
@@ -156,9 +199,8 @@ for (const pkg of pluginPkgs) {
   console.log(
     `[e2e] 安装插件: dsh plugin --profile ${DSH_PROFILE} add ${spec}`,
   );
-  const add = spawnSync(
-    'cmd.exe',
-    ['/c', 'pnpm', 'dsh', 'plugin', '--profile', DSH_PROFILE, 'add', spec],
+  const add = spawnPnpmSync(
+    ['dsh', 'plugin', '--profile', DSH_PROFILE, 'add', spec],
     {
       cwd: WORKSPACE_ROOT,
       env: { ...process.env, DSH_HOME },
@@ -174,9 +216,8 @@ for (const pkg of pluginPkgs) {
   console.log(`[e2e] ✓ 已装入 profile "${DSH_PROFILE}": ${pkg.name}`);
 }
 
-const web = spawn(
-  'cmd.exe',
-  ['/c', 'pnpm', 'dsh', '--profile', DSH_PROFILE, '--no-open', '--port', PORT],
+const web = spawnPnpm(
+  ['dsh', '--profile', DSH_PROFILE, '--no-open', '--port', PORT],
   {
     cwd: WORKSPACE_ROOT,
     env: { ...process.env, BROWSER: 'none', DSH_HOME },
@@ -273,7 +314,19 @@ while (Date.now() < deadline) {
       console.log(
         `[e2e] UI 验证窗口 ${KEEP_MS}ms：用浏览器工具访问 ${tokenedUrl ?? WEB_URL + '（token 未捕获，见上方说明）'}`,
       );
-      await new Promise<void>((resolve) => setTimeout(resolve, KEEP_MS));
+      if (RELEASE_FILE) {
+        // 外部驱动模式:轮询等待释放文件出现(受 KEEP_MS 硬上限保护),出现即收尾
+        console.log(
+          `[e2e] 释放文件模式:等待 ${RELEASE_FILE} 出现(上限 ${KEEP_MS}ms)`,
+        );
+        const hardDeadline = Date.now() + KEEP_MS;
+        while (!(await exists(RELEASE_FILE)) && Date.now() < hardDeadline) {
+          await new Promise<void>((r) => setTimeout(r, POLL_MS));
+        }
+        console.log('[e2e] ✓ 保活结束(释放文件出现或达上限),开始收尾');
+      } else {
+        await new Promise<void>((resolve) => setTimeout(resolve, KEEP_MS));
+      }
     }
     killTree(web.pid);
     // 等待子进程树退出，避免残留
@@ -286,18 +339,8 @@ while (Date.now() < deadline) {
     });
     // 卸载被测插件,恢复 profile 干净态(下次运行 add 幂等重装)
     for (const pkg of pluginPkgs) {
-      spawnSync(
-        'cmd.exe',
-        [
-          '/c',
-          'pnpm',
-          'dsh',
-          'plugin',
-          '--profile',
-          DSH_PROFILE,
-          'remove',
-          pkg.name,
-        ],
+      spawnPnpmSync(
+        ['dsh', 'plugin', '--profile', DSH_PROFILE, 'remove', pkg.name],
         {
           cwd: WORKSPACE_ROOT,
           env: { ...process.env, DSH_HOME },
