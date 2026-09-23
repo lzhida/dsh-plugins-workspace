@@ -52,6 +52,25 @@ pnpm dsh plugin --profile default add link:packages/dsh-tool-nushell
 
 安装后在 dsh Web UI 的设置 → 插件中确认「dsh-tool-nushell」已启用,即可由模型在会话中按需调用 `nushell` 工具。
 
+### Agent 预设(可选,推荐)
+
+官方 `standard` 预设强制挂载 `tool-pwsh`/`tool-bash` 行,其 `shell` 依赖在 nushell 执行器族接管 `ctx.shell` 后无法满足,会话创建会报 `preset "standard" failed to mount: tool-pwsh waiting for shell`。本包自带 **Nushell 模式**预设(`presets/nushell/`,官方 standard 的副本、去掉两行官方 shell 工具行),把它复制到 dsh 主目录的用户预设根即可被发现(实时生效,无需重启):
+
+```sh
+# PowerShell
+New-Item -ItemType Directory -Force "$HOME\.dsh\.agent-presets\nushell" | Out-Null
+Copy-Item packages\dsh-tool-nushell\presets\nushell\* "$HOME\.dsh\.agent-presets\nushell\"
+
+# POSIX
+mkdir -p ~/.dsh/.agent-presets/nushell && cp packages/dsh-tool-nushell/presets/nushell/* ~/.dsh/.agent-presets/nushell/
+```
+
+之后创建工作区/会话时选择「Nushell 模式」;也可在设置里把默认预设切为它。注意:
+
+- `nushell` 工具本身由本插件在 profile 层注册,预设只是去掉会挂载失败的官方 shell 工具行;
+- 上游 `standard` 预设更新时需手动重做副本(diff 官方文件,把 shell 段以外的变更搬过来,`presets/nushell/agent.cordis.yml` 文件头有同步说明);
+- `dshHome` 非 `~/.dsh` 的部署,把命令中的目录换成实际 `dshHome` 下的 `.agent-presets/nushell`。
+
 ## 开发
 
 ```sh

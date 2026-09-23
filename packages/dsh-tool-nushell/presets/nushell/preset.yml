@@ -1,0 +1,3 @@
+name: Nushell 模式
+description: 功能完整的编码 Agent，Shell 由 Nushell 执行器承担——支持文件编辑、结构化数据管道、文件与网页检索、Skills、计划、目标、子代理和工作流；不含 bash/pwsh 工具。
+order: 2
