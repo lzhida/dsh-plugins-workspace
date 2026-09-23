@@ -2,6 +2,8 @@
 
 本地 Nushell shell executor:向 DeepSeek Harness 注入 `ctx.shell` 能力接缝,使 nushell 以一等 shell 身份进入官方 shell 家族(角色对齐官方 `@deepseek-ai/dsh-pwsh-local` 之于 PowerShell)。
 
+> **双模架构定位(0.2.0 起)**:实现内核已上移至 `@lzhida/dsh-tool-nushell`(执行器类由 tool 直跑模式与接缝挂载共用一份),本包是组合行薄壳。仅当需要**完全替换**模式(nu 独占 `ctx.shell`,停用官方 bash/pwsh 工具)时安装本包;只想给官方组合加 nushell 工具的话,单装 `@lzhida/dsh-tool-nushell` 即可。前置:须与 `@lzhida/dsh-tool-nushell` 同时安装(peer 依赖)。安装本包会自动停用官方 shell 家族(见 `cordis.patch.yml`),并要求 permission 预设停用或适配——详见 tool 包 README 的组合矩阵。
+
 ## 架构
 
 - **委托执行**:不直接 spawn 进程——构造完整 `SubprocessSpawnSpec`(argv/cwd/stdio 预算/env 合并/graceMs/signal)后交给 `ctx.subprocess`,有界输出、spill 文件与受管终止都是 subprocess 服务的机制;

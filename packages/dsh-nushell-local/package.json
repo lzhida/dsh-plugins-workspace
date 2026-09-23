@@ -1,7 +1,7 @@
 {
   "name": "@lzhida/dsh-nushell-local",
   "description": "Local Nushell shell executor for DeepSeek Harness — injects ctx.shell backed by ctx.subprocess",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "main": "src/index.ts",
@@ -17,7 +17,11 @@
     "@deepseek-ai/dsh-shell": "0.1.5-rc.2",
     "@deepseek-ai/dsh-subprocess": "0.1.5-rc.2",
     "@deepseek-ai/dsh-timeout": "0.1.5-rc.2",
-    "@deepseek-ai/schemastery": "^3.18.2"
+    "@deepseek-ai/schemastery": "^3.18.2",
+    "@lzhida/dsh-tool-nushell": "workspace:*"
+  },
+  "peerDependencies": {
+    "@lzhida/dsh-tool-nushell": "*"
   },
   "dsh": {
     "bundle": {

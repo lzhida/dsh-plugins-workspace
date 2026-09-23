@@ -4,6 +4,7 @@ import type { JobHooks, JobOutcome } from '@deepseek-ai/dsh-jobs';
 import { HarnessError } from '@deepseek-ai/dsh-llm';
 import type {
   ShellExecRequest,
+  ShellExecutor,
   ShellProcess,
   ShellProcessRead,
   ShellRunResult,
@@ -23,9 +24,15 @@ import {
   TOOL_ABORTED,
   type ToolRunContext,
 } from '@deepseek-ai/dsh-tools';
+import { NUSHELL_RUNTIME } from './executor-runtime.ts';
+import {
+  NushellLocalExecutor,
+  type NushellLocalConfig,
+} from './executor-local.ts';
+import { NushellSandboxExecutor } from './executor-sandbox.ts';
 
 export const name = 'dsh-tool-nushell';
-export const inject = ['tools', 'systemPrompt', 'shellEnv', 'shell'];
+export const inject = ['tools', 'systemPrompt', 'shellEnv', 'subprocess'];
 
 declare module '@deepseek-ai/dsh-jobs' {
   interface JobKindMap {
@@ -34,13 +41,17 @@ declare module '@deepseek-ai/dsh-jobs' {
 }
 
 /**
- * tool-nushell:为 DeepSeek Harness 注册独立的 `nushell` 工具,执行经
- * `ctx.shell` 能力接缝——nushell-local / nushell-sandbox executor 负责
- * 进程管理与(沙箱形态的)受限包装,本插件只负责模型契约(参数校验、
- * canonical 输出、marker 渲染、后台 job、系统提示 section、UI 呈现)。
- * 能力面与官方 tool-pwsh 对齐;沙箱升权字段只在挂载 confining executor
- * (nushell-sandbox)时公布,词汇与审批次序复用共享的 dsh-sandbox
- * escalation 通道。
+ * tool-nushell:为 DeepSeek Harness 注册独立的 `nushell` 工具。双模执行:
+ * - 直跑模式(单装本包):内置执行器实例经 `ctx.subprocess` 直接 spawn
+ *   `nu --no-config-file -c`,不占 `ctx.shell` 接缝——官方 shell 家族、
+ *   agent 预设与 permission 栈零改动;宿主沙箱栈在时选 confining 形态,
+ *   nu 命令照常受约束。
+ * - 接缝模式(另装 nushell-local/nushell-sandbox):探针认出带
+ *   `NUSHELL_RUNTIME` 标记的 `ctx.shell` 并优先采用,即完全替换模式。
+ * 本插件负责模型契约(参数校验、canonical 输出、marker 渲染、后台
+ * job、系统提示 section、UI 呈现);能力面与官方 tool-pwsh 对齐,沙箱
+ * 升权字段只在 confining 形态公布,词汇与审批次序复用共享的
+ * dsh-sandbox escalation 通道。
  */
 
 /** `nushell` 工具的结构化输出格式:非 text 时命令最终值经 nu 序列化返回。 */
@@ -377,24 +388,90 @@ export function renderNushellResult(
 /** 插件运行时配置;enableRunInBackground 默认开启,对齐官方 Config 语义。 */
 export interface Config {
   enableRunInBackground?: boolean;
+  /**
+   * 内部直跑执行器的配置透传(nuPath/cwd/超时与输出预算);仅在直跑
+   * 模式读取,接缝模式由执行器组合行的自身配置接管。
+   */
+  executor?: NushellLocalConfig;
 }
 
 export function apply(ctx: Context, config: Config = {}): void {
   console.log(`[${name}] plugin loaded`);
   const backgroundEnabled = config.enableRunInBackground ?? true;
 
-  // 沙箱组合探测(官方语义:只在挂载 confining executor 时公布升权字段;
-  // 组合分裂——confining executor 在而共享策略服务缺——load 即 fail loud)。
-  const defaultMode: string | undefined = ctx.shell.sandboxMode;
-  const escalationModes =
-    defaultMode === undefined ? [] : [...ESCALATION_TARGETS];
-  const sandboxPolicy =
-    defaultMode === undefined ? undefined : getPolicyService(ctx);
-  if (defaultMode !== undefined && sandboxPolicy === undefined) {
+  // ── 执行器选路(双模核心)──────────────────────────────────────────
+  // 直跑模式:本包内置执行器实例(subprocess 直 spawn nu),不占
+  // ctx.shell 接缝——只装本包时官方 shell 家族、官方 agent 预设与
+  // permission 栈原封不动。宿主具备沙箱栈(base 组合恒备)时选
+  // confining 形态,nu 命令照常受 workspace-write 约束与升权审批。
+  // 接缝模式:显式安装 nushell-local/sandbox 执行器后,探针认出带
+  // nushell runtime 标记的 ctx.shell 并优先采用(完全替换模式);
+  // 官方 pwsh/bash 执行器不带标记,占据接缝时保持无视(nu 语义不能
+  // 经官方 shell 跑),这也是官方预设不被本插件牵连的关键。
+  let seam: ShellExecutor | undefined;
+  ctx.inject(['shell'], (shellCtx) => {
+    const candidate = shellCtx.shell as unknown as { runtime?: unknown };
+    if (candidate?.runtime !== NUSHELL_RUNTIME) {
+      return;
+    }
+    seam = shellCtx.shell;
+    shellCtx.effect(
+      () => () => {
+        seam = undefined;
+      },
+      'tool-nushell: nushell shell seam detach',
+    );
+  });
+
+  // 沙箱组合探测(官方语义:只在 confining 形态公布升权字段;组合分裂
+  // ——confining 在而共享策略服务缺——load 即 fail loud)。
+  const sandboxPolicy = getPolicyService(ctx);
+  const sandboxStackPresent =
+    ctx.get('sandbox') !== undefined && sandboxPolicy !== undefined;
+  const seamConfining = seam?.sandboxMode !== undefined;
+  if ((seamConfining || sandboxStackPresent) && sandboxPolicy === undefined) {
     throw new Error(
-      'tool-nushell: the mounted nushell executor confines but ctx.sandboxPolicy is missing',
+      'tool-nushell: a confining composition is present but ctx.sandboxPolicy is unresolvable',
     );
   }
+  /** 内部直跑执行器(惰性:接缝模式建立后永不构造,nuPath 扫描零开销)。 */
+  let internal: NushellLocalExecutor | NushellSandboxExecutor | undefined;
+  const getInternal = (): NushellLocalExecutor | NushellSandboxExecutor => {
+    if (internal === undefined) {
+      const executorConfig = config.executor ?? {};
+      // 内部直跑实例不得注册任何服务(尤其不能污染 ctx.shell 接缝),而
+      // Service 基类构造必经 ctx.reflect.provide。生产 ctx 是 cordis 代理:
+      // 未声明的服务属性直读会被拒("cannot get property X without
+      // inject"),代理派生伪装 reflect 又踩内部方法陷阱。故用最小服务
+      // 载体:服务经 ctx.get()(load 期已验证可行)取值后以普通属性挂载,
+      // inject/reflect 一律无操作。代价:直跑模式不支持设置层热更新
+      // nuPath,静态配置走 Config.executor。
+      const sandboxService = ctx.get('sandbox');
+      const policyService = ctx.get('sandboxPolicy');
+      const serviceCtx = {
+        subprocess: ctx.subprocess,
+        ...(sandboxService !== undefined ? { sandbox: sandboxService } : {}),
+        ...(policyService !== undefined
+          ? { sandboxPolicy: policyService }
+          : {}),
+        inject: () => {},
+        reflect: { provide: () => {} },
+      } as unknown as Context;
+      internal = sandboxStackPresent
+        ? new NushellSandboxExecutor(serviceCtx, executorConfig)
+        : new NushellLocalExecutor(serviceCtx, executorConfig);
+    }
+    return internal;
+  };
+  /** 本次调用的执行器:已挂载的 nushell 接缝优先,否则内部直跑实例。 */
+  const activeExecutor = (): ShellExecutor => seam ?? getInternal();
+  /** 活跃执行器是否真在 confinement(升权的运行时事实,fail-closed)。 */
+  const activeConfining = (): boolean =>
+    activeExecutor().sandboxMode !== undefined;
+  // 注册期公布面:接缝 confining 或沙箱栈在即公布升权字段;运行期以
+  // activeConfining 为准。
+  const escalationModes =
+    seamConfining || sandboxStackPresent ? [...ESCALATION_TARGETS] : [];
   /** confining 组合下解析本次调用的完整 standing policy。 */
   const resolveSandboxPolicy = (
     exec: ToolRunContext,
@@ -412,7 +489,7 @@ export function apply(ctx: Context, config: Config = {}): void {
     exec: ToolRunContext,
     standingPolicy: SandboxExecutionPolicy,
   ): Promise<SandboxExecutionPolicy['mode']> => {
-    if (escalationModes.length === 0) {
+    if (!activeConfining()) {
       throw new Error(
         'sandbox_permissions is not available in this composition (no sandboxing executor to escalate)',
       );
@@ -699,7 +776,8 @@ export function apply(ctx: Context, config: Config = {}): void {
             ...(policy !== undefined ? { sandboxPolicy: policy } : {}),
           };
           // 后台无超时(接缝契约):resolve 后不携带 timeoutMs。
-          const proc = ctx.shell.start(ctx.shell.resolve(request));
+          const executor = activeExecutor();
+          const proc = executor.start(executor.resolve(request));
           return {
             kind: 'background',
             jobId: jobs.start({
@@ -729,7 +807,8 @@ export function apply(ctx: Context, config: Config = {}): void {
           dshEnv,
           ...(policy !== undefined ? { sandboxPolicy: policy } : {}),
         };
-        const result = await ctx.shell.run(ctx.shell.resolve(request));
+        const executor = activeExecutor();
+        const result = await executor.run(executor.resolve(request));
         if (result.aborted) {
           throw abortError();
         }

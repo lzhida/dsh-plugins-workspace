@@ -2,6 +2,8 @@
 
 受沙箱约束的本地 Nushell shell executor:向 DeepSeek Harness 注入 `ctx.shell`(confining provider),由 `ctx.sandbox` + `ctx.subprocess` 支撑——与 `@lzhida/dsh-nushell-local` 互斥,角色对齐官方 bash/pwsh 家族的 local ↔ sandbox 执行器对(`dsh-bash-local` / `dsh-bash-sandbox`)。
 
+> **双模架构定位(0.2.0 起)**:实现内核已上移至 `@lzhida/dsh-tool-nushell`(执行器类由 tool 直跑模式与接缝挂载共用一份),本包是组合行薄壳。仅当需要**完全替换 + 沙箱**模式(nu 独占 `ctx.shell`)时安装本包;只想给官方组合加 nushell 工具的话,单装 `@lzhida/dsh-tool-nushell` 即可(直跑模式在宿主沙箱栈在时同样受 confining 约束)。前置:须与 `@lzhida/dsh-tool-nushell` 同时安装(peer 依赖)。安装本包会自动停用官方 shell 家族(见 `cordis.patch.yml`),并要求 permission 预设停用或适配——详见 tool 包 README 的组合矩阵。
+
 ## 架构
 
 - **进程级 argv 包装**:nu 语言自身无沙箱等价物,但 confinement 是进程级 argv 包装、对被包装的 shell 方言透明——每条命令的 argv 经 `ctx.sandbox.confine` 包装后由 `ctx.subprocess` 受限 spawn,runner 链按平台选择(win32 为 ACL 受限令牌 runner);

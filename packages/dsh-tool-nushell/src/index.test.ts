@@ -80,6 +80,15 @@ interface StubOptions {
   sandboxPolicyResolve?: ReturnType<typeof vi.fn>;
   /** ctx.get('approval'):审批通道假体。 */
   approval?: unknown;
+  /** ctx.get('sandbox'):沙箱服务假体(默认随 sandboxMode 给空对象)。 */
+  sandbox?: unknown;
+  /**
+   * 接缝 shell 是否带 nushell runtime 标记(默认 true,模拟执行器组合;
+   * false 模拟官方 shell 占缝——探针必须无视,直跑模式接管)。
+   */
+  seamRuntime?: boolean;
+  /** ctx.subprocess.spawn:直跑模式执行核心假体。 */
+  subprocessSpawn?: ReturnType<typeof vi.fn>;
 }
 
 /** identity resolve:spec 即 request,断言直接针对构造的请求形状。 */
@@ -130,16 +139,42 @@ function stubCtx(options: StubOptions = {}): StubState {
     get: vi.fn((key: string) =>
       key === 'jobs'
         ? options.jobs
-        : key === 'sandboxPolicy'
-          ? options.sandboxPolicyResolve !== undefined
-            ? { resolve: options.sandboxPolicyResolve }
-            : undefined
-          : key === 'approval'
-            ? options.approval
-            : undefined,
+        : key === 'sandbox'
+          ? options.sandbox !== undefined
+            ? options.sandbox
+            : options.sandboxMode !== undefined
+              ? {}
+              : undefined
+          : key === 'sandboxPolicy'
+            ? options.sandboxPolicyResolve !== undefined
+              ? { resolve: options.sandboxPolicyResolve }
+              : undefined
+            : key === 'approval'
+              ? options.approval
+              : undefined,
     ),
+    subprocess: {
+      spawn: options.subprocessSpawn ?? vi.fn(),
+    },
+    // 服务属性镜像:直跑内部执行器经 this.ctx.sandbox / sandboxPolicy
+    // 直读服务(get 与属性两条访问路径都要成立)。
+    ...(options.sandbox !== undefined || options.sandboxMode !== undefined
+      ? {
+          sandbox: options.sandbox !== undefined ? options.sandbox : {},
+        }
+      : {}),
+    ...(options.sandboxPolicyResolve !== undefined
+      ? { sandboxPolicy: { resolve: options.sandboxPolicyResolve } }
+      : {}),
+    inject: vi.fn((names: readonly string[], cb: (c: unknown) => void) => {
+      // 接缝探针契约:['shell'] 可用时立即回调;直跑选路在 apply 内完成。
+      if (names.includes('shell')) {
+        cb(ctx);
+      }
+    }),
     shell: Object.assign(shell, {
       sandboxMode: options.sandboxMode,
+      runtime: options.seamRuntime === false ? undefined : 'nushell',
     }),
   } as unknown as Context;
   apply(ctx, options.config);
@@ -236,7 +271,7 @@ function foreground(
 describe('dsh-tool-nushell 契约', () => {
   it('导出 loader 依赖的插件符号', () => {
     expect(name).toBe('dsh-tool-nushell');
-    expect(inject).toEqual(['tools', 'systemPrompt', 'shellEnv', 'shell']);
+    expect(inject).toEqual(['tools', 'systemPrompt', 'shellEnv', 'subprocess']);
   });
 
   it('apply 注册唯一 nushell 工具、加载日志与系统提示 section', () => {
@@ -263,8 +298,11 @@ describe('dsh-tool-nushell 契约', () => {
 
   it('工具经 effect 登记:卸载时注销工具', () => {
     const state = stubCtx();
-    expect(state.cleanups).toHaveLength(1);
-    state.cleanups[0]!();
+    // 两个 effect:接缝 detach 清理 + 工具注册;全部执行后工具必被注销。
+    expect(state.cleanups).toHaveLength(2);
+    for (const cleanup of state.cleanups) {
+      cleanup();
+    }
     expect(state.disposers[0]).toHaveBeenCalled();
   });
 
@@ -488,7 +526,7 @@ describe('沙箱组合与升权', () => {
 
   it('confining executor 缺共享策略服务时 apply 失败', () => {
     expect(() => stubCtx({ sandboxMode: 'read-only' })).toThrow(
-      'ctx.sandboxPolicy is missing',
+      'ctx.sandboxPolicy is unresolvable',
     );
   });
 
@@ -1099,5 +1137,83 @@ describe('超时预算常量', () => {
   it('工具层保留默认/上限文案常量,默认超时交由 executor 预算', () => {
     expect(DEFAULT_TIMEOUT_MS).toBe(30_000);
     expect(MAX_TIMEOUT_MS).toBe(600_000);
+  });
+});
+
+describe('直跑模式(单装本包,不占接缝)', () => {
+  function fakeExecSignal(): ToolRunContext {
+    return {
+      callId: 'call-direct',
+      signal: new AbortController().signal,
+    } as unknown as ToolRunContext;
+  }
+
+  it('官方 shell 占缝时探针无视:直跑经 subprocess,不经 ctx.shell', async () => {
+    const spawn = vi.fn((spec: { argv: string[] }) => {
+      // 只断言选路与 argv 拼装;spawn 合同细节由执行器套件覆盖。
+      expect(spec.argv).toEqual(['mynu', '--no-config-file', '-c', '1 + 1']);
+      throw new Error('direct-spawn');
+    });
+    const state = stubCtx({
+      seamRuntime: false,
+      subprocessSpawn: spawn,
+      config: { executor: { nuPath: 'mynu' } },
+    });
+    state.shell.run.mockImplementation(() => {
+      throw new Error('seam must not be used');
+    });
+    await expect(
+      state.tool.execute(
+        { command: '1 + 1', description: '算术' },
+        fakeExecSignal(),
+      ),
+    ).rejects.toThrow('direct-spawn');
+    expect(state.shell.run).not.toHaveBeenCalled();
+    expect(state.shell.start).not.toHaveBeenCalled();
+  });
+
+  it('沙箱栈在时内部执行器选 confining 形态:经 ctx.sandbox.confine 包装', async () => {
+    const confine = vi.fn(() => {
+      throw new Error('confine-invoked');
+    });
+    const state = stubCtx({
+      seamRuntime: false,
+      sandbox: { confine },
+      sandboxMode: 'workspace-write',
+      sandboxPolicyResolve: vi.fn(() => ({
+        mode: 'workspace-write',
+        workspaceRoot: 'E:/tmp',
+      })),
+      subprocessSpawn: vi.fn(() => {
+        throw new Error('spawn must not run before confine');
+      }),
+      config: { executor: { nuPath: 'nu' } },
+    });
+    await expect(
+      state.tool.execute(
+        { command: 'ls', description: '列目录' },
+        fakeExecSignal(),
+      ),
+    ).rejects.toThrow('confine-invoked');
+    expect(confine).toHaveBeenCalled();
+  });
+
+  it('直跑本地形态下升权请求 fail-closed 拒绝', async () => {
+    const state = stubCtx({
+      seamRuntime: false,
+      subprocessSpawn: vi.fn(),
+      config: { executor: { nuPath: 'nu' } },
+    });
+    await expect(
+      state.tool.execute(
+        {
+          command: 'ls',
+          description: '列目录',
+          sandbox_permissions: 'workspace-write',
+          justification: '需要写工作区外文件',
+        },
+        fakeExecSignal(),
+      ),
+    ).rejects.toThrow(/no sandboxing executor to escalate/);
   });
 });

@@ -2,6 +2,18 @@
 
 为 DeepSeek Harness 注册独立的 `nushell` 工具:模型显式调用,命令经 `nu --no-config-file -c <command>` 子进程执行。能力对齐官方 `tool-pwsh`(0.1.5-rc.2):前台/后台执行、canonical 结构化输出、marker 渲染、截断落盘、`DSH_*` 环境注入、系统提示 section、终端卡片 UI 呈现。
 
+**双模执行**:本包内置执行核心,单装即可工作(直跑模式,经 `ctx.subprocess` 直接 spawn nu,不占 `ctx.shell` 接缝——官方 shell 家族、agent 预设与 permission 栈零改动);另装 `@lzhida/dsh-nushell-local` / `@lzhida/dsh-nushell-sandbox` 则升级为接缝模式(完全替换,nu 独占 `ctx.shell`)。
+
+## 安装组合矩阵
+
+| 组合                     | 官方 bash/pwsh 工具 | nushell 工具 | `ctx.shell`        | 适用场景                            |
+| ------------------------ | ------------------- | ------------ | ------------------ | ----------------------------------- |
+| 仅本包                   | ✅ 原生保留         | ✅           | 官方执行器(不动)   | nushell 与官方并存,零侵入(推荐默认) |
+| 本包 + `nushell-local`   | 停用                | ✅           | nushell(无沙箱)    | 完全替换,不要沙箱                   |
+| 本包 + `nushell-sandbox` | 停用                | ✅           | nushell(confining) | 完全替换 + 沙箱约束                 |
+
+直跑模式下宿主具备沙箱栈(base 组合恒备)时,内部执行器自动选 confining 形态——nu 命令照常受 `workspace-write` 约束,升权审批通道可用;`Config.executor`(可选)透传内部执行器配置(`nuPath`/`cwd`/超时与输出预算)。注意:直跑模式不经 `permission-presets` 外壳,审批链路与接缝模式有差异。
+
 ## 核心特性
 
 - **干净求值环境**:`--no-config-file` 禁用用户 nushell 配置,每次全新进程,状态不跨调用保留;
@@ -18,7 +30,7 @@
 - **生命周期清理**:插件卸载时经 `ctx.effect` 统一注销工具(后台进程由 `ctx.subprocess` 组合销毁统一终止);
 - **零打包**:`nu` 经 PATH 查找,缺失时返回安装指引报错,不打包 nushell。
 
-执行链:命令经 `ctx.shell` 能力接缝交由当前挂载的 nushell executor 执行——`@lzhida/dsh-nushell-local`(无沙箱)或 `@lzhida/dsh-nushell-sandbox`(受沙箱约束),二者互斥,nu 进程管理/预算/spill 下沉于 executor,本插件只负责模型契约。沙箱升权:仅 confining executor(`dsh-nushell-sandbox`)组合公布 `sandbox_permissions`/`justification`——被沙箱拒绝的命令可对同一命令以更宽模式一次性重试,须附一句理由并经用户批准;系统提示同时明令禁止投机性升权。
+执行链(双模):**接缝模式**——探针认出带 nushell runtime 标记的 `ctx.shell`(nushell-local / nushell-sandbox,二者互斥)时优先采用,nu 进程管理/预算/spill 下沉于 executor;官方 pwsh/bash 执行器占据接缝时不被采用(nu 语义不能经官方 shell 跑)。**直跑模式**——无 nushell 接缝时经内部执行器(`ctx.subprocess` 直 spawn)执行,行为与 nushell-local 一致,沙箱栈在时升级为 confining 形态。沙箱升权:仅 confining 组合公布 `sandbox_permissions`/`justification`——被沙箱拒绝的命令可对同一命令以更宽模式一次性重试,须附一句理由并经用户批准;系统提示同时明令禁止投机性升权。
 
 ## 工具参数
 
