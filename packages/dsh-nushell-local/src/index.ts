@@ -1,4 +1,9 @@
-import { ShellExecutor } from '@deepseek-ai/dsh-shell';
+import { lstatSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  SHELL_SETTINGS_NAMESPACE,
+  ShellExecutor,
+} from '@deepseek-ai/dsh-shell';
 import type {
   ShellExecRequest,
   ShellExecSpec,
@@ -14,6 +19,9 @@ import {
   timeoutOf,
 } from '@deepseek-ai/dsh-timeout';
 import type { Context } from '@deepseek-ai/cordis';
+// 副作用导入:激活 dsh-settings 对 cordis Context 的 `ctx.settings` 类型增强。
+import '@deepseek-ai/dsh-settings';
+import z from '@deepseek-ai/schemastery';
 
 // e2e 契约:模块装载(loader import)时输出 `[目录名] ` 前缀日志行。
 // Service 为惰性实例化,constructor 在无人消费 ctx.shell 前不会执行,
@@ -97,6 +105,59 @@ export function assertServiceableNushellConfig(
   }
 }
 
+/**
+ * Windows 上的 nu 候选可执行文件:PATH 逐项 + 常见安装点(scoop shims /
+ * Program Files / cargo bin)。与 pwsh 的 newest-first 有意不同:PATH 优先,
+ * 尊重用户活跃安装(scoop shims 通常在 PATH 上)。仅 win32 语义——POSIX
+ * 的 spawn 本身按 PATH 解析,无需探测(与 pwsh-local 同理)。
+ */
+export function candidateNuPaths(env: NodeJS.ProcessEnv): string[] {
+  const candidates: string[] = [];
+  for (const entry of (env.PATH ?? '').split(';')) {
+    const trimmed = entry.trim().replace(/^"|"$/g, '');
+    if (trimmed.length > 0) candidates.push(join(trimmed, 'nu.exe'));
+  }
+  const programFiles = env.ProgramFiles ?? 'C:\\Program Files';
+  candidates.push(join(programFiles, 'nu', 'bin', 'nu.exe'));
+  const userProfile = env.USERPROFILE ?? '';
+  const scoopHome =
+    env.SCOOP || (userProfile.length > 0 ? join(userProfile, 'scoop') : '');
+  if (scoopHome.length > 0) candidates.push(join(scoopHome, 'shims', 'nu.exe'));
+  const cargoHome =
+    env.CARGO_HOME ||
+    (userProfile.length > 0 ? join(userProfile, '.cargo') : '');
+  if (cargoHome.length > 0) candidates.push(join(cargoHome, 'bin', 'nu.exe'));
+  return candidates;
+}
+
+/** 存在性探测:符号链接不穿透的文件检查(lstat),测试可注入替身。 */
+export type NuPathExists = (candidate: string) => boolean;
+
+function nuFileExists(candidate: string): boolean {
+  return lstatSync(candidate, { throwIfNoEntry: false })?.isFile() ?? false;
+}
+
+/**
+ * 解析 nu 可执行文件:显式 `nuPath` 配置优先;Windows 上依次探测
+ * {@link candidateNuPaths}(PATH → 常见安装点),全未命中兜底 PATH 语义的
+ * `nu`;POSIX 直接交给 PATH。纯函数:env/platform/exists 全部显式参数化,
+ * 测试无需真实文件系统。
+ */
+export function resolveNuPath(
+  configured: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  exists: NuPathExists = nuFileExists,
+): string {
+  if (configured !== undefined && configured.length > 0) return configured;
+  if (platform === 'win32') {
+    for (const candidate of candidateNuPaths(env)) {
+      if (exists(candidate)) return candidate;
+    }
+  }
+  return 'nu';
+}
+
 /** 把已结算的 collect-mode reader 投影成最终 CollectedOutput 形状。 */
 function finalOutput(reader: {
   readFrom(offset: number): {
@@ -154,23 +215,73 @@ function annotateStream<T extends { text: string }>(stream: T): T {
 export class NushellLocalExecutor extends ShellExecutor {
   static inject = ['subprocess'];
 
-  /** 校验后的生效配置(schemastery 缺省,手动默认值在构造时应用)。 */
-  readonly config: Required<NushellLocalConfig>;
+  /**
+   * settings 命名空间 schema(与官方 PwshLocalExecutor.Config 同构):
+   * 数值字段带 schemastery 缺省;cwd/nuPath 无缺省——语义是「未设时回退」
+   * (cwd 回退进程 cwd,nuPath 回退 {@link resolveNuPath} 候选链)。
+   */
+  static Config = z.object({
+    cwd: z.string(),
+    timeoutMs: z.number().default(DEFAULT_NUSHELL_CONFIG.timeoutMs),
+    maxTimeoutMs: z.number().default(DEFAULT_NUSHELL_CONFIG.maxTimeoutMs),
+    maxOutputBytes: z.number().default(DEFAULT_NUSHELL_CONFIG.maxOutputBytes),
+    maxSpillBytes: z.number().default(DEFAULT_NUSHELL_CONFIG.maxSpillBytes),
+    graceMs: z.number().default(DEFAULT_NUSHELL_CONFIG.graceMs),
+    nuPath: z.string(),
+  });
+
+  /** 当前权威配置来源:settings 解析段,settings 未挂载时回退组合入口。 */
+  private source: () => NushellLocalConfig;
+  /** 最近一次可见的声明 nuPath(onChange 去重)。 */
+  private declaredNuPath: string | undefined;
+  /** 声明值经候选链解析后的可执行文件(argv 实际使用)。 */
+  private resolvedNuPath: string;
+
+  /** 生效配置:settings 段或组合入口,缺省字段由 DEFAULT 兜底(cwd 回退进程 cwd)。 */
+  get config(): Required<NushellLocalConfig> {
+    const source = this.source();
+    return {
+      cwd: source.cwd ?? process.cwd(),
+      timeoutMs: source.timeoutMs ?? DEFAULT_NUSHELL_CONFIG.timeoutMs,
+      maxTimeoutMs: source.maxTimeoutMs ?? DEFAULT_NUSHELL_CONFIG.maxTimeoutMs,
+      maxOutputBytes:
+        source.maxOutputBytes ?? DEFAULT_NUSHELL_CONFIG.maxOutputBytes,
+      maxSpillBytes:
+        source.maxSpillBytes ?? DEFAULT_NUSHELL_CONFIG.maxSpillBytes,
+      graceMs: source.graceMs ?? DEFAULT_NUSHELL_CONFIG.graceMs,
+      nuPath: source.nuPath ?? DEFAULT_NUSHELL_CONFIG.nuPath,
+    };
+  }
 
   constructor(ctx: Context, config: NushellLocalConfig = {}) {
     super(ctx);
-    this.config = {
-      cwd: config.cwd ?? process.cwd(),
-      timeoutMs: config.timeoutMs ?? DEFAULT_NUSHELL_CONFIG.timeoutMs,
-      maxTimeoutMs: config.maxTimeoutMs ?? DEFAULT_NUSHELL_CONFIG.maxTimeoutMs,
-      maxOutputBytes:
-        config.maxOutputBytes ?? DEFAULT_NUSHELL_CONFIG.maxOutputBytes,
-      maxSpillBytes:
-        config.maxSpillBytes ?? DEFAULT_NUSHELL_CONFIG.maxSpillBytes,
-      graceMs: config.graceMs ?? DEFAULT_NUSHELL_CONFIG.graceMs,
-      nuPath: config.nuPath ?? DEFAULT_NUSHELL_CONFIG.nuPath,
-    };
+    this.source = () => config;
+    this.declaredNuPath = config.nuPath;
+    this.resolvedNuPath = resolveNuPath(config.nuPath);
     assertServiceableNushellConfig(this.config);
+    // settings 热更新(与官方 pwsh-local 同一接缝):组合入口登记为 shell
+    // 命名空间的 base 层;用户在设置层改 `nuPath` 后经 setSource 切换来源、
+    // onChange 重解析。声明值不变时 onChange 幂等。
+    ctx.inject(['settings'], (settingsCtx) => {
+      settingsCtx.settings.installSection(
+        ctx,
+        SHELL_SETTINGS_NAMESPACE,
+        NushellLocalExecutor.Config,
+        config as Required<NushellLocalConfig>,
+        {
+          validate: (value) => assertServiceableNushellConfig(value),
+          setSource: (current) => {
+            this.source = current;
+          },
+          onChange: () => {
+            const declared = this.source().nuPath;
+            if (declared === this.declaredNuPath) return;
+            this.declaredNuPath = declared;
+            this.resolvedNuPath = resolveNuPath(declared);
+          },
+        },
+      );
+    });
   }
 
   /**
@@ -201,7 +312,7 @@ export class NushellLocalExecutor extends ShellExecutor {
 
   /** 一次已解析 spec 的 nu 调用 argv——供 confining 子类包装的 argv 层接缝。 */
   argv(spec: ShellExecSpec): string[] {
-    return [this.config.nuPath, '--no-config-file', '-c', spec.command];
+    return [this.resolvedNuPath, '--no-config-file', '-c', spec.command];
   }
 
   /** 把已解析 spec 加上映射后的 argv,组成完整的 subprocess spawn。 */

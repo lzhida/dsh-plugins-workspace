@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import type { Context } from '@deepseek-ai/cordis';
 import type {
@@ -9,8 +10,10 @@ import type {
 import {
   annotateWrappedNu,
   assertServiceableNushellConfig,
+  candidateNuPaths,
   DEFAULT_NUSHELL_CONFIG,
   NushellLocalExecutor,
+  resolveNuPath,
   type NushellLocalConfig,
 } from './index.ts';
 
@@ -94,6 +97,7 @@ function stubCtx(
   const ctx = {
     reflect: { provide: vi.fn() },
     subprocess: { spawn },
+    inject: vi.fn(),
   } as unknown as Context;
   return { ctx, handle, spawn };
 }
@@ -107,6 +111,7 @@ function makeExecutor(
       ({
         reflect: { provide: vi.fn() },
         subprocess: { spawn: vi.fn() },
+        inject: vi.fn(),
       } as unknown as Context),
     config,
   );
@@ -193,8 +198,8 @@ describe('nushell-local resolve', () => {
 });
 
 describe('nushell-local argv 与 spawnSpec', () => {
-  it('argv 固定 --no-config-file -c 形态,nuPath 可覆盖', () => {
-    const executor = makeExecutor();
+  it('argv 固定 --no-config-file -c 形态,声明 nuPath 原样生效', () => {
+    const executor = makeExecutor({ nuPath: 'nu' });
     expect(executor.argv({ command: 'ls | length' } as ShellExecSpec)).toEqual([
       'nu',
       '--no-config-file',
@@ -209,7 +214,11 @@ describe('nushell-local argv 与 spawnSpec', () => {
   });
 
   it('spawnSpec:env 合并顺序为覆盖项 < env < dshEnv,预算进入 stdio', () => {
-    const executor = makeExecutor({ maxOutputBytes: 128, maxSpillBytes: 256 });
+    const executor = makeExecutor({
+      maxOutputBytes: 128,
+      maxSpillBytes: 256,
+      nuPath: 'nu',
+    });
     const spec = executor.resolve({
       command: 'ls',
       workdir: 'F:/work',
@@ -470,5 +479,150 @@ describe('nushell-local nu 包装层检测', () => {
     const read = proc.readOutput();
     expect(read.delta).toContain('[stderr]');
     expect(read.delta).toContain('[nushell-local:');
+  });
+});
+
+describe('nushell-local nuPath 解析', () => {
+  it('显式配置优先,不做文件探测', () => {
+    const probed: string[] = [];
+    expect(
+      resolveNuPath('F:/nu/nu.exe', {}, 'win32', (c) => {
+        probed.push(c);
+        return true;
+      }),
+    ).toBe('F:/nu/nu.exe');
+    expect(probed).toEqual([]);
+  });
+
+  it('win32 按 PATH 逐项探测,命中即返回', () => {
+    const seen: string[] = [];
+    const resolved = resolveNuPath(
+      undefined,
+      { PATH: 'C:/a;C:/b' },
+      'win32',
+      (c) => {
+        seen.push(c);
+        return c === join('C:/a', 'nu.exe');
+      },
+    );
+    expect(resolved).toBe(join('C:/a', 'nu.exe'));
+    expect(seen[0]).toBe(join('C:/a', 'nu.exe'));
+  });
+
+  it('PATH 与常见安装点全未命中时兜底 nu', () => {
+    expect(
+      resolveNuPath(undefined, { PATH: 'C:/a' }, 'win32', () => false),
+    ).toBe('nu');
+  });
+
+  it('候选链次序:PATH → Program Files → scoop shims → cargo bin', () => {
+    const env = {
+      PATH: 'C:/a',
+      ProgramFiles: 'F:/Program Files',
+      USERPROFILE: 'F:/Users/u',
+    };
+    const candidates = candidateNuPaths(env);
+    expect(candidates[0]).toBe(join('C:/a', 'nu.exe'));
+    expect(candidates).toContain(
+      join('F:/Program Files', 'nu', 'bin', 'nu.exe'),
+    );
+    expect(candidates).toContain(
+      join('F:/Users/u', 'scoop', 'shims', 'nu.exe'),
+    );
+    expect(candidates).toContain(join('F:/Users/u', '.cargo', 'bin', 'nu.exe'));
+    const exists = new Set([join('F:/Users/u', '.cargo', 'bin', 'nu.exe')]);
+    expect(resolveNuPath(undefined, env, 'win32', (c) => exists.has(c))).toBe(
+      join('F:/Users/u', '.cargo', 'bin', 'nu.exe'),
+    );
+  });
+
+  it('POSIX 不做文件探测,直接交给 PATH 语义', () => {
+    const probed: string[] = [];
+    expect(
+      resolveNuPath(undefined, { PATH: '/usr/bin' }, 'linux', (c) => {
+        probed.push(c);
+        return true;
+      }),
+    ).toBe('nu');
+    expect(probed).toEqual([]);
+  });
+});
+
+describe('nushell-local settings 热更新', () => {
+  /** 捕获 ctx.inject(['settings']) 回调,同步喂入 settings 服务假体。 */
+  function stubCtxWithSettings(config: NushellLocalConfig = {}): {
+    executor: NushellLocalExecutor;
+    installSection: ReturnType<typeof vi.fn>;
+  } {
+    const pending: Array<(scoped: unknown) => void> = [];
+    const installSection = vi.fn();
+    const ctx = {
+      reflect: { provide: vi.fn() },
+      subprocess: { spawn: vi.fn() },
+      inject: (_keys: unknown, cb: (scoped: unknown) => void) => {
+        pending.push(cb);
+      },
+    } as unknown as Context;
+    const executor = makeExecutor(config, ctx);
+    for (const cb of pending) cb({ settings: { installSection } });
+    return { executor, installSection };
+  }
+
+  it('组合入口登记为 shell 命名空间的 base 层', () => {
+    const { installSection } = stubCtxWithSettings({
+      nuPath: 'F:/bundled/nu.exe',
+    });
+    expect(installSection).toHaveBeenCalledOnce();
+    const [owner, ns, schema, entry] = installSection.mock.calls[0];
+    expect(ns).toBe('shell');
+    expect(entry).toMatchObject({ nuPath: 'F:/bundled/nu.exe' });
+    expect(schema).toBeDefined();
+    expect(owner).toBeDefined();
+  });
+
+  it('settings 段声明变化经 onChange 重解析 nuPath', () => {
+    const { executor, installSection } = stubCtxWithSettings({
+      nuPath: 'F:/bundled/nu.exe',
+    });
+    const hooks = installSection.mock.calls[0][4] as {
+      setSource: (current: () => NushellLocalConfig) => void;
+      onChange: () => void;
+    };
+    let current: NushellLocalConfig = { nuPath: 'F:/bundled/nu.exe' };
+    hooks.setSource(() => current);
+    hooks.onChange();
+    expect(executor.argv({ command: 'ls' } as ShellExecSpec)[0]).toBe(
+      'F:/bundled/nu.exe',
+    );
+    current = { nuPath: 'F:/official/nu.exe' };
+    hooks.onChange();
+    expect(executor.argv({ command: 'ls' } as ShellExecSpec)[0]).toBe(
+      'F:/official/nu.exe',
+    );
+  });
+
+  it('settings 卸载后回退组合入口,argv 随之回落', () => {
+    const { executor, installSection } = stubCtxWithSettings({
+      nuPath: 'F:/bundled/nu.exe',
+    });
+    const hooks = installSection.mock.calls[0][4] as {
+      setSource: (current: () => NushellLocalConfig) => void;
+      onChange: () => void;
+    };
+    hooks.setSource(() => ({ nuPath: 'F:/official/nu.exe' }));
+    hooks.onChange();
+    // 卸载:installSection 以组合入口为 fallback 源。
+    hooks.setSource(() => ({ nuPath: 'F:/bundled/nu.exe' }));
+    hooks.onChange();
+    expect(executor.argv({ command: 'ls' } as ShellExecSpec)[0]).toBe(
+      'F:/bundled/nu.exe',
+    );
+  });
+
+  it('未挂载 settings 时构造即可用,argv 使用组合入口声明', () => {
+    const executor = makeExecutor({ nuPath: 'F:/explicit/nu.exe' });
+    expect(executor.argv({ command: 'ls' } as ShellExecSpec)[0]).toBe(
+      'F:/explicit/nu.exe',
+    );
   });
 });

@@ -5,7 +5,8 @@
 ## 架构
 
 - **委托执行**:不直接 spawn 进程——构造完整 `SubprocessSpawnSpec`(argv/cwd/stdio 预算/env 合并/graceMs/signal)后交给 `ctx.subprocess`,有界输出、spill 文件与受管终止都是 subprocess 服务的机制;
-- **nu 方言**:`nu --no-config-file -c <command>`,禁用用户配置保证可复现的干净求值环境;`nuPath` 可配置,缺省走 PATH;
+- **nu 方言**:`nu --no-config-file -c <command>`,禁用用户配置保证可复现的干净求值环境;`nuPath` 可配置,未声明时按候选链解析(PATH 逐项 → scoop shims / Program Files / cargo bin,POSIX 直接交给 PATH);
+- **settings 热更新**:组合入口登记为 `shell` settings 命名空间的 base 层(与官方 pwsh-local 同一接缝),设置层改 `nuPath` 后经 `onChange` 重解析,无需重启;
 - **前台 `run`**:经 `dsh-timeout` 的 `deadline` 融合调用方取消与超时(`BASH_TIMEOUT` 能力码,与 bash/pwsh 家族共享);非零退出/超时杀/中止都正常 resolve,仅基础设施失败 reject;
 - **后台 `start`**:无 executor 超时(接缝契约),返回 `ShellProcess` 句柄(`done` 永不 reject,provider 拒绝降级为 killed + 失败注记;`readOutput` 消费式增量,stderr 以 `[stderr]` 段并入);
 - **沙箱**:nu 无语言级沙箱等价物,保持 `sandboxMode` 缺省(无沙箱),不做 confining 子类;
@@ -13,15 +14,15 @@
 
 ## 配置
 
-| 字段             | 类型   | 默认     | 说明                   |
-| ---------------- | ------ | -------- | ---------------------- |
-| `cwd`            | string | 进程 cwd | 后台兜底工作目录       |
-| `timeoutMs`      | number | 30000    | 默认超时毫秒           |
-| `maxTimeoutMs`   | number | 600000   | 超时上限               |
-| `maxOutputBytes` | number | 64000    | 单流内存收集预算       |
-| `maxSpillBytes`  | number | 64MiB    | 单流 spill 文件上限    |
-| `graceMs`        | number | 3000     | SIGTERM → SIGKILL 宽限 |
-| `nuPath`         | string | `nu`     | nu 可执行文件路径      |
+| 字段             | 类型   | 默认     | 说明                                   |
+| ---------------- | ------ | -------- | -------------------------------------- |
+| `cwd`            | string | 进程 cwd | 后台兜底工作目录                       |
+| `timeoutMs`      | number | 30000    | 默认超时毫秒                           |
+| `maxTimeoutMs`   | number | 600000   | 超时上限                               |
+| `maxOutputBytes` | number | 64000    | 单流内存收集预算                       |
+| `maxSpillBytes`  | number | 64MiB    | 单流 spill 文件上限                    |
+| `graceMs`        | number | 3000     | SIGTERM → SIGKILL 宽限                 |
+| `nuPath`         | string | `nu`     | nu 可执行文件路径;未声明时按候选链解析 |
 
 ## 安装
 
@@ -39,7 +40,7 @@ pnpm test       # vitest(含本包 src/index.test.ts)
 npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts -- packages/dsh-nushell-local/src/index.ts packages/dsh-tool-nushell/src/index.ts   # 真实 dsh Web UI 加载验证(executor + tool)
 ```
 
-插件契约(`src/index.ts`):`default export` `NushellLocalExecutor`(`static inject = ['subprocess']`),另导出 `DEFAULT_NUSHELL_CONFIG`、`assertServiceableNushellConfig`、`annotateWrappedNu`;模块装载时输出 `[dsh-nushell-local] ` 前缀日志行(e2e 契约)。
+插件契约(`src/index.ts`):`default export` `NushellLocalExecutor`(`static inject = ['subprocess']`),另导出 `DEFAULT_NUSHELL_CONFIG`、`assertServiceableNushellConfig`、`annotateWrappedNu`、`resolveNuPath`/`candidateNuPaths`(nuPath 候选链纯函数);模块装载时输出 `[dsh-nushell-local] ` 前缀日志行(e2e 契约)。
 
 ## License
 

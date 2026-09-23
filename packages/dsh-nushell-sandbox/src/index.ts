@@ -1,4 +1,9 @@
-import { ShellExecutor } from '@deepseek-ai/dsh-shell';
+import { lstatSync } from 'node:fs';
+import { join } from 'node:path';
+import {
+  SHELL_SETTINGS_NAMESPACE,
+  ShellExecutor,
+} from '@deepseek-ai/dsh-shell';
 import type {
   ShellExecRequest,
   ShellExecSpec,
@@ -24,6 +29,9 @@ import type {
 // 侧效应形式——pure import type 会被 noUnusedLocals 拦下。
 import '@deepseek-ai/dsh-sandbox-policy';
 import type { Context } from '@deepseek-ai/cordis';
+// 副作用导入:激活 dsh-settings 对 cordis Context 的 `ctx.settings` 类型增强。
+import '@deepseek-ai/dsh-settings';
+import z from '@deepseek-ai/schemastery';
 
 // e2e 契约:模块装载(loader import)时输出 `[目录名] ` 前缀日志行。
 // Service 为惰性实例化,constructor 在无人消费 ctx.shell 前不会执行,
@@ -113,6 +121,60 @@ export function assertServiceableNushellConfig(
       `nushell-sandbox: graceMs must be no greater than ${MAX_TIMER_DELAY_MS}`,
     );
   }
+}
+
+/**
+ * Windows 上的 nu 候选可执行文件:PATH 逐项 + 常见安装点(scoop shims /
+ * Program Files / cargo bin)。与 pwsh 的 newest-first 有意不同:PATH 优先,
+ * 尊重用户活跃安装(scoop shims 通常在 PATH 上)。仅 win32 语义——POSIX
+ * 的 spawn 本身按 PATH 解析,无需探测(与 pwsh-local 同理)。与
+ * dsh-nushell-local 同构复制:两执行器互不 import。
+ */
+export function candidateNuPaths(env: NodeJS.ProcessEnv): string[] {
+  const candidates: string[] = [];
+  for (const entry of (env.PATH ?? '').split(';')) {
+    const trimmed = entry.trim().replace(/^"|"$/g, '');
+    if (trimmed.length > 0) candidates.push(join(trimmed, 'nu.exe'));
+  }
+  const programFiles = env.ProgramFiles ?? 'C:\\Program Files';
+  candidates.push(join(programFiles, 'nu', 'bin', 'nu.exe'));
+  const userProfile = env.USERPROFILE ?? '';
+  const scoopHome =
+    env.SCOOP || (userProfile.length > 0 ? join(userProfile, 'scoop') : '');
+  if (scoopHome.length > 0) candidates.push(join(scoopHome, 'shims', 'nu.exe'));
+  const cargoHome =
+    env.CARGO_HOME ||
+    (userProfile.length > 0 ? join(userProfile, '.cargo') : '');
+  if (cargoHome.length > 0) candidates.push(join(cargoHome, 'bin', 'nu.exe'));
+  return candidates;
+}
+
+/** 存在性探测:符号链接不穿透的文件检查(lstat),测试可注入替身。 */
+export type NuPathExists = (candidate: string) => boolean;
+
+function nuFileExists(candidate: string): boolean {
+  return lstatSync(candidate, { throwIfNoEntry: false })?.isFile() ?? false;
+}
+
+/**
+ * 解析 nu 可执行文件:显式 `nuPath` 配置优先;Windows 上依次探测
+ * {@link candidateNuPaths}(PATH → 常见安装点),全未命中兜底 PATH 语义的
+ * `nu`;POSIX 直接交给 PATH。纯函数:env/platform/exists 全部显式参数化,
+ * 测试无需真实文件系统。
+ */
+export function resolveNuPath(
+  configured: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  exists: NuPathExists = nuFileExists,
+): string {
+  if (configured !== undefined && configured.length > 0) return configured;
+  if (platform === 'win32') {
+    for (const candidate of candidateNuPaths(env)) {
+      if (exists(candidate)) return candidate;
+    }
+  }
+  return 'nu';
 }
 
 /** 把已结算的 collect-mode reader 投影成最终 CollectedOutput 形状。 */
@@ -216,23 +278,74 @@ export function classifySandboxFacts(
 export class NushellSandboxExecutor extends ShellExecutor {
   static inject = ['subprocess', 'sandbox', 'sandboxPolicy'];
 
-  /** 校验后的生效配置(手动默认值在构造时应用)。 */
-  readonly config: Required<NushellSandboxConfig>;
+  /**
+   * settings 命名空间 schema(与官方 PwshLocalExecutor.Config 同构):
+   * 数值字段带 schemastery 缺省;cwd/nuPath 无缺省——语义是「未设时回退」
+   * (cwd 回退进程 cwd,nuPath 回退 {@link resolveNuPath} 候选链)。
+   */
+  static Config = z.object({
+    cwd: z.string(),
+    timeoutMs: z.number().default(DEFAULT_NUSHELL_CONFIG.timeoutMs),
+    maxTimeoutMs: z.number().default(DEFAULT_NUSHELL_CONFIG.maxTimeoutMs),
+    maxOutputBytes: z.number().default(DEFAULT_NUSHELL_CONFIG.maxOutputBytes),
+    maxSpillBytes: z.number().default(DEFAULT_NUSHELL_CONFIG.maxSpillBytes),
+    graceMs: z.number().default(DEFAULT_NUSHELL_CONFIG.graceMs),
+    nuPath: z.string(),
+  });
+
+  /** 当前权威配置来源:settings 解析段,settings 未挂载时回退组合入口。 */
+  private source: () => NushellSandboxConfig;
+  /** 最近一次可见的声明 nuPath(onChange 去重)。 */
+  private declaredNuPath: string | undefined;
+  /** 声明值经候选链解析后的可执行文件(argv 实际使用)。 */
+  private resolvedNuPath: string;
+
+  /** 生效配置:settings 段或组合入口,缺省字段由 DEFAULT 兜底(cwd 回退进程 cwd)。 */
+  get config(): Required<NushellSandboxConfig> {
+    const source = this.source();
+    return {
+      cwd: source.cwd ?? process.cwd(),
+      timeoutMs: source.timeoutMs ?? DEFAULT_NUSHELL_CONFIG.timeoutMs,
+      maxTimeoutMs: source.maxTimeoutMs ?? DEFAULT_NUSHELL_CONFIG.maxTimeoutMs,
+      maxOutputBytes:
+        source.maxOutputBytes ?? DEFAULT_NUSHELL_CONFIG.maxOutputBytes,
+      maxSpillBytes:
+        source.maxSpillBytes ?? DEFAULT_NUSHELL_CONFIG.maxSpillBytes,
+      graceMs: source.graceMs ?? DEFAULT_NUSHELL_CONFIG.graceMs,
+      nuPath: source.nuPath ?? DEFAULT_NUSHELL_CONFIG.nuPath,
+    };
+  }
 
   constructor(ctx: Context, config: NushellSandboxConfig = {}) {
     super(ctx);
-    this.config = {
-      cwd: config.cwd ?? process.cwd(),
-      timeoutMs: config.timeoutMs ?? DEFAULT_NUSHELL_CONFIG.timeoutMs,
-      maxTimeoutMs: config.maxTimeoutMs ?? DEFAULT_NUSHELL_CONFIG.maxTimeoutMs,
-      maxOutputBytes:
-        config.maxOutputBytes ?? DEFAULT_NUSHELL_CONFIG.maxOutputBytes,
-      maxSpillBytes:
-        config.maxSpillBytes ?? DEFAULT_NUSHELL_CONFIG.maxSpillBytes,
-      graceMs: config.graceMs ?? DEFAULT_NUSHELL_CONFIG.graceMs,
-      nuPath: config.nuPath ?? DEFAULT_NUSHELL_CONFIG.nuPath,
-    };
+    this.source = () => config;
+    this.declaredNuPath = config.nuPath;
+    this.resolvedNuPath = resolveNuPath(config.nuPath);
     assertServiceableNushellConfig(this.config);
+    // settings 热更新(与官方 pwsh-local 同一接缝):组合入口登记为 shell
+    // 命名空间的 base 层;用户在设置层改 `nuPath` 后经 setSource 切换来源、
+    // onChange 重解析。声明值不变时 onChange 幂等。与 nushell-local 互斥
+    // 挂载,shell 命名空间不会双重注册。
+    ctx.inject(['settings'], (settingsCtx) => {
+      settingsCtx.settings.installSection(
+        ctx,
+        SHELL_SETTINGS_NAMESPACE,
+        NushellSandboxExecutor.Config,
+        config as Required<NushellSandboxConfig>,
+        {
+          validate: (value) => assertServiceableNushellConfig(value),
+          setSource: (current) => {
+            this.source = current;
+          },
+          onChange: () => {
+            const declared = this.source().nuPath;
+            if (declared === this.declaredNuPath) return;
+            this.declaredNuPath = declared;
+            this.resolvedNuPath = resolveNuPath(declared);
+          },
+        },
+      );
+    });
   }
 
   /**
@@ -271,7 +384,7 @@ export class NushellSandboxExecutor extends ShellExecutor {
 
   /** 一次已解析 spec 的 nu 调用 argv(`nu --no-config-file -c`)。 */
   argv(spec: ShellExecSpec): string[] {
-    return [this.config.nuPath, '--no-config-file', '-c', spec.command];
+    return [this.resolvedNuPath, '--no-config-file', '-c', spec.command];
   }
 
   /** 把已解析 spec 加上(已包装的)argv,组成完整的 subprocess spawn。 */
@@ -393,26 +506,34 @@ export class NushellSandboxExecutor extends ShellExecutor {
     }
     const confinedPolicy: SandboxPolicy = { ...policy, mode: policy.mode };
     const confined = this.ctx.sandbox.confine(this.argv(spec), confinedPolicy);
-    // 后台不做 stderr 反推:输出缓冲是 job 的消费流,executor 旁路读取会
-    // 竞态丢数据。denied 恒 false(未观察到拒绝事实);nu 自身的拒绝文本
-    // 仍经 [stderr] 增量呈现给模型。runner 在 spawn 前失败由结算分支
-    // 如实标 runnerFailed。
-    return this.startWrapped(spec, confined.argv, {
-      mode: policy.mode,
-      denied: false,
-      enforcement: confined.enforcement,
-    });
+    // 后台不做中途 stderr 反推:输出缓冲是 job 的消费流,executor 旁路
+    // 读取会竞态丢数据。拒绝判定推迟到结算点——进程收场后流已封口,
+    // readFrom(0) 全量分类(denial 签名 → denied,runner 规则 →
+    // runnerFailed),与官方 pwsh-local 的 onProcessDone 语义对齐。
+    return this.startWrapped(
+      spec,
+      confined.argv,
+      {
+        mode: policy.mode,
+        denied: false,
+        enforcement: confined.enforcement,
+      },
+      confined,
+    );
   }
 
   /**
    * 后台启动:无 executor 超时(接缝契约),argv 由调用方给。给出
    * {@link facts} 时在结算点盖上沙箱事实——结算的 provider 失败分支
-   * 意味着 runner 在报告结果前就失败了,fail-closed 地标 runnerFailed。
+   * 意味着 runner 在报告结果前就失败了,fail-closed 地标 runnerFailed;
+   * 正常收场分支则在流封口后用 {@link confined} 的方言规则对全量
+   * stderr 分类(见 done 回调内注释)。
    */
   private startWrapped(
     spec: ShellExecSpec,
     argv: string[],
     facts?: ShellSandboxInfo,
+    confined?: Pick<ConfinedArgv, 'denialSignatures' | 'runnerFailureRules'>,
   ): ShellProcess {
     const running = this.ctx.subprocess.spawn(
       this.spawnSpec(spec, this.config.maxOutputBytes, spec.signal, argv),
@@ -440,7 +561,26 @@ export class NushellSandboxExecutor extends ShellExecutor {
           }
           proc.exitCode = outcome.exitCode;
           proc.signal = outcome.signal;
-          if (facts !== undefined) proc.sandbox = facts;
+          if (facts !== undefined) {
+            proc.sandbox = facts;
+            if (confined !== undefined) {
+              // 结算点全量 stderr 反推(对齐官方 pwsh-local 的
+              // onProcessDone):此刻进程已收场、collect 流封口,
+              // readFrom(0) 不再与 job 消费竞态;中途的增量读仍只走
+              // readOutput,不做旁路分类。规则次序与前台一致:
+              // runnerFailureRules 优先于 denialSignatures。
+              const observed = classifySandboxFacts(
+                confined,
+                outcome.exitCode,
+                collected.stderr.readFrom(0).text,
+              );
+              if (observed.runnerFailed) {
+                proc.sandbox = { ...facts, denied: false, runnerFailed: true };
+              } else if (observed.denied) {
+                proc.sandbox = { ...facts, denied: true };
+              }
+            }
+          }
         },
         (error) => {
           proc.status = 'killed';
