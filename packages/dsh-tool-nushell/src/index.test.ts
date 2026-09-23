@@ -306,13 +306,17 @@ describe('参数与纯函数', () => {
   });
 
   it('resolveWorkdir 对齐官方语义:相对基于会话 cwd,缺省回退会话 cwd', () => {
-    const agent = { session: { header: { cwd: 'F:/session' } } };
+    // 语义按运行时 path 模块解析(每平台原生形状),夹具按平台给绝对路径
+    const win = process.platform === 'win32';
+    const cwd = win ? 'F:/session' : '/tmp/session';
+    const abs = win ? 'F:/abs' : '/abs';
+    const agent = { session: { header: { cwd } } };
     const exec = { agent } as unknown as ToolRunContext;
     const bare = { agent: undefined } as unknown as ToolRunContext;
-    expect(resolveWorkdir(undefined, exec)).toBe('F:/session');
+    expect(resolveWorkdir(undefined, exec)).toBe(cwd);
     expect(resolveWorkdir(undefined, bare)).toBeUndefined();
-    expect(resolveWorkdir('sub/dir', exec)).toBe('F:\\session\\sub\\dir');
-    expect(resolveWorkdir('F:/abs', exec)).toBe('F:/abs');
+    expect(resolveWorkdir('sub/dir', exec)).toBe(path.resolve(cwd, 'sub/dir'));
+    expect(resolveWorkdir(abs, exec)).toBe(abs);
   });
 
   it('validateNushellArgs 拒绝非法 outputFormat,合法值放行', () => {
