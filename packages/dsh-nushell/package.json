@@ -9,11 +9,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@lzhida/dsh-nushell-sandbox": "workspace:*",
-    "@lzhida/dsh-tool-nushell": "workspace:*"
-  },
-  "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.2"
+    "@lzhida/dsh-nushell-sandbox": "github:lzhida/dsh-plugins-workspace#dev&path:packages/dsh-nushell-sandbox",
+    "@lzhida/dsh-tool-nushell": "github:lzhida/dsh-plugins-workspace#dev&path:packages/dsh-tool-nushell"
   },
   "dsh": {
     "bundle": {
