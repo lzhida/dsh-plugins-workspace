@@ -9,12 +9,20 @@ export default tseslint.config(
       '**/dist/**',
       '**/coverage/**',
       '.agents/**',
+      // 提交的客户端打包产物（esbuild 生成，见 packages/*/scripts/build-client.ts）
+      '**/web/app.js',
     ],
   },
   {
     files: ['**/*.js', '**/*.mjs'],
     languageOptions: {
       globals: { ...globals.node },
+    },
+  },
+  {
+    files: ['**/web/**/*.js'],
+    languageOptions: {
+      globals: { ...globals.browser },
     },
   },
   js.configs.recommended,

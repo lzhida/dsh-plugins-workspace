@@ -1,0 +1,26 @@
+{
+  "name": "@lzhida/dsh-session-stats",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "同步本地 DSH 会话文件并生成 oh-my-pi 风格的用量统计面板",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build:client": "tsx scripts/build-client.ts",
+    "stats": "tsx src/cli.ts",
+    "stats:sync": "tsx src/cli.ts sync",
+    "stats:serve": "tsx src/cli.ts serve",
+    "stats:export": "tsx src/cli.ts export"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "@types/react": "^19.2.2",
+    "@types/react-dom": "^19.2.3",
+    "esbuild": "^0.27.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "tsx": "^4.23.13",
+    "typescript": "^5.9.3"
+  }
+}
