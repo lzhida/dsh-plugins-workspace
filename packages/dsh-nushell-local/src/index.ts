@@ -20,6 +20,8 @@ export {
   assertServiceableNushellConfig,
   candidateNuPaths,
   DEFAULT_NUSHELL_CONFIG,
+  liveValue,
+  peekField,
   resolveNuPath,
 } from '@lzhida/dsh-tool-nushell/src/executor-local.ts';
 export type {

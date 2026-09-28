@@ -12,7 +12,7 @@
 globalThis.__ModuleLoader__.load({
   // id 必须与 package.json 包名一致,否则 boot graph arrive() 抛
   // "loaded without registering"。
-  id: '@dsh-plugins/guided-goal',
+  id: '@lzhida/dsh-guided-goal',
   factory: (require) => {
     var module = { exports: {} };
     var h = require('react').createElement;

@@ -28,6 +28,10 @@ A guided persistent-goal command. It turns a one-line natural-language intent in
 /guided-goal <draft goal> # interview with a draft; if the draft is specific enough the model may create directly
 ```
 
+### @lzhida/dsh-nushell (combo pack, recommended)
+
+One-package install for the full replacement form: the `nushell` tool + a confining sandbox executor, with the official bash/pwsh family disabled automatically and the permission selector available. A pure wiring pack following the official agent-team-profile pattern (single install, one-patch wiring). See the [package README](./packages/dsh-nushell/README.md).
+
 ### @lzhida/dsh-tool-nushell
 
 A standalone `nushell` tool: invoked explicitly by the model, commands run via `nu --no-config-file -c <command>` and return structured results (exit code, stdout, stderr). Commands are dispatched through the `ctx.shell` capability seam to the currently mounted nushell executor; installed with a companion executor, it replaces the official bash/pwsh shell family.
@@ -58,12 +62,18 @@ Sandboxed Nushell shell executor: a `ctx.shell` provider mutually exclusive with
 Prerequisites: Node ≥ 22, pnpm 11, dsh installed, and Nushell installed locally (`nu` on PATH).
 
 ```sh
-# Pick one executor (ctx.shell is a single-implementation seam; the two are mutually exclusive;
+# Recommended: the combo pack — one install for the full replacement form
+# (tool + confining sandbox executor; auto-disables the official bash/pwsh shell
+# family and tool-bash/tool-pwsh; permission selector available)
+pnpm dsh plugin --profile default add link:packages/dsh-nushell
+
+# Or piecewise: pick one executor (ctx.shell is a single-implementation seam; the two are mutually exclusive;
 # installing either disables the official bash/pwsh shell family and tool-bash/tool-pwsh)
 pnpm dsh plugin --profile default add link:packages/dsh-nushell-local
 pnpm dsh plugin --profile default add link:packages/dsh-nushell-sandbox
 
-# The nushell tool layer (consumes the ctx.shell injected by the executor above)
+# The nushell tool layer (consumes the ctx.shell injected by the executor above; do not install an
+# executor pack alongside the combo pack — entry id conflict)
 pnpm dsh plugin --profile default add link:packages/dsh-tool-nushell
 
 # The guided goal command (independent, no executor dependency)

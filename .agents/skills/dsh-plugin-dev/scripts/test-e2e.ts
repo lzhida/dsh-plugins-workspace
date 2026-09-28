@@ -170,15 +170,17 @@ if (!(await exists(profileDir))) {
   console.log('[e2e] ✓ profile 引导完成');
 }
 
-// e2e 组合补丁(条件化):执行器组合(dsh-nushell-local/sandbox)按设计
-// 非禁闭或独占 ctx.shell,与 dsh-base 的 permission presets(构造期要求
-// 禁闭执行器)互斥——不禁用则 web 启动即崩;tool 直跑组合相反,要求官方
-// permission 栈原样(双模架构的官方模式保真验证)。幂等:按需增/删该行。
-// e2e 不覆盖 permission 升权流。
+// e2e 组合补丁(组合感知):permission presets 的构造期检查要求占缝执行器
+// confining(sandboxMode 非 undefined)。dsh-nushell-local 非禁闭,必须禁用
+// presets 否则 web 启动即崩;dsh-nushell-sandbox 是 confining,presets 可正常
+// 构造——与 tool 直跑组合一样保持官方 permission 栈原样(升权流可测)。
+// 幂等:local 按需增该行;sandbox/直跑按需删该行。
+// dsh 0.1.7 语义依据:permission-presets 构造期
+// `if (ctx.shell.sandboxMode === undefined) throw ...`。
 const patchFile = path.join(profileDir, 'cordis.patch.yml');
 const currentPatch = (await exists(patchFile)) ? await readFile(patchFile, 'utf8') : '';
-const testsExecutorCombo = pluginPkgs.some((pkg) =>
-  /dsh-nushell-(local|sandbox)$/.test(pkg.name),
+const testsLocalExecutor = pluginPkgs.some((pkg) =>
+  /dsh-nushell-local$/.test(pkg.name),
 );
 const PERMISSION_BLOCK = [
   '# e2e patch 层:被测 local 执行器按设计非禁闭(独占 ctx.shell),与 dsh-base',
@@ -187,7 +189,7 @@ const PERMISSION_BLOCK = [
   '  disabled: true',
   '',
 ].join('\n');
-if (testsExecutorCombo) {
+if (testsLocalExecutor) {
   const hasPermissionRow = /^-\s+id:\s+permission\s*$/m.test(currentPatch);
   if (!hasPermissionRow) {
     // 顶层必须是单一 YAML 数组文档:仅注释/空/`[]` 占位时去掉占位再接
@@ -202,11 +204,16 @@ if (testsExecutorCombo) {
       ? currentPatch.replace(/\s*$/, '\n')
       : `${currentPatch.replace(/^\s*\[\]\s*$/m, '').replace(/\s*$/, '\n')}`;
     await writeFile(patchFile, base + PERMISSION_BLOCK);
-    console.log('[e2e] ✓ 已在 profile patch 层禁用 permission presets(执行器组合要求)');
+    console.log('[e2e] ✓ 已在 profile patch 层禁用 permission presets(local 执行器非禁闭)');
   }
 } else if (/^-\s+id:\s+permission\s*$/m.test(currentPatch)) {
-  // 直跑组合:剥离历史遗留的 permission 禁用行(含本 runner 写入的注释行),
-  // 保持官方 permission 栈原样。
+  // sandbox(禁闭,满足 presets 构造检查)与直跑组合:剥离 permission 禁用
+  // 行(含本 runner 写入的注释行),保持官方 permission 栈原样。
+  const stripReason = pluginPkgs.some((pkg) =>
+    /dsh-nushell-sandbox$/.test(pkg.name),
+  )
+    ? 'sandbox 执行器 confining,presets 可构造'
+    : '直跑组合';
   const src = currentPatch.split('\n');
   const kept: string[] = [];
   for (let i = 0; i < src.length; i++) {
@@ -233,7 +240,7 @@ if (testsExecutorCombo) {
     ? kept.join('\n').replace(/\n{3,}/g, '\n\n')
     : `${kept.join('\n').replace(/\s*$/, '\n')}[]\n`;
   await writeFile(patchFile, result);
-  console.log('[e2e] ✓ 直跑组合:已剥离 permission 禁用行,官方 permission 栈保真');
+  console.log(`[e2e] ✓ 已剥离 permission 禁用行(${stripReason})`);
 }
 
 // 安装插件:官方 dsh plugin 命令装入 profile——包内 dsh.bundle.patch 声明

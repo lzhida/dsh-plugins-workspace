@@ -5,7 +5,7 @@ import { validateJsonSchemaValue } from '@deepseek-ai/dsh-tools';
 import type {
   ShellExecRequest,
   ShellExecSpec,
-  ShellProcess,
+  ShellExecution,
   ShellRunResult,
 } from '@deepseek-ai/dsh-shell';
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools';
@@ -13,17 +13,17 @@ import {
   apply,
   applyOutputFormat,
   canonicalNushellResult,
+  Config,
   DEFAULT_TIMEOUT_MS,
   inject,
   MAX_TIMEOUT_MS,
   name,
   nushellJobOutcome,
-  renderNushellProcessRead,
   renderNushellResult,
   resolveWorkdir,
   validateNushellArgs,
-  type Config,
   type NushellForegroundOutput,
+  type NushellToolConfig,
   type NushellToolOutput,
 } from './index.ts';
 
@@ -50,12 +50,7 @@ interface AppliedTool {
 
 interface StubShell {
   resolve: ReturnType<typeof vi.fn>;
-  run: ReturnType<typeof vi.fn>;
-  start: ReturnType<typeof vi.fn>;
-}
-
-interface StubJobs {
-  start(spec: Record<string, unknown>): string;
+  execute: ReturnType<typeof vi.fn>;
 }
 
 interface StubState {
@@ -63,6 +58,8 @@ interface StubState {
   disposers: Array<ReturnType<typeof vi.fn>>;
   cleanups: Array<() => void>;
   tool: AppliedTool;
+  /** 原始 ctx(测试中按需补挂 logger 等可选服务)。 */
+  ctx: Context;
   /** 注册工具的 parameters schema(直通 definition)。 */
   schema: AppliedTool['parameters'];
   sections: Array<{ name: string; order: number; text: string }>;
@@ -71,9 +68,10 @@ interface StubState {
 }
 
 interface StubOptions {
-  jobs?: StubJobs;
+  /** ctx.get('jobs'):job registry 假体(0.1.7 pull-sources 契约)。 */
+  jobs?: Record<string, unknown>;
   dshEnv?: Record<string, string>;
-  config?: Config;
+  config?: NushellToolConfig;
   /** ctx.shell.sandboxMode:confining executor 探测结果。 */
   sandboxMode?: string;
   /** ctx.get('sandboxPolicy'):共享策略服务假体。 */
@@ -91,14 +89,24 @@ interface StubOptions {
   subprocessSpawn?: ReturnType<typeof vi.fn>;
 }
 
-/** identity resolve:spec 即 request,断言直接针对构造的请求形状。 */
+/**
+ * resolve 假体:按真实契约填缺省(timeoutMs 默认 30s、onExpiry 默认 kill),
+ * 其余字段直通——断言直接针对构造的请求形状。
+ */
 function stubShell(): StubShell {
   return {
     resolve: vi.fn(
-      (request: ShellExecRequest) => request as unknown as ShellExecSpec,
+      (request: ShellExecRequest) =>
+        ({
+          ...request,
+          workdir: request.workdir ?? process.cwd(),
+          timeoutMs: request.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+          onExpiry: request.onExpiry ?? 'kill',
+          stdoutMaxBytes: request.stdoutMaxBytes ?? 64_000,
+          sandboxPolicy: request.sandboxPolicy,
+        }) as unknown as ShellExecSpec,
     ),
-    run: vi.fn(),
-    start: vi.fn(),
+    execute: vi.fn(),
   };
 }
 
@@ -166,12 +174,18 @@ function stubCtx(options: StubOptions = {}): StubState {
     ...(options.sandboxPolicyResolve !== undefined
       ? { sandboxPolicy: { resolve: options.sandboxPolicyResolve } }
       : {}),
+    // inject(['jobs']) 回调经 jobCtx.jobs 直读服务(属性与 get 双路径)。
+    ...(options.jobs !== undefined ? { jobs: options.jobs } : {}),
     inject: vi.fn((names: readonly string[], cb: (c: unknown) => void) => {
-      // 接缝探针契约:['shell'] 可用时立即回调;直跑选路在 apply 内完成。
+      // 服务「可用」即回调,模拟 cordis inject 语义:['shell'] 恒可用;
+      // ['jobs'] 仅在组合里真的提供了 jobs 时才回调——避免假体自相矛盾。
       if (names.includes('shell')) {
+        cb(ctx);
+      } else if (names.includes('jobs') && options.jobs !== undefined) {
         cb(ctx);
       }
     }),
+    fiber: { state: 2 },
     shell: Object.assign(shell, {
       sandboxMode: options.sandboxMode,
       runtime: options.seamRuntime === false ? undefined : 'nushell',
@@ -183,6 +197,7 @@ function stubCtx(options: StubOptions = {}): StubState {
     disposers,
     cleanups,
     tool: registered[0]!,
+    ctx,
     schema: registered[0]!.parameters,
     sections,
     collectCalls,
@@ -205,36 +220,34 @@ function fakeExec(agent?: unknown): {
   };
 }
 
-/** 后台 shell 进程假体:done 手动结算,readOutput/kill 可断言。 */
-function fakeProc(
-  stdoutDelta = '',
-  lossy = false,
-): ShellProcess & {
+/** 0.1.7 执行句柄假体:done 手动结算,result() 投影可注入,observed 可断言。 */
+function fakeExecution(result?: Partial<ShellRunResult>): ShellExecution & {
   settle: (outcome: {
     exitCode: number | null;
     signal: NodeJS.Signals | null;
   }) => void;
-  kill: ReturnType<typeof vi.fn>;
-  read: ReturnType<typeof vi.fn>;
 } {
-  const kill = vi.fn();
-  const read = vi.fn(() => ({ delta: stdoutDelta, lossy }));
   let settleDone: (outcome: {
     exitCode: number | null;
     signal: NodeJS.Signals | null;
   }) => void = () => {};
+  const reader = {
+    readFrom: (fromByte: number) => ({
+      text: '',
+      nextOffset: fromByte,
+      lossy: false,
+    }),
+  };
   const proc = {
     status: 'running',
     exitCode: null,
     signal: null,
-    readOutput: read,
-    kill,
-  } as unknown as ShellProcess & {
+    observed: { stdout: reader, stderr: reader },
+    readOutput: vi.fn(() => ({ delta: '', lossy: false })),
+    kill: vi.fn(),
+  } as unknown as ShellExecution & {
     settle: typeof settleDone;
-    kill: typeof kill;
-    read: typeof read;
   };
-  // ShellProcess.done 只读:经 Object.assign 注入手动结算的 promise。
   Object.assign(proc, {
     done: new Promise<void>((res) => {
       settleDone = (outcome) => {
@@ -247,8 +260,21 @@ function fakeProc(
       };
     }),
   });
+  let resultPromise: Promise<ShellRunResult> | undefined;
+  proc.result = vi.fn(() => {
+    resultPromise ??= proc.done.then(() => ({
+      exitCode: proc.exitCode,
+      signal: proc.signal,
+      timedOut: false,
+      aborted: false,
+      timeoutMs: 30_000,
+      stdout: { text: '', truncated: false },
+      stderr: { text: '', truncated: false },
+      ...result,
+    }));
+    return resultPromise;
+  });
   proc.settle = settleDone;
-  proc.read = read;
   return proc;
 }
 
@@ -266,6 +292,43 @@ function foreground(
     stderr: { text: '', truncated: false },
     ...overrides,
   };
+}
+
+interface JobHooksStub {
+  cancel(reason?: string): void;
+  done: Promise<{ status: string; detail?: string }>;
+}
+
+function stubJobs() {
+  const starts: Array<Record<string, unknown>> = [];
+  const hooksList: JobHooksStub[] = [];
+  const jobs: Record<string, unknown> = {
+    start: vi.fn(
+      (
+        spec: {
+          run(job: { id: string }): JobHooksStub;
+        } & Record<string, unknown>,
+      ) => {
+        // 真实 registry 在 start 内同步调用 run(准入后启动生产者)。
+        starts.push(spec);
+        const id = `nushell-${starts.length}`;
+        hooksList.push(spec.run({ id }));
+        return id;
+      },
+    ),
+    kill: vi.fn(() => 'requested' as const),
+    remove: vi.fn(),
+    wait: vi.fn(async (): Promise<{ status: string; detail?: string }> => ({
+      status: 'completed',
+      detail: 'exit code: 0',
+    })),
+    read: vi.fn(() => ({
+      chunks: [] as Array<{ channel?: string; text: string }>,
+      lossy: false,
+      job: {} as { output?: { spillPaths?: string[] } },
+    })),
+  };
+  return { jobs, starts, hooksList };
 }
 
 describe('dsh-tool-nushell 契约', () => {
@@ -296,18 +359,33 @@ describe('dsh-tool-nushell 契约', () => {
     expect(state.tool.description).toContain('$env.NAME');
   });
 
-  it('工具经 effect 登记:卸载时注销工具', () => {
+  it('无 jobs 时注册前台形态工具;cleanup 注销', () => {
     const state = stubCtx();
-    // 两个 effect:接缝 detach 清理 + 工具注册;全部执行后工具必被注销。
-    expect(state.cleanups).toHaveLength(2);
+    expect(state.registered).toHaveLength(1);
+    // 无 run_in_background 参数:前台形态不公布后台开关。
+    const properties = state.schema as unknown as {
+      properties: Record<string, unknown>;
+    };
+    expect(properties.properties.run_in_background).toBeUndefined();
     for (const cleanup of state.cleanups) {
       cleanup();
     }
     expect(state.disposers[0]).toHaveBeenCalled();
   });
 
+  it('有 jobs 时同样注册唯一工具,且公布 run_in_background', () => {
+    const { jobs } = stubJobs();
+    const state = stubCtx({ jobs });
+    expect(state.registered).toHaveLength(1);
+    const properties = state.schema as unknown as {
+      properties: Record<string, unknown>;
+    };
+    expect(properties.properties.run_in_background).toBeDefined();
+  });
+
   it('调用方取消以 AbortError 中止(HarnessError/TOOL_ABORTED 语义)', async () => {
-    const state = stubCtx();
+    const { jobs } = stubJobs();
+    const state = stubCtx({ jobs });
     const controller = new AbortController();
     controller.abort();
     await expect(
@@ -362,7 +440,7 @@ describe('参数与纯函数', () => {
       validateNushellArgs({
         command: 'ls',
         description: 'ok',
-        outputFormat: 'xml' as never,
+        outputFormat: 'xml',
       }),
     ).toThrow("invalid outputFormat: expected 'json', 'nuon' or 'text'");
     expect(() =>
@@ -380,12 +458,27 @@ describe('参数与纯函数', () => {
     expect(applyOutputFormat('ls', 'json')).toBe('do { ls } | to json --raw');
     expect(applyOutputFormat('ls', 'nuon')).toBe('do { ls } | to nuon');
   });
+
+  it('Config schema 声明两个开关,jobs 在场时 promote 文案生效', () => {
+    expect(Config).toBeDefined();
+    const { jobs } = stubJobs();
+    const state = stubCtx({ jobs });
+    // promote 默认开启:timeoutMs 参数文案带「到点转后台」语义。
+    const properties = state.schema as unknown as {
+      properties: Record<string, { description?: string }>;
+    };
+    expect(properties.properties.timeoutMs?.description).toContain(
+      'moves to the background as a job',
+    );
+  });
 });
 
 describe('结构化输出与 stdin', () => {
   it('前台请求应用 outputFormat 包装并透传 stdin', async () => {
     const state = stubCtx();
-    state.shell.run.mockResolvedValue(foreground());
+    state.shell.execute.mockResolvedValue({
+      result: vi.fn(async () => foreground()),
+    });
     const { exec } = fakeExec();
     await state.tool.execute(
       {
@@ -400,12 +493,14 @@ describe('结构化输出与 stdin', () => {
       .calls[0][0] as unknown as ShellExecRequest;
     expect(request.command).toBe('do { ls | length } | to json --raw');
     expect(request.stdin).toBe('abc');
+    // 前台执行必须把调用方 signal 交给 executor(取消即杀)。
+    expect(request.signal).toBeDefined();
   });
 
   it('后台请求同样应用包装,label 保留原始命令', async () => {
-    const jobs: StubJobs = { start: vi.fn(() => 'job-1') };
+    const { jobs, starts } = stubJobs();
     const state = stubCtx({ jobs });
-    state.shell.start.mockReturnValue(fakeProc());
+    state.shell.execute.mockResolvedValue(fakeExecution());
     const { exec } = fakeExec();
     await state.tool.execute(
       {
@@ -420,23 +515,13 @@ describe('结构化输出与 stdin', () => {
       .calls[0][0] as unknown as ShellExecRequest;
     expect(request.command).toBe('do { open a.csv | length } | to nuon');
     expect(request.stdin).toBeUndefined();
-    expect(jobs.start).toHaveBeenCalledWith(
-      expect.objectContaining({ label: 'open a.csv | length' }),
-    );
-  });
-
-  it('outputFormat 缺省时请求命令保持原样(stdin 仍透传)', async () => {
-    const state = stubCtx();
-    state.shell.run.mockResolvedValue(foreground());
-    const { exec } = fakeExec();
-    await state.tool.execute(
-      { command: 'ls', description: '列目录', stdin: 'x' },
-      exec,
-    );
-    const request = state.shell.resolve.mock
-      .calls[0][0] as unknown as ShellExecRequest;
-    expect(request.command).toBe('ls');
-    expect(request.stdin).toBe('x');
+    // 后台按 0.1.7 契约不带 executor 截止(onExpiry: 'none')。
+    expect(request.onExpiry).toBe('none');
+    expect(starts).toHaveLength(1);
+    expect(starts[0]).toMatchObject({
+      kind: 'nushell',
+      label: 'open a.csv | length',
+    });
   });
 
   it('系统提示 section 含 complete 捕获、命令替换与 outputFormat 指引', () => {
@@ -450,13 +535,17 @@ describe('结构化输出与 stdin', () => {
 });
 
 describe('前台执行', () => {
-  it('execute 经 ctx.shell.resolve/run,请求携带 workdir/timeoutMs/DSH_*', async () => {
+  it('execute 经 execute().result(),请求携带 workdir/timeoutMs/DSH_*', async () => {
     const foregroundResult = foreground({
       exitCode: 2,
       stdout: { text: 'out', truncated: false },
     });
     const state = stubCtx({ dshEnv: { DSH_SESSION_ID: 's1' } });
-    state.shell.run.mockResolvedValue(foregroundResult);
+    const execution = fakeExecution();
+    state.shell.execute.mockResolvedValue(execution);
+    execution.result = vi.fn(
+      async () => foregroundResult as unknown as ShellRunResult,
+    );
     const { exec } = fakeExec();
     const value = (await state.tool.execute(
       {
@@ -467,7 +556,7 @@ describe('前台执行', () => {
       },
       exec,
     )) as NushellForegroundOutput;
-    expect(state.shell.resolve).toHaveBeenCalledTimes(1);
+    expect(state.shell.execute).toHaveBeenCalledTimes(1);
     const request = state.shell.resolve.mock.calls[0]![0] as ShellExecRequest;
     expect(request).toMatchObject({
       command: 'ls',
@@ -475,9 +564,6 @@ describe('前台执行', () => {
       timeoutMs: 1_000,
       dshEnv: { DSH_SESSION_ID: 's1' },
     });
-    expect(state.shell.run).toHaveBeenCalledWith(
-      state.shell.resolve.mock.results[0]!.value,
-    );
     expect(value).toEqual(foregroundResult);
     expect(state.collectCalls).toHaveLength(1);
     expect(state.collectCalls[0]).toBe(exec);
@@ -485,21 +571,25 @@ describe('前台执行', () => {
 
   it('result.aborted 时以 AbortError 中止', async () => {
     const state = stubCtx();
-    state.shell.run.mockResolvedValue({
-      ...foreground(),
-      aborted: true,
-      signal: 'SIGTERM',
-      exitCode: null,
-    } satisfies ShellRunResult);
+    state.shell.execute.mockResolvedValue({
+      result: vi.fn(async () => ({
+        ...foreground(),
+        aborted: true,
+        signal: 'SIGTERM' as const,
+        exitCode: null,
+      })),
+    });
     const { exec } = fakeExec();
     await expect(
       state.tool.execute({ command: 'ls', description: '列目录' }, exec),
     ).rejects.toMatchObject({ code: 'ABORTED', name: 'AbortError' });
   });
 
-  it('无 workdir 时请求不带 workdir,默认超时由 executor 预算', async () => {
+  it('无 workdir/timeoutMs 时请求不带,默认由 executor 预算', async () => {
     const state = stubCtx();
-    state.shell.run.mockResolvedValue(foreground());
+    state.shell.execute.mockResolvedValue({
+      result: vi.fn(async () => foreground()),
+    });
     const { exec } = fakeExec();
     await state.tool.execute({ command: 'ls', description: '列目录' }, exec);
     const request = state.shell.resolve.mock.calls[0]![0] as ShellExecRequest;
@@ -511,13 +601,14 @@ describe('前台执行', () => {
 describe('沙箱组合与升权', () => {
   it('非沙箱组合不公布升权字段,请求不带 sandboxPolicy', async () => {
     const state = stubCtx();
-    // state.schema 即编译后 JSON Schema:{type:'object', properties, required}。
     const plain = state.schema as unknown as {
       properties: Record<string, unknown>;
     };
     expect(plain.properties.sandbox_permissions).toBeUndefined();
     expect(plain.properties.justification).toBeUndefined();
-    state.shell.run.mockResolvedValue(foreground());
+    state.shell.execute.mockResolvedValue({
+      result: vi.fn(async () => foreground()),
+    });
     const { exec } = fakeExec();
     await state.tool.execute({ command: 'ls', description: '列目录' }, exec);
     const request = state.shell.resolve.mock.calls[0]![0] as ShellExecRequest;
@@ -545,12 +636,11 @@ describe('沙箱组合与升权', () => {
   }
 
   it('输出 schema 的 foreground 分支声明 sandbox 事实', () => {
-    // canonicalNushellResult 在 confining 组合下输出 sandbox 字段,
-    // additionalProperties:false 的声明必须覆盖之(否则校验失败)。
     const state = stubCtx();
-    const foreground = foregroundBranchOf(state.registered[0]!.output!.schema);
-    // 编译器把字段级 required:true 折叠为对象级 required 数组。
-    expect(foreground.properties!.sandbox).toEqual({
+    const foregroundBranch = foregroundBranchOf(
+      state.registered[0]!.output!.schema,
+    );
+    expect(foregroundBranch.properties!.sandbox).toEqual({
       type: 'object',
       additionalProperties: false,
       properties: {
@@ -563,11 +653,28 @@ describe('沙箱组合与升权', () => {
     });
   });
 
-  it('confining 前台输出经官方校验器零违规(声明覆盖实际输出)', () => {
-    // 运行期 dsh 核心对每个成功返回值跑 validateJsonSchemaValue,违规即
-    // ToolOutputError——confining 组合输出恒带 sandbox,必须通过校验。
+  it('输出 schema 声明 promoted 分支', () => {
     const state = stubCtx();
-    const foreground = foregroundBranchOf(state.registered[0]!.output!.schema);
+    const schema = state.registered[0]!.output!.schema as {
+      oneOf: Array<{ properties?: Record<string, { const?: string }> }>;
+    };
+    const promoted = schema.oneOf.find(
+      (item) => item.properties?.kind?.const === 'promoted',
+    );
+    expect(promoted).toBeDefined();
+    expect(Object.keys(promoted!.properties!)).toEqual([
+      'kind',
+      'jobId',
+      'timeoutMs',
+      'output',
+    ]);
+  });
+
+  it('confining 前台输出经官方校验器零违规(声明覆盖实际输出)', () => {
+    const state = stubCtx();
+    const foregroundBranch = foregroundBranchOf(
+      state.registered[0]!.output!.schema,
+    );
     const confining = canonicalNushellResult({
       exitCode: 0,
       signal: null,
@@ -579,11 +686,10 @@ describe('沙箱组合与升权', () => {
       sandbox: { mode: 'read-only', denied: false, enforcement: 'partial' },
     });
     expect(
-      validateJsonSchemaValue(foreground as never, confining, 'value'),
+      validateJsonSchemaValue(foregroundBranch as never, confining, 'value'),
     ).toEqual([]);
-    // 防空转:声明外键必须被同一校验器抓到。
     const violations = validateJsonSchemaValue(
-      foreground as never,
+      foregroundBranch as never,
       { ...confining, extra: 1 },
       'value',
     );
@@ -599,7 +705,6 @@ describe('沙箱组合与升权', () => {
       sandboxMode: 'read-only',
       sandboxPolicyResolve: resolvePolicy,
     });
-    // schema 公布升权字段(编译后 JSON Schema;枚举为完整升权目标词汇)。
     const properties = state.schema as unknown as {
       properties: Record<string, { enum?: string[] }>;
     };
@@ -608,7 +713,9 @@ describe('沙箱组合与升权', () => {
     });
     expect(properties.properties.justification).toBeDefined();
     const { exec } = fakeExec({ session: { id: 's1' } });
-    state.shell.run.mockResolvedValue(foreground());
+    state.shell.execute.mockResolvedValue({
+      result: vi.fn(async () => foreground()),
+    });
     await state.tool.execute({ command: 'ls', description: '列目录' }, exec);
     expect(resolvePolicy).toHaveBeenCalledWith({
       session: { id: 's1' },
@@ -632,7 +739,9 @@ describe('沙箱组合与升权', () => {
       approval: { request: requestApproval },
     });
     const { exec, signal } = fakeExec({ session: { id: 's1' } });
-    state.shell.run.mockResolvedValue(foreground());
+    state.shell.execute.mockResolvedValue({
+      result: vi.fn(async () => foreground()),
+    });
     await state.tool.execute(
       {
         command: `'x' | save ../out.txt`,
@@ -666,7 +775,9 @@ describe('沙箱组合与升权', () => {
       approval: { request: vi.fn().mockResolvedValue('rejected') },
     });
     const { exec } = fakeExec({ session: { id: 's1' } });
-    state.shell.run.mockResolvedValue(foreground());
+    state.shell.execute.mockResolvedValue({
+      result: vi.fn(async () => foreground()),
+    });
     await expect(
       state.tool.execute(
         {
@@ -678,7 +789,7 @@ describe('沙箱组合与升权', () => {
         exec,
       ),
     ).rejects.toThrow(/rejected escalating this command/);
-    expect(state.shell.run).not.toHaveBeenCalled();
+    expect(state.shell.execute).not.toHaveBeenCalled();
   });
 
   it('升权理由缺失时参数配对校验抛错', async () => {
@@ -742,17 +853,6 @@ describe('沙箱组合与升权', () => {
     expect(renderNushellResult(runnerFailed, ['workspace-write'])).toContain(
       '[sandbox: the sandbox runner itself failed under read-only mode',
     );
-    expect(
-      renderNushellProcessRead(
-        { delta: 'x', lossy: false },
-        { mode: 'read-only', denied: true },
-        ['workspace-write'],
-      ),
-    ).toBe(
-      'x\n[sandbox: file access denied under read-only mode]\n' +
-        '[sandbox: escalation available — retry this exact command once with ' +
-        'sandbox_permissions (the narrowest wider mode that suffices) + justification; the approval prompt asks the user]',
-    );
   });
 
   it('canonical 输出透传沙箱事实,非沙箱结果不带字段', () => {
@@ -760,7 +860,6 @@ describe('沙箱组合与升权', () => {
       canonicalNushellResult(foreground() as unknown as ShellRunResult).sandbox,
     ).toBeUndefined();
     const result = canonicalNushellResult({
-      kind: 'foreground',
       exitCode: 1,
       signal: null,
       timedOut: false,
@@ -774,7 +873,7 @@ describe('沙箱组合与升权', () => {
         enforcement: 'partial',
         runnerFailed: false,
       },
-    } as unknown as ShellRunResult);
+    });
     expect(result.sandbox).toEqual({
       mode: 'read-only',
       denied: true,
@@ -835,7 +934,13 @@ describe('渲染与 canonical 输出', () => {
     ).toBe('head\n[output truncated; full output: (unavailable)]');
   });
 
-  it('canonicalNushellResult 透传 shell 结果并保持 aborted=false', () => {
+  it('stopped 原因渲染为 marker', () => {
+    expect(renderNushellResult(foreground({ stopped: 'job_kill' }))).toBe(
+      'hello\n[stopped: job_kill]',
+    );
+  });
+
+  it('canonicalNushellResult 透传 shell 结果并原样携带 aborted', () => {
     const value = canonicalNushellResult({
       exitCode: 3,
       signal: null,
@@ -850,19 +955,31 @@ describe('渲染与 canonical 输出', () => {
       exitCode: 3,
       signal: null,
       timedOut: false,
-      aborted: false,
+      aborted: true,
       timeoutMs: 2_000,
       stdout: { text: 'a', truncated: true, spillPath: 'F:/s' },
       stderr: { text: '', truncated: false },
     });
   });
 
-  it('后台句柄渲染 started background job', () => {
+  it('后台句柄渲染 started background job;升格渲染 job 交接指引', () => {
     const value: NushellToolOutput = { kind: 'background', jobId: 'nushell-3' };
     expect(renderNushellResult(value)).toBe('started background job nushell-3');
+    const promoted: NushellToolOutput = {
+      kind: 'promoted',
+      jobId: 'nushell-4',
+      timeoutMs: 5_000,
+      output: 'partial\n',
+    };
+    const rendered = renderNushellResult(promoted);
+    expect(rendered).toContain('partial\n');
+    expect(rendered).toContain(
+      '[still running after 5000ms; moved to background job nushell-4]',
+    );
+    expect(rendered).toContain('read newer output with job_output');
   });
 
-  it('nushellJobOutcome 映射 killed/completed;renderNushellProcessRead 附有损提示', () => {
+  it('nushellJobOutcome 映射 killed/completed;沙箱事实并入 detail', () => {
     expect(
       nushellJobOutcome({
         status: 'killed',
@@ -874,56 +991,35 @@ describe('渲染与 canonical 输出', () => {
       detail: 'signal: SIGTERM',
     });
     expect(
-      nushellJobOutcome({ status: 'killed', exitCode: null, signal: null }),
-    ).toEqual({
-      status: 'killed',
-      detail: 'killed before exit',
-    });
-    expect(
       nushellJobOutcome({ status: 'completed', exitCode: 3, signal: null }),
     ).toEqual({
       status: 'completed',
       detail: 'exit code: 3',
     });
-    expect(renderNushellProcessRead({ delta: 'chunk', lossy: false })).toBe(
-      'chunk',
+    const deniedOutcome = nushellJobOutcome(
+      {
+        status: 'completed',
+        exitCode: 1,
+        signal: null,
+        sandbox: { mode: 'read-only', denied: true },
+      },
+      ['workspace-write'],
     );
-    expect(
-      renderNushellProcessRead({
-        delta: 'chunk',
-        lossy: true,
-        stdoutSpillPath: 'F:/o.txt',
-      }),
-    ).toBe(
-      'chunk\n[some output was dropped from memory; full output: F:/o.txt]',
-    );
-    expect(renderNushellProcessRead({ delta: 'chunk', lossy: true })).toBe(
-      'chunk\n[some output was dropped from memory; full output: (unavailable)]',
-    );
+    expect(deniedOutcome.detail).toContain('[sandbox: file access denied');
+    expect(deniedOutcome.detail).toContain('[sandbox: escalation available');
   });
 });
 
 describe('后台执行', () => {
-  function setupJobs(): {
-    jobs: StubJobs;
-    starts: Array<Record<string, unknown>>;
-  } {
-    const starts: Array<Record<string, unknown>> = [];
-    const jobs: StubJobs = {
-      start: vi.fn((spec: Record<string, unknown>) => {
-        starts.push(spec);
-        return 'nushell-1';
-      }),
-    };
-    return { jobs, starts };
-  }
-
-  it('run_in_background 经 ctx.shell.start 返回 job 句柄', async () => {
-    const proc = fakeProc();
-    const { jobs, starts } = setupJobs();
+  it('run_in_background 注册 job:pull-sources 输出环 + cancel 转发 kill', async () => {
+    const execution = fakeExecution();
+    const { jobs, starts, hooksList } = stubJobs();
     const state = stubCtx({ jobs });
-    state.shell.start.mockReturnValue(proc);
-    const { exec } = fakeExec({ session: { header: { cwd: 'F:/session' } } });
+    state.shell.execute.mockResolvedValue(execution);
+    const { exec } = fakeExec({
+      id: 'agent-1',
+      session: { header: { cwd: 'F:/session' } },
+    });
     const value = (await state.tool.execute(
       {
         command: 'sleep 5sec | print',
@@ -938,69 +1034,24 @@ describe('后台执行', () => {
     expect(starts[0]).toMatchObject({
       kind: 'nushell',
       label: 'sleep 5sec | print',
+      owner: 'agent-1',
     });
-    expect(starts[0]!.owner).toBe(exec.agent);
-    const request = state.shell.resolve.mock.calls[0]![0] as ShellExecRequest;
-    expect(request).toMatchObject({
-      command: 'sleep 5sec | print',
-      workdir: path.resolve('F:/session', 'sub'),
+    // pull sources:stdout/stderr 双通道,读的是句柄的 observed 非消费读。
+    const sources = starts[0]!.output as Array<{
+      channel: string;
+      read(from: number): { text: string; nextOffset: number };
+    }>;
+    expect(sources.map((s) => s.channel)).toEqual(['stdout', 'stderr']);
+    expect(sources[0]!.read(0)).toEqual({
+      text: '',
+      nextOffset: 0,
+      lossy: false,
     });
-    expect(request.timeoutMs).toBeUndefined();
-    expect(state.shell.start).toHaveBeenCalledTimes(1);
-  });
-
-  it('job 句柄:cancel 转发 kill,readOutput 走渲染,done 结算 outcome', async () => {
-    const proc = fakeProc('partial ');
-    const { jobs } = setupJobs();
-    const state = stubCtx({ jobs });
-    state.shell.start.mockReturnValue(proc);
-    const { exec } = fakeExec();
-    await state.tool.execute(
-      {
-        command: 'sleep 5sec',
-        description: '后台等待',
-        run_in_background: true,
-      },
-      exec,
-    );
-    const spec = (jobs.start as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
-      run(): {
-        cancel(reason?: string): void;
-        done: Promise<{ status: string; detail?: string }>;
-        readOutput(): string;
-      };
-    };
-    const hooks = spec.run();
-    proc.read.mockReturnValue({ delta: 'chunk ', lossy: false });
-    expect(hooks.readOutput()).toBe('chunk ');
-    hooks.cancel();
-    expect(proc.kill).toHaveBeenCalled();
-    proc.settle({ exitCode: 3, signal: null });
-    await expect(hooks.done).resolves.toEqual({
-      status: 'completed',
-      detail: 'exit code: 3',
-    });
-  });
-
-  it('信号终止的后台进程结算为 killed', async () => {
-    const proc = fakeProc();
-    const { jobs } = setupJobs();
-    const state = stubCtx({ jobs });
-    state.shell.start.mockReturnValue(proc);
-    const { exec } = fakeExec();
-    await state.tool.execute(
-      {
-        command: 'sleep 5sec',
-        description: '后台等待',
-        run_in_background: true,
-      },
-      exec,
-    );
-    const spec = (jobs.start as ReturnType<typeof vi.fn>).mock.calls[0]![0] as {
-      run(): { done: Promise<{ status: string; detail?: string }> };
-    };
-    const hooks = spec.run();
-    proc.settle({ exitCode: null, signal: 'SIGTERM' });
+    // start 内同步调用的 run hooks:cancel 转发 kill(经 controller 兜底),
+    // done 结算 outcome(信号终止记 killed)。
+    const hooks = hooksList[0]!;
+    hooks.cancel('user asked');
+    execution.settle({ exitCode: null, signal: 'SIGTERM' });
     await expect(hooks.done).resolves.toEqual({
       status: 'killed',
       detail: 'signal: SIGTERM',
@@ -1027,6 +1078,137 @@ describe('后台执行', () => {
         exec,
       ),
     ).rejects.toThrow('run_in_background is disabled for this deployment');
+  });
+});
+
+describe('前台升格(promoteOnTimeout)', () => {
+  it('到点未完:返回 promoted 结果,job 保留可继续读', async () => {
+    const execution = fakeExecution();
+    const { jobs } = stubJobs();
+    // 让出微任务/宏任务,确保 registry.start 已同步启动生产者、
+    // processJob 已拿到执行句柄后再返回 running。
+    jobs.wait = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return { status: 'running' };
+    });
+    jobs.read = vi.fn(() => ({
+      chunks: [
+        { channel: 'stdout', text: 'partial ' },
+        { channel: 'stderr', text: 'warn' },
+      ],
+      lossy: false,
+      job: { output: { spillPaths: ['F:/o.txt'] } },
+    }));
+    const state = stubCtx({ jobs });
+    state.shell.execute.mockResolvedValue(execution);
+    const { exec } = fakeExec();
+    const value = (await state.tool.execute(
+      {
+        command: 'sleep 30sec',
+        description: '长任务',
+        timeoutMs: 1_234,
+      },
+      exec,
+    )) as NushellToolOutput;
+    expect(value).toEqual({
+      kind: 'promoted',
+      jobId: 'nushell-1',
+      timeoutMs: 1_234,
+      output: 'partial \n[stderr]\nwarn',
+    });
+    // 升格不杀进程、不移除记录:模型仍可用 job_output/job_kill 跟进。
+    expect(execution.kill).not.toHaveBeenCalled();
+    expect(jobs.remove).not.toHaveBeenCalled();
+  });
+
+  it('等待期内结算:移除记录并走前台 canonical 结果', async () => {
+    const execution = fakeExecution({
+      exitCode: 0,
+      stdout: { text: 'done', truncated: false },
+    });
+    execution.settle({ exitCode: 0, signal: null });
+    const { jobs } = stubJobs();
+    jobs.wait = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      return { status: 'completed', detail: 'exit code: 0' };
+    });
+    const state = stubCtx({ jobs });
+    state.shell.execute.mockResolvedValue(execution);
+    const { exec } = fakeExec();
+    const value = (await state.tool.execute(
+      { command: 'ls', description: '列目录' },
+      exec,
+    )) as NushellForegroundOutput;
+    expect(jobs.remove).toHaveBeenCalledWith('nushell-1', undefined);
+    expect(value).toEqual({
+      kind: 'foreground',
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      aborted: false,
+      timeoutMs: 30_000,
+      stdout: { text: 'done', truncated: false },
+      stderr: { text: '', truncated: false },
+    });
+  });
+
+  it('等待被调用方取消:停掉 job 并抛 AbortError', async () => {
+    const execution = fakeExecution();
+    const { jobs } = stubJobs();
+    const { exec } = fakeExec();
+    // 第一次 wait(携带调用方 signal)被取消打断;stop 的后续 wait 正常返回。
+    let waitCalls = 0;
+    jobs.wait = vi.fn(async () => {
+      waitCalls += 1;
+      if (waitCalls === 1) {
+        throw new Error('wait aborted');
+      }
+      return { status: 'killed', detail: 'tool call aborted' };
+    });
+    const state = stubCtx({ jobs });
+    state.shell.execute.mockResolvedValue(execution);
+    await expect(
+      state.tool.execute({ command: 'ls', description: '列目录' }, exec),
+    ).rejects.toMatchObject({ code: 'ABORTED', name: 'AbortError' });
+    expect(jobs.kill).toHaveBeenCalledWith(
+      'nushell-1',
+      undefined,
+      'tool call aborted',
+    );
+  });
+
+  it('promoteOnTimeout: false 时前台直接走 execute 杀路径', async () => {
+    const { jobs } = stubJobs();
+    const state = stubCtx({
+      jobs,
+      config: { promoteOnTimeout: false },
+    });
+    state.shell.execute.mockResolvedValue({
+      result: vi.fn(async () => foreground() as unknown as ShellRunResult),
+    });
+    const { exec } = fakeExec();
+    await state.tool.execute({ command: 'ls', description: '列目录' }, exec);
+    expect(jobs.start).not.toHaveBeenCalled();
+    expect(state.shell.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('job 注册被拒时降级前台执行(logger.warn 提示)', async () => {
+    const { jobs } = stubJobs();
+    jobs.start = vi.fn(() => {
+      throw new Error('admission refused');
+    });
+    const warn = vi.fn();
+    const state = stubCtx({ jobs });
+    (state.ctx as unknown as { logger?: unknown }).logger = { warn };
+    state.shell.execute.mockResolvedValue({
+      result: vi.fn(async () => foreground() as unknown as ShellRunResult),
+    });
+    const { exec } = fakeExec();
+    await state.tool.execute({ command: 'ls', description: '列目录' }, exec);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('job registration refused'),
+    );
+    expect(state.shell.execute).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -1064,7 +1246,7 @@ describe('UI 呈现', () => {
     });
   });
 
-  it('presentResult:前台结果渲染终端卡片并带退出状态', () => {
+  it('presentResult:前台结果渲染终端卡片并经 parseExitStatus 反解退出状态', () => {
     const state = stubCtx();
     const meta: NushellToolOutput = foreground({
       exitCode: 2,
@@ -1087,7 +1269,7 @@ describe('UI 呈现', () => {
     });
   });
 
-  it('presentResult:信号终止携带 signal,后台结果降级 console 卡片', () => {
+  it('presentResult:信号终止携带 signal,后台/升格结果降级 console 卡片', () => {
     const state = stubCtx();
     const meta: NushellToolOutput = foreground({
       exitCode: null,
@@ -1108,17 +1290,19 @@ describe('UI 呈现', () => {
       output: '(no output)',
       signal: 'SIGTERM',
     });
-    const background: NushellToolOutput = {
-      kind: 'background',
-      jobId: 'nushell-1',
+    const promoted: NushellToolOutput = {
+      kind: 'promoted',
+      jobId: 'nushell-4',
+      timeoutMs: 5_000,
+      output: 'partial',
     };
     expect(
       state.tool.presentResult?.(
-        { command: 'ls', description: '列目录' },
+        { command: 'sleep', description: '长任务' },
         {
-          content: [{ type: 'text', text: 'started background job nushell-1' }],
+          content: [{ type: 'text', text: renderNushellResult(promoted) }],
           isError: false,
-          meta: background,
+          meta: promoted,
         },
       ),
     ).toEqual({
@@ -1126,7 +1310,7 @@ describe('UI 呈现', () => {
       content: [
         {
           type: 'text',
-          text: '```console\nstarted background job nushell-1\n```',
+          text: expect.stringContaining('moved to background job nushell-4'),
         },
       ],
     });
@@ -1159,7 +1343,7 @@ describe('直跑模式(单装本包,不占接缝)', () => {
       subprocessSpawn: spawn,
       config: { executor: { nuPath: 'mynu' } },
     });
-    state.shell.run.mockImplementation(() => {
+    state.shell.execute.mockImplementation(() => {
       throw new Error('seam must not be used');
     });
     await expect(
@@ -1168,12 +1352,11 @@ describe('直跑模式(单装本包,不占接缝)', () => {
         fakeExecSignal(),
       ),
     ).rejects.toThrow('direct-spawn');
-    expect(state.shell.run).not.toHaveBeenCalled();
-    expect(state.shell.start).not.toHaveBeenCalled();
+    expect(state.shell.execute).not.toHaveBeenCalled();
   });
 
-  it('沙箱栈在时内部执行器选 confining 形态:经 ctx.sandbox.confine 包装', async () => {
-    const confine = vi.fn(() => {
+  it('沙箱栈在时内部执行器选 confining 形态:confine 在准备期被调用', async () => {
+    const confine = vi.fn(async () => {
       throw new Error('confine-invoked');
     });
     const state = stubCtx({
@@ -1196,6 +1379,8 @@ describe('直跑模式(单装本包,不占接缝)', () => {
       ),
     ).rejects.toThrow('confine-invoked');
     expect(confine).toHaveBeenCalled();
+    const confineArgv = (confine.mock.calls as unknown as [string[]][])[0]![0];
+    expect(confineArgv).toEqual(['nu', '--no-config-file', '-c', 'ls']);
   });
 
   it('直跑本地形态下升权请求 fail-closed 拒绝', async () => {

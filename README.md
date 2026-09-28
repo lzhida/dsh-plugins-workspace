@@ -28,6 +28,10 @@
 /guided-goal <草稿目标>   # 带草稿进入访谈;草稿足够明确时模型可跳过访谈直接创建
 ```
 
+### @lzhida/dsh-nushell(组合包,推荐)
+
+一次安装即得完整替换形态:`nushell` 工具 + confining 沙箱执行器,官方 bash/pwsh 家族自动停用,permission 选择器可用。纯接线包,对齐官方 agent-team-profile 的「单包安装、patch 一次接线」模式。详见[包 README](./packages/dsh-nushell/README.md)。
+
 ### @lzhida/dsh-tool-nushell
 
 独立 `nushell` 工具:模型显式调用,命令经 `nu --no-config-file -c <command>` 执行,回传结构化结果(exit code、stdout、stderr)。命令经 `ctx.shell` 能力接缝交由当前挂载的 nushell executor 执行;搭配执行器安装后取代官方 bash/pwsh shell 家族。
@@ -58,11 +62,15 @@
 前置:Node ≥ 22、pnpm 11、已安装 dsh、本机安装 Nushell(`nu` 在 PATH 中)。
 
 ```sh
-# 执行器二选一(ctx.shell 为单实现接缝,二者互斥;安装即停用官方 bash/pwsh shell 家族与 tool-bash/tool-pwsh)
+# 推荐方式:组合包,一次安装即得完整替换形态(tool + confining 沙箱执行器,
+# 自动停用官方 bash/pwsh shell 家族与 tool-bash/tool-pwsh,权限选择器可用)
+pnpm dsh plugin --profile default add link:packages/dsh-nushell
+
+# 或分装:执行器二选一(ctx.shell 为单实现接缝,二者互斥;安装即停用官方 bash/pwsh shell 家族与 tool-bash/tool-pwsh)
 pnpm dsh plugin --profile default add link:packages/dsh-nushell-local
 pnpm dsh plugin --profile default add link:packages/dsh-nushell-sandbox
 
-# nushell 工具层(消费上述执行器注入的 ctx.shell)
+# nushell 工具层(消费上述执行器注入的 ctx.shell;与执行器包二选一安装方式,不可与本包重复装执行器)
 pnpm dsh plugin --profile default add link:packages/dsh-tool-nushell
 
 # 引导式 goal 命令(独立,不依赖执行器)

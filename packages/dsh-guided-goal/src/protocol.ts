@@ -1,18 +1,32 @@
 import {
   createUserMessage,
   type ContentBlock,
+  type ContextFormed,
   type UserMessage,
 } from '@deepseek-ai/dsh-llm';
+
+/**
+ * 插件自有消息来源:经 declaration merging 并入 MessageSourceMap。协议
+ * 消息由插件生产,role 仍用 user 承载(聊天 API 只有四种角色),归属由
+ * source 表达——UI 对未知 kind 回退渲染,不再显示为用户发言。
+ */
+declare module '@deepseek-ai/dsh-llm' {
+  interface MessageSourceMap {
+    'guided-goal': {
+      kind: 'guided-goal';
+    } & ContextFormed;
+  }
+}
 
 /** 协议语言:auto 走中文兜底(与 index.ts 的 ConfigLanguage 同形)。 */
 type ProtocolLanguage = 'auto' | 'zh' | 'en';
 
-/** 构造一条 source 为用户的文本消息(steer 的载体)。 */
+/** 构造一条 guided-goal 来源、user 角色承载的文本消息(steer 的载体)。 */
 export function userText(text: string): UserMessage {
   // ContentBlock 判别联合的 text 变体:结构由 dsh-llm 契约定义
   const textBlock: ContentBlock = { type: 'text', text };
   return createUserMessage({
-    source: { kind: 'user' },
+    source: { kind: 'guided-goal', form: 'instructions' },
     content: [textBlock],
   });
 }

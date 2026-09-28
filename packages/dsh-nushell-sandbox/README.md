@@ -11,12 +11,11 @@
 - **fail-closed**:无可用 runner 时 `confine` 抛 `SANDBOX_UNAVAILABLE`,决不静默回退到未受限 argv;`danger-full-access` 模式下不包装,事实字段如实报告该模式;
 - **事实分类**:命令失败按 `RunnerFailureRule`(runner 自身失败,命令从未运行)与 `denialSignatures`(策略拒绝,命令运行且被内核拦下)互斥分类,进 `ShellSandboxInfo` 的 `denied`/`runnerFailed` 字段,与官方 fail-closed 分类次序一致;
 - **nu 方言**:`nu --no-config-file -c <command>`,禁用用户配置保证可复现的干净求值环境;`nuPath` 可配置,未声明时按候选链解析(PATH 逐项 → scoop shims / Program Files / cargo bin,POSIX 直接交给 PATH);环境注入 `NO_COLOR=1` / `PAGER=cat` / `GIT_PAGER=cat`(模型友好,与 pwsh-local 一致地不设置 `TERM=dumb`);
-- **settings 热更新**:组合入口登记为 `shell` settings 命名空间的 base 层(与官方 pwsh-local 同一接缝),设置层改 `nuPath` 后经 `onChange` 重解析,无需重启;
-- **前台 `run`**:经 `dsh-timeout` 的 `deadline` 融合调用方取消与超时(`BASH_TIMEOUT` 能力码,与官方 shell 家族共享);非零退出/超时杀/中止都正常 resolve,仅基础设施失败 reject;结果附 `sandbox` 事实字段;
-- **后台 `start`**:无 executor 超时(接缝契约),返回 `ShellProcess` 句柄(`done` 永不 reject,provider 拒绝降级为 killed + 失败注记;`readOutput` 消费式增量,stderr 以 `[stderr]` 段并入);拒绝分类推迟到**结算点**——进程收场、collect 流封口后对全量 stderr 分类(`denialSignatures` → `denied`,`RunnerFailureRule` → `runnerFailed`,次序与前台一致,对齐官方 pwsh-local 的 `onProcessDone`),不与 job 的消费流竞态;
+- **settings 热更新**(0.1.7 SettingsForms 时代):配置经 `static Config` 静态声明并全字段 `volatile`——loader 自动投影设置表单并以活值访问器注入,设置层改 `nuPath` 后下次读取即生效,无需重启;
+- **单一入口 `execute`**(0.1.7 接缝契约):confinement 在执行准备期经 `ctx.sandbox.confine`(0.1.7 起异步、可取消)包装 argv;`await` 句柄的 `result()` 即前台——非零退出/超时杀/中止都正常 resolve、结果附 `sandbox` 事实字段,仅基础设施失败 reject(runner 自身失败抛 `SANDBOX_UNAVAILABLE`,命令从未运行);保留句柄即后台——`done` 永不 reject,拒绝分类推迟到**结算点**(`onProcessDone`:进程收场、collect 流封口后按 `denialSignatures`/`RunnerFailureRule` 分类,runner 归因采用官方 `isRunnerSpawnFailure` 诊断,不与 job 的消费流竞态);
 - **包装层检测**:stderr 命中已知注入特征(如 `pi-natives`)时自动附诊断注记,提示 `nu` 可能被包装、建议 `nuPath` 指向官方构建。
 
-与 `dsh-nushell-local` 是同构的独立实现而非子类:官方 shell 家族的 local/sandbox 执行器互不 import,共享面下沉在 `dsh-shell` 接缝类型。
+与 `dsh-nushell-local` 是子类复用关系(0.1.7 起,对齐官方 pwsh 家族):confining 形态只把 argv 准备换成 `ctx.sandbox.confine` 包装,进程机制/截止/输出全部继承本地执行器。
 
 ## 配置
 
