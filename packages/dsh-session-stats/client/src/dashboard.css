@@ -29,13 +29,21 @@
   line-height: 1.5;
   min-height: 100%;
   box-sizing: border-box;
+  position: relative;
   container-type: inline-size;
 }
 
-/* 内嵌模式:占满 dsh tab body 并自持滚动(宿主容器通常裁剪溢出)。 */
+/* 内嵌模式:占满 dsh tab body。根元素只做定位与裁剪、不滚动,滚动由
+   内层 .app 承担——抽屉/遮罩/tooltip 相对根元素定位,绝不会越出面板
+   (position:fixed 会按视口定位,曾把宿主整页罩住)。 */
 .dss-scope.dss-embedded {
   height: 100%;
-  overflow: auto;
+  overflow: hidden;
+}
+
+.dss-scope.dss-embedded .app {
+  height: 100%;
+  overflow: hidden auto;
 }
 
 .dss-scope[data-theme='light'] {
@@ -393,6 +401,17 @@
   .dss-scope .main {
     padding: 12px 12px 28px;
   }
+
+  /* 嵌入 dsh 面板:抽屉与遮罩改为相对插件根元素定位。根元素
+     overflow:hidden 负责裁剪收起态,内层 .app 滚动不影响其位置。 */
+  .dss-scope.dss-embedded .sidebar {
+    position: absolute;
+    overflow-y: auto;
+  }
+
+  .dss-scope.dss-embedded .scrim {
+    position: absolute;
+  }
 }
 
 .dss-scope table {
@@ -506,7 +525,7 @@
 }
 
 .dss-scope .tooltip {
-  position: fixed;
+  position: absolute;
   z-index: 10000;
   background: var(--panel);
   border: 1px solid var(--border);

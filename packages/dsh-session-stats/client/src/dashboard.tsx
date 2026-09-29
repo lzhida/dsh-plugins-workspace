@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type { DashboardData, DailyPoint } from '../../src/types.ts';
 
@@ -270,11 +270,17 @@ interface Tip {
   content: ReactNode;
 }
 
+/** 坐标基于插件根元素(absolute 定位),嵌入模式不会飘出面板。 */
 function tipFromEvent(
   event: { clientX: number; clientY: number },
   content: ReactNode,
+  origin?: DOMRect | null,
 ): Tip {
-  return { x: event.clientX + 14, y: event.clientY + 14, content };
+  return {
+    x: event.clientX - (origin?.left ?? 0) + 14,
+    y: event.clientY - (origin?.top ?? 0) + 14,
+    content,
+  };
 }
 
 /* ---------------- 导航与范围 ---------------- */
@@ -496,10 +502,12 @@ function DailyChart({
   daily,
   t,
   setTip,
+  getOrigin,
 }: {
   daily: DailyPoint[];
   t: (key: StringKey) => string;
   setTip: (tip: Tip | null) => void;
+  getOrigin: () => DOMRect | null;
 }) {
   const geometry = useMemo(() => {
     const plotH = CHART_H - PAD_T - PAD_B;
@@ -630,8 +638,12 @@ function DailyChart({
                 width={barW + 2}
                 height={plotH}
                 fill="transparent"
-                onMouseEnter={(e) => setTip(tipFromEvent(e, tipFor(d)))}
-                onMouseMove={(e) => setTip(tipFromEvent(e, tipFor(d)))}
+                onMouseEnter={(e) =>
+                  setTip(tipFromEvent(e, tipFor(d), getOrigin()))
+                }
+                onMouseMove={(e) =>
+                  setTip(tipFromEvent(e, tipFor(d), getOrigin()))
+                }
                 onMouseLeave={() => setTip(null)}
               />
             </g>
@@ -669,10 +681,12 @@ function HourlyHeat({
   hourly,
   t,
   setTip,
+  getOrigin,
 }: {
   hourly: number[];
   t: (key: StringKey) => string;
   setTip: (tip: Tip | null) => void;
+  getOrigin: () => DOMRect | null;
 }) {
   const max = Math.max(...hourly, 1);
   return (
@@ -692,8 +706,8 @@ function HourlyHeat({
             key={hour}
             className="hour-cell"
             style={style}
-            onMouseEnter={(e) => setTip(tipFromEvent(e, content))}
-            onMouseMove={(e) => setTip(tipFromEvent(e, content))}
+            onMouseEnter={(e) => setTip(tipFromEvent(e, content, getOrigin()))}
+            onMouseMove={(e) => setTip(tipFromEvent(e, content, getOrigin()))}
             onMouseLeave={() => setTip(null)}
           >
             {hour}
@@ -791,6 +805,11 @@ export function StatsDashboard(props: StatsDashboardProps): ReactNode {
   const [syncing, setSyncing] = useState(false);
   const [tip, setTip] = useState<Tip | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const getRootRect = useCallback(
+    (): DOMRect | null => rootRef.current?.getBoundingClientRect() ?? null,
+    [],
+  );
   const isEmbedded = embedded !== null;
   const t = useCallback((key: StringKey) => STRINGS[lang][key], [lang]);
 
@@ -894,295 +913,314 @@ export function StatsDashboard(props: StatsDashboardProps): ReactNode {
 
   return (
     <div
-      className={`dss-scope app${standalone ? '' : ' dss-embedded'}${drawerOpen ? ' drawer-open' : ''}`}
+      ref={rootRef}
+      className={`dss-scope${standalone ? '' : ' dss-embedded'}${drawerOpen ? ' drawer-open' : ''}`}
       data-theme={theme}
     >
-      {showSidebar ? (
-        <aside className="sidebar">
-          <div className="brand">
-            <span className="brand-icon">◈</span>
-            <span className="brand-text">
-              {t('brand')}
-              <small>{t('subtitle')}</small>
-            </span>
-          </div>
-          <nav className="nav">
-            {NAV_ITEMS.map((item) => (
-              <button
-                key={item.key}
-                type="button"
-                className={`nav-item${view === item.key ? ' active' : ''}`}
-                onClick={() => navigate(item.key)}
-              >
-                <span className="nav-icon">{item.icon}</span>
-                <span>{t(item.labelKey)}</span>
-              </button>
-            ))}
-          </nav>
-          <div className="sidebar-footer">
-            <div className="lang-switch" title={t('langTitle')}>
-              <button
-                type="button"
-                className={lang === 'zh' ? 'active' : ''}
-                onClick={() => setLang('zh')}
-              >
-                中文
-              </button>
-              <button
-                type="button"
-                className={lang === 'en' ? 'active' : ''}
-                onClick={() => setLang('en')}
-              >
-                EN
-              </button>
+      <div className="app">
+        {showSidebar ? (
+          <aside className="sidebar">
+            <div className="brand">
+              <span className="brand-icon">◈</span>
+              <span className="brand-text">
+                {t('brand')}
+                <small>{t('subtitle')}</small>
+              </span>
             </div>
-            <button
-              className="btn full"
-              type="button"
-              title={t('themeTitle')}
-              onClick={toggleTheme}
-            >
-              ◐ {t('themeTitle')}
-            </button>
-          </div>
-        </aside>
-      ) : null}
-      <button
-        type="button"
-        className="scrim"
-        aria-label={t('openMenu')}
-        onClick={() => setDrawerOpen(false)}
-      />
-
-      <main className="main">
-        <header className="topbar">
-          <div className="topbar-title">
-            <h1>{t(viewTitleKey(view))}</h1>
-            <span className="subtitle">{t(viewHintKey(view))}</span>
-          </div>
-          <div className="topbar-actions">
-            <button
-              type="button"
-              className="btn icon menu-btn"
-              aria-label={t('openMenu')}
-              title={t('openMenu')}
-              onClick={() => setDrawerOpen(true)}
-            >
-              ☰
-            </button>
-            <div className="range-tabs" role="tablist">
-              {RANGES.map(([key, labelKey]) => (
+            <nav className="nav">
+              {NAV_ITEMS.map((item) => (
                 <button
-                  key={key}
+                  key={item.key}
                   type="button"
-                  role="tab"
-                  className={range === key ? 'active' : ''}
-                  onClick={() => changeRange(key)}
+                  className={`nav-item${view === item.key ? ' active' : ''}`}
+                  onClick={() => navigate(item.key)}
                 >
-                  {t(labelKey)}
+                  <span className="nav-icon">{item.icon}</span>
+                  <span>{t(item.labelKey)}</span>
                 </button>
               ))}
-            </div>
-            {isEmbedded ? null : (
+            </nav>
+            <div className="sidebar-footer">
+              <div className="lang-switch" title={t('langTitle')}>
+                <button
+                  type="button"
+                  className={lang === 'zh' ? 'active' : ''}
+                  onClick={() => setLang('zh')}
+                >
+                  中文
+                </button>
+                <button
+                  type="button"
+                  className={lang === 'en' ? 'active' : ''}
+                  onClick={() => setLang('en')}
+                >
+                  EN
+                </button>
+              </div>
               <button
-                className="btn"
+                className="btn full"
                 type="button"
-                disabled={syncing}
-                onClick={() => void doSync()}
+                title={t('themeTitle')}
+                onClick={toggleTheme}
               >
-                {syncing ? t('syncing') : t('sync')}
+                ◐ {t('themeTitle')}
               </button>
+            </div>
+          </aside>
+        ) : null}
+        <button
+          type="button"
+          className="scrim"
+          aria-label={t('openMenu')}
+          onClick={() => setDrawerOpen(false)}
+        />
+
+        <main className="main">
+          <header className="topbar">
+            <div className="topbar-title">
+              <h1>{t(viewTitleKey(view))}</h1>
+              <span className="subtitle">{t(viewHintKey(view))}</span>
+            </div>
+            <div className="topbar-actions">
+              <button
+                type="button"
+                className="btn icon menu-btn"
+                aria-label={t('openMenu')}
+                title={t('openMenu')}
+                onClick={() => setDrawerOpen(true)}
+              >
+                ☰
+              </button>
+              <div className="range-tabs" role="tablist">
+                {RANGES.map(([key, labelKey]) => (
+                  <button
+                    key={key}
+                    type="button"
+                    role="tab"
+                    className={range === key ? 'active' : ''}
+                    onClick={() => changeRange(key)}
+                  >
+                    {t(labelKey)}
+                  </button>
+                ))}
+              </div>
+              {isEmbedded ? null : (
+                <button
+                  className="btn"
+                  type="button"
+                  disabled={syncing}
+                  onClick={() => void doSync()}
+                >
+                  {syncing ? t('syncing') : t('sync')}
+                </button>
+              )}
+            </div>
+          </header>
+
+          <div className="meta-line">
+            {error ? (
+              <span className="bad">
+                {t('loadFailed')}: {error}
+              </span>
+            ) : (
+              <>
+                {status}
+                {data && o
+                  ? `${status ? ' · ' : ''}${t('generatedAt')} ${fmtDateTime(data.generatedAt)} · ${fmtAgo(data.generatedAt, t)}`
+                  : !status
+                    ? t('loading')
+                    : ''}
+              </>
             )}
           </div>
-        </header>
 
-        <div className="meta-line">
-          {error ? (
-            <span className="bad">
-              {t('loadFailed')}: {error}
-            </span>
-          ) : (
+          {data && o ? (
             <>
-              {status}
-              {data && o
-                ? `${status ? ' · ' : ''}${t('generatedAt')} ${fmtDateTime(data.generatedAt)} · ${fmtAgo(data.generatedAt, t)}`
-                : !status
-                  ? t('loading')
-                  : ''}
-            </>
-          )}
-        </div>
+              {view === 'overview' ? (
+                <>
+                  <Cards data={data} t={t} />
+                  <Section
+                    title={t('dailyChartTitle')}
+                    hint={t('dailyChartHint')}
+                  >
+                    <DailyChart
+                      daily={data.daily}
+                      t={t}
+                      setTip={setTip}
+                      getOrigin={getRootRect}
+                    />
+                  </Section>
+                  <Section title={t('hourlyTitle')} hint={t('hourlyHint')}>
+                    <HourlyHeat
+                      hourly={data.hourly}
+                      t={t}
+                      setTip={setTip}
+                      getOrigin={getRootRect}
+                    />
+                  </Section>
+                </>
+              ) : null}
 
-        {data && o ? (
-          <>
-            {view === 'overview' ? (
-              <>
-                <Cards data={data} t={t} />
-                <Section
-                  title={t('dailyChartTitle')}
-                  hint={t('dailyChartHint')}
-                >
-                  <DailyChart daily={data.daily} t={t} setTip={setTip} />
-                </Section>
-                <Section title={t('hourlyTitle')} hint={t('hourlyHint')}>
-                  <HourlyHeat hourly={data.hourly} t={t} setTip={setTip} />
-                </Section>
-              </>
-            ) : null}
+              {view === 'models' ? (
+                <>
+                  <Section title={t('navModels')} hint={t('viewHintModels')}>
+                    <DataTable
+                      empty={t('tableEmpty')}
+                      columns={[
+                        { label: t('thModel') },
+                        { label: t('thCalls'), num: true },
+                        { label: t('thInput'), num: true },
+                        { label: t('thOutput'), num: true },
+                        { label: t('thCacheRead'), num: true },
+                        { label: t('thTotal'), num: true },
+                      ]}
+                      rows={data.models.map((m) => [
+                        <span className="mono" key="k">
+                          {m.provider}/{m.model}
+                        </span>,
+                        fmtInt(m.calls),
+                        fmtTokens(m.inputTokens),
+                        fmtTokens(m.outputTokens),
+                        fmtTokens(m.cacheReadTokens),
+                        fmtTokens(m.totalTokens),
+                      ])}
+                    />
+                  </Section>
+                  <Section title={t('thProvider')} hint={t('providersSub')}>
+                    <ProviderTable data={data} t={t} />
+                  </Section>
+                </>
+              ) : null}
 
-            {view === 'models' ? (
-              <>
-                <Section title={t('navModels')} hint={t('viewHintModels')}>
+              {view === 'tools' ? (
+                <Section title={t('navTools')} hint={t('viewHintTools')}>
                   <DataTable
                     empty={t('tableEmpty')}
                     columns={[
-                      { label: t('thModel') },
+                      { label: t('thTool') },
                       { label: t('thCalls'), num: true },
-                      { label: t('thInput'), num: true },
-                      { label: t('thOutput'), num: true },
-                      { label: t('thCacheRead'), num: true },
-                      { label: t('thTotal'), num: true },
+                      { label: t('thAvgDuration'), num: true },
+                      { label: t('thTotalDuration'), num: true },
                     ]}
-                    rows={data.models.map((m) => [
+                    rows={data.tools.map((tool) => [
                       <span className="mono" key="k">
-                        {m.provider}/{m.model}
+                        {tool.name}
                       </span>,
-                      fmtInt(m.calls),
-                      fmtTokens(m.inputTokens),
-                      fmtTokens(m.outputTokens),
-                      fmtTokens(m.cacheReadTokens),
-                      fmtTokens(m.totalTokens),
+                      fmtInt(tool.calls),
+                      fmtDuration(tool.avgDurationMs),
+                      <>
+                        {fmtDuration(tool.totalDurationMs)}
+                        {tool.errors > 0 ? (
+                          <span className="bad">
+                            {t('toolFailedNote').replace(
+                              '{n}',
+                              String(tool.errors),
+                            )}
+                          </span>
+                        ) : null}
+                      </>,
                     ])}
                   />
                 </Section>
-                <Section title={t('thProvider')} hint={t('providersSub')}>
-                  <ProviderTable data={data} t={t} />
+              ) : null}
+
+              {view === 'projects' ? (
+                <Section title={t('navProjects')} hint={t('viewHintProjects')}>
+                  <DataTable
+                    empty={t('tableEmpty')}
+                    columns={[
+                      { label: t('thProject') },
+                      { label: t('thSessions'), num: true },
+                      { label: t('thMessages'), num: true },
+                      { label: t('thTokens'), num: true },
+                      { label: t('thLastActive'), num: true },
+                    ]}
+                    rows={data.projects.map((p) => [
+                      p.project,
+                      fmtInt(p.sessions),
+                      fmtInt(p.messages),
+                      fmtTokens(p.usage.totalTokens),
+                      <span className="dim" key="k">
+                        {fmtAgo(p.lastActiveAt, t)}
+                      </span>,
+                    ])}
+                  />
                 </Section>
-              </>
-            ) : null}
+              ) : null}
 
-            {view === 'tools' ? (
-              <Section title={t('navTools')} hint={t('viewHintTools')}>
-                <DataTable
-                  empty={t('tableEmpty')}
-                  columns={[
-                    { label: t('thTool') },
-                    { label: t('thCalls'), num: true },
-                    { label: t('thAvgDuration'), num: true },
-                    { label: t('thTotalDuration'), num: true },
-                  ]}
-                  rows={data.tools.map((tool) => [
-                    <span className="mono" key="k">
-                      {tool.name}
-                    </span>,
-                    fmtInt(tool.calls),
-                    fmtDuration(tool.avgDurationMs),
-                    <>
-                      {fmtDuration(tool.totalDurationMs)}
-                      {tool.errors > 0 ? (
-                        <span className="bad">
-                          {t('toolFailedNote').replace(
-                            '{n}',
-                            String(tool.errors),
-                          )}
-                        </span>
-                      ) : null}
-                    </>,
-                  ])}
-                />
-              </Section>
-            ) : null}
+              {view === 'sessions' ? (
+                <Section title={t('navSessions')} hint={t('viewHintSessions')}>
+                  <DataTable
+                    empty={t('tableEmpty')}
+                    columns={[
+                      { label: t('thTitle') },
+                      { label: t('thProject') },
+                      { label: t('thModel') },
+                      { label: t('thMessages'), num: true },
+                      { label: t('navTools'), num: true },
+                      { label: t('thTokens'), num: true },
+                      { label: t('thSpan'), num: true },
+                      { label: t('thActive'), num: true },
+                    ]}
+                    rows={data.recent.map((s) => [
+                      <span key="k" title={s.id}>
+                        {s.title}
+                      </span>,
+                      s.project,
+                      <span className="mono" key="m">
+                        {s.model}
+                      </span>,
+                      fmtInt(s.messages),
+                      fmtInt(s.toolCalls),
+                      fmtTokens(s.usage.totalTokens),
+                      fmtDuration(s.activeMs),
+                      <span
+                        className="dim"
+                        key="a"
+                        title={fmtDateTime(s.lastActiveAt)}
+                      >
+                        {fmtAgo(s.lastActiveAt, t)}
+                      </span>,
+                    ])}
+                  />
+                </Section>
+              ) : null}
 
-            {view === 'projects' ? (
-              <Section title={t('navProjects')} hint={t('viewHintProjects')}>
-                <DataTable
-                  empty={t('tableEmpty')}
-                  columns={[
-                    { label: t('thProject') },
-                    { label: t('thSessions'), num: true },
-                    { label: t('thMessages'), num: true },
-                    { label: t('thTokens'), num: true },
-                    { label: t('thLastActive'), num: true },
-                  ]}
-                  rows={data.projects.map((p) => [
-                    p.project,
-                    fmtInt(p.sessions),
-                    fmtInt(p.messages),
-                    fmtTokens(p.usage.totalTokens),
-                    <span className="dim" key="k">
-                      {fmtAgo(p.lastActiveAt, t)}
-                    </span>,
-                  ])}
-                />
-              </Section>
-            ) : null}
+              {view === 'errors' ? (
+                <Section title={t('errorsTitle')} hint={t('errorsHint')}>
+                  <DataTable
+                    empty={t('errorsEmpty')}
+                    columns={[
+                      { label: t('thCode') },
+                      { label: t('thCount'), num: true },
+                    ]}
+                    rows={data.errors.map((e) => [
+                      <span className="mono" key="k">
+                        {e.code}
+                      </span>,
+                      fmtInt(e.count),
+                    ])}
+                  />
+                </Section>
+              ) : null}
+            </>
+          ) : null}
 
-            {view === 'sessions' ? (
-              <Section title={t('navSessions')} hint={t('viewHintSessions')}>
-                <DataTable
-                  empty={t('tableEmpty')}
-                  columns={[
-                    { label: t('thTitle') },
-                    { label: t('thProject') },
-                    { label: t('thModel') },
-                    { label: t('thMessages'), num: true },
-                    { label: t('navTools'), num: true },
-                    { label: t('thTokens'), num: true },
-                    { label: t('thSpan'), num: true },
-                    { label: t('thActive'), num: true },
-                  ]}
-                  rows={data.recent.map((s) => [
-                    <span key="k" title={s.id}>
-                      {s.title}
-                    </span>,
-                    s.project,
-                    <span className="mono" key="m">
-                      {s.model}
-                    </span>,
-                    fmtInt(s.messages),
-                    fmtInt(s.toolCalls),
-                    fmtTokens(s.usage.totalTokens),
-                    fmtDuration(s.activeMs),
-                    <span
-                      className="dim"
-                      key="a"
-                      title={fmtDateTime(s.lastActiveAt)}
-                    >
-                      {fmtAgo(s.lastActiveAt, t)}
-                    </span>,
-                  ])}
-                />
-              </Section>
-            ) : null}
-
-            {view === 'errors' ? (
-              <Section title={t('errorsTitle')} hint={t('errorsHint')}>
-                <DataTable
-                  empty={t('errorsEmpty')}
-                  columns={[
-                    { label: t('thCode') },
-                    { label: t('thCount'), num: true },
-                  ]}
-                  rows={data.errors.map((e) => [
-                    <span className="mono" key="k">
-                      {e.code}
-                    </span>,
-                    fmtInt(e.count),
-                  ])}
-                />
-              </Section>
-            ) : null}
-          </>
-        ) : null}
-
-        <footer className="footer">{t('footer')}</footer>
-      </main>
+          <footer className="footer">{t('footer')}</footer>
+        </main>
+      </div>
 
       {tip ? (
         <div
           className="tooltip"
           style={{
-            left: Math.max(8, Math.min(tip.x, window.innerWidth - 340)),
+            left: Math.max(
+              8,
+              Math.min(
+                tip.x,
+                (rootRef.current?.clientWidth ?? window.innerWidth) - 340,
+              ),
+            ),
             top: Math.max(8, tip.y),
           }}
         >

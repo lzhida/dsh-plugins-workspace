@@ -1,12 +1,15 @@
 import { build } from 'esbuild';
+import { copyFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 /**
- * 两个前端构建产物:
+ * 前端构建产物:
  * 1. web/app.js — 独立面板(serve/export 用),IIFE + production React 内联;
  * 2. client/index.js — dsh 客户端插件(ModuleLoader CJS-in-factory 提交产物),
  *    react/react/jsx-runtime 使用宿主运行时实例(external),CSS 以文本内联由
- *    插件在运行时注入 <style>。
+ *    插件在运行时注入 <style>;
+ * 3. web/styles.css — 独立页样式,始终从 client/src/dashboard.css 同步,
+ *    避免独立/导出页样式与源码脱节。
  */
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -42,3 +45,5 @@ await build({
   footer: { js: 'return module.exports; } });' },
   logLevel: 'info',
 });
+
+copyFileSync(`${root}client/src/dashboard.css`, `${root}web/styles.css`);
