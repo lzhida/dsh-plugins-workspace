@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DSH 会话统计</title>
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem('dsh-stats-theme');
+          var system = matchMedia('(prefers-color-scheme: dark)').matches
+            ? 'dark'
+            : 'light';
+          var theme = stored === 'light' || stored === 'dark' ? stored : system;
+          document.documentElement.dataset.theme = theme;
+          document.documentElement.style.colorScheme = theme;
+        } catch (e) {}
+      })();
+    </script>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="root"></div>
+    <div id="tooltip" class="tooltip" hidden></div>
+    <script>
+      window.__STATS_DATA__ = null;
+    </script>
+    <script src="app.js"></script>
+  </body>
+</html>
