@@ -19,7 +19,7 @@
     "stats:export": "tsx src/cli.ts export"
   },
   "devDependencies": {
-    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/cordis": "^4.0.4",
     "@types/node": "^26.6.2",
     "@types/react": "^19.2.2",
     "@types/react-dom": "^19.2.3",
