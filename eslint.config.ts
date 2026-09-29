@@ -11,6 +11,7 @@ export default tseslint.config(
       '.agents/**',
       // 提交的客户端打包产物（esbuild 生成，见 packages/*/scripts/build-client.ts）
       '**/web/app.js',
+      '**/client/index.js',
     ],
   },
   {

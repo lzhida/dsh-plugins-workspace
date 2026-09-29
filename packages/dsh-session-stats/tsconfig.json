@@ -7,5 +7,10 @@
     "allowImportingTsExtensions": true,
     "jsx": "react-jsx"
   },
-  "include": ["src/**/*.ts", "client/src/**/*.tsx", "scripts/**/*.ts"]
+  "include": [
+    "src/**/*.ts",
+    "client/src/**/*.tsx",
+    "client/src/**/*.d.ts",
+    "scripts/**/*.ts"
+  ]
 }

@@ -140,6 +140,9 @@ importers:
 
   packages/dsh-session-stats:
     devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: ^4.0.2
+        version: 4.0.4(@deepseek-ai/cordis-plugin-include@1.0.9)(@deepseek-ai/cordis-plugin-loader@1.0.5)
       '@types/node':
         specifier: ^26.6.2
         version: 26.6.2
