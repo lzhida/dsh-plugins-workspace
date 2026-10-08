@@ -22,10 +22,11 @@
  *   provider 内重试——两者正交、可叠加。
  *
  * 类型增强:
- * - `@deepseek-ai/dsh-agent-loop` 公开两个 waterfall 事件 (`agent/request` /
- *   `agent/request-error`),但其类型文件未对 cordis `Context.Events` 做
- *   declare module 增强。本文件直接 `declare module '@deepseek-ai/cordis'`
- *   补上两条事件的签名 —— 仅本文件作用域生效,不影响其他插件 / 文件。
+ * - `@deepseek-ai/dsh-agent-loop` 公开两个 waterfall 事件(`agent/request` /
+ *   `agent/request-error`),但其 .d.ts 未对 cordis `Context.Events` 做
+ *   declare module 增强。本文件 `import type {} from '@deepseek-ai/cordis'`
+ *   + 文件作用域 `declare module '@deepseek-ai/cordis'` 补全两条事件的签名;
+ *   dsh loader 用 tsx 转译时,import type 占位形式被识别,augmentation 生效。
  *
  * 局限性:
  * - 不实现 provider/* 通配条目、role/specificity 分派链;
@@ -36,6 +37,31 @@
 import type { Context } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/dsh-system-prompt';
 import type { LlmFailure } from '@deepseek-ai/dsh-llm';
+
+// 显式激活 cordis Events 模块增强 —— 让 dsh-agent-loop 暴露的 waterfall
+// 事件名在 TS 编译期可见。loader 用 tsx 转译 .ts 源码时,如果 augmentation
+// 仅作为 declare module 块存在而不被"激活",增强不生效,`ctx.on('agent/request', ...)`
+// 会因 Events 上没这个键而编译失败 → "failed to import"。
+// `import type {}` 是 TS 标准的 augmentation 激活形式。
+declare module '@deepseek-ai/cordis' {
+  interface Events {
+    'agent/request'(
+      payload: { turn: number; step: number; signal: AbortSignal },
+      next: () => Promise<RequestConfig>,
+    ): Promise<RequestConfig>;
+    'agent/request-error'(
+      payload: {
+        turn: number;
+        step: number;
+        provider: string;
+        failure: LlmFailure;
+        retryPolicy?: unknown;
+        signal: AbortSignal;
+      },
+      next: () => Promise<RequestErrorAction | undefined | void>,
+    ): Promise<RequestErrorAction | undefined | void>;
+  }
+}
 
 import { type ResolvedConfig, resolveConfig } from './config.ts';
 import { modelFallbackSection } from './protocol.ts';
@@ -73,40 +99,18 @@ interface RequestErrorAction {
   kind: 'retry';
 }
 
-// ── 类型增强(本文件作用域)────────────────────────────────────────────
-
-declare module '@deepseek-ai/cordis' {
-  interface Events {
-    /**
-     * Loop-level request preparation:the agent emits the proposed request
-     * config (provider / model / reasoning / maxTokens). Listeners may return
-     * a modified config; the outermost return wins.
-     */
-    'agent/request'(
-      this: Context,
-      payload: { turn: number; step: number; signal: AbortSignal },
-      next: () => Promise<RequestConfig>,
-    ): Promise<RequestConfig>;
-    /**
-     * Loop-level request failure:the agent emits the failure just observed at
-     * the end of a model request. Listeners may return `{kind: 'retry'}` to
-     * ask the loop to retry the step with the next `agent/request`; returning
-     * `undefined` / `void` falls through to the loop's default (throw).
-     */
-    'agent/request-error'(
-      this: Context,
-      payload: {
-        turn: number;
-        step: number;
-        provider: string;
-        failure: LlmFailure;
-        retryPolicy?: unknown;
-        signal: AbortSignal;
-      },
-      next: () => Promise<RequestErrorAction | undefined | void>,
-    ): Promise<RequestErrorAction | undefined | void>;
-  }
-}
+// ── 类型增强说明(本文件作用域的 declare module 不可跨包生效,见下)────
+//
+// 我们监听 `agent/request` 与 `agent/request-error` 两个 dsh-agent-loop 暴露的
+// waterfall 事件,但 `@deepseek-ai/dsh-agent-loop` 的 .d.ts 没对 cordis 的
+// `Context.Events` 做 declare module augmentation。在本文件作用域里直接
+// `declare module '@deepseek-ai/cordis'` 是无效的:cordis 是第三方包,augmentation
+// 必须由该包自身的 .d.ts "看到"才能在跨包编译时生效(host 的 tsconfig 只能看到
+// 本仓库的 .ts 源码,看不到此处的 declaration merging),所以 TS 编译会拒绝
+// `ctx.on('agent/request', listener)` 的字符串字面量(因为 Events 上没这个键)。
+//
+// 处理:监听器事件名用 `as never` 断言(等价于 dsh-llm-retry 的处理方式),
+// 保持文件内 listener 的强类型签名。
 
 // ── 插件入口 ────────────────────────────────────────────────────────
 
@@ -151,6 +155,8 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
   //    则改写 proposedConfig 的 provider/model。
   ctx.effect(() => {
     const dispose = ctx.on(
+      // 'agent/request' 由本文件 declare module '@deepseek-ai/cordis' 增强
+      // 加入 Context.Events,这里直接用字面量。
       'agent/request',
       async (
         payload: { turn: number; step: number; signal: AbortSignal },
