@@ -13,7 +13,7 @@
  * 风格遵循 dsh-plugin-dev skill 的 stubCtx 模式。
  */
 
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -149,6 +149,17 @@ describe('dsh-taskboard 契约', () => {
     expect(s!.text).toContain('CHECKLIST_NOTE_REQUIRED');
     expect(s!.text).toContain('in_progress');
     expect(s!.text).toContain('in_review');
+  });
+
+  it('system-prompt section 文本不含未解析变量(rc.2 renderPrompt 严格化)', async () => {
+    // dsh 0.2.0-rc.2 的 renderPrompt 对未注册的 {{var}} 引用会拒绝渲染。
+    // 我们静态定义文本,不应出现任何 {{...}} 形引用,以免 host 加载时报错。
+    const { ctx, sections } = stubCtx();
+    await apply(ctx);
+    const s = sections.find((x) => x.name === PROTOCOL_SECTION_NAME);
+    expect(s).toBeDefined();
+    expect(s!.text).not.toMatch(/\{\{/);
+    expect(s!.text).not.toMatch(/\}\}/);
   });
 
   it('注册全部 10 个 taskboard_* 工具', async () => {
@@ -682,6 +693,33 @@ describe('TaskStore 软删除 + 文件持久化', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('损坏台账的 quarantine 副本命名带 pid+uuid(并发 / 重复损坏不冲突)', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'dsh-taskboard-'));
+    try {
+      const file = defaultLedgerPath(dir);
+      // 写入损坏文件 → load → 落 quarantine1
+      await writeFile(file, '{not a valid json', 'utf8');
+      const s1 = new TaskStore({ file, now });
+      await s1.load();
+      // 立刻再次写为损坏并 load → 落 quarantine2;两个 quarantine 名称应不同
+      await writeFile(file, '{not a valid json either', 'utf8');
+      const s2 = new TaskStore({ file, now });
+      await s2.load();
+
+      const entries = await readdir(dir);
+      const quarantines = entries.filter((n) => n.includes('.corrupt.'));
+      expect(quarantines.length).toBeGreaterThanOrEqual(2);
+      // 命名格式:`dsh-taskboard.json.corrupt.<pid>.<ms>.<uuid>`
+      for (const name of quarantines) {
+        expect(name).toMatch(/\.corrupt\.\d+\.\d+\.[a-f0-9-]{36}$/);
+      }
+      // 文件名应两两不同
+      expect(new Set(quarantines).size).toBe(quarantines.length);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ── 工具层 ──────────────────────────────────────────────────────────
@@ -824,6 +862,77 @@ describe('taskboard_* 工具层', () => {
         {} as never,
       ),
     ).rejects.toThrow(/CROSS_PROJECT_FORBIDDEN/);
+  });
+
+  it('taskboard_move → in_review 调用 exec.concludeTurn(rc.2 turn 终结)', async () => {
+    const t = makeTools();
+    const created = (await t.tools.taskboard_create.execute(
+      { workspaceId: 'ws-1', title: 'a' },
+      {} as never,
+    )) as { id: string; version: number };
+    const inProgress = (await t.tools.taskboard_move.execute(
+      { id: created.id, to: 'in_progress', ifVersion: created.version },
+      {} as never,
+    )) as { version: number };
+
+    // 模拟 dsh 0.2.0-rc.2 的 ToolRunContext,concludeTurn 是 method。
+    const calls: string[] = [];
+    const exec = {
+      concludeTurn: () => {
+        calls.push('concludeTurn');
+      },
+    } as unknown as Parameters<typeof t.tools.taskboard_move.execute>[1];
+
+    await t.tools.taskboard_move.execute(
+      { id: created.id, to: 'in_review', ifVersion: inProgress.version },
+      exec,
+    );
+    expect(calls).toEqual(['concludeTurn']);
+  });
+
+  it('taskboard_move → in_progress 不调用 exec.concludeTurn(只 in_review 终结 turn)', async () => {
+    const t = makeTools();
+    const created = (await t.tools.taskboard_create.execute(
+      { workspaceId: 'ws-1', title: 'a' },
+      {} as never,
+    )) as { id: string; version: number };
+
+    const calls: string[] = [];
+    const exec = {
+      concludeTurn: () => {
+        calls.push('concludeTurn');
+      },
+    } as unknown as Parameters<typeof t.tools.taskboard_move.execute>[1];
+
+    await t.tools.taskboard_move.execute(
+      { id: created.id, to: 'in_progress', ifVersion: created.version },
+      exec,
+    );
+    expect(calls).toEqual([]);
+  });
+
+  it('taskboard_move 在 rc.1 形态的 ToolRunContext 上(无 concludeTurn)不抛错', async () => {
+    // 兼容:rc.1 没有 concludeTurn,本工具不应在 typeof 检查下崩。
+    const t = makeTools();
+    const created = (await t.tools.taskboard_create.execute(
+      { workspaceId: 'ws-1', title: 'a' },
+      {} as never,
+    )) as { id: string; version: number };
+    const inProgress = (await t.tools.taskboard_move.execute(
+      { id: created.id, to: 'in_progress', ifVersion: created.version },
+      {} as never,
+    )) as { version: number };
+
+    // rc.1 风格 stub:没有 concludeTurn 字段
+    const legacyExec = {} as unknown as Parameters<
+      typeof t.tools.taskboard_move.execute
+    >[1];
+    await expect(
+      t.tools.taskboard_move.execute(
+        { id: created.id, to: 'in_review', ifVersion: inProgress.version },
+        legacyExec,
+      ),
+    ).resolves.toBeDefined();
   });
 
   it('taskboard_execution_report 提交后 store 内可读', async () => {

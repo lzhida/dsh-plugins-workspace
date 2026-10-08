@@ -6,6 +6,15 @@
 >
 > 与原版差异:**无 Web UI / 无 cron 调度器 / 无 worktree 隔离执行 / 无外部会话自动同步 / 无数据目录迁移**。这些是 cloader 的庞大能力,本教学版专注于核心契约的"代码闸"实现。
 
+## 适配版本
+
+| 组件     | 版本           | 说明                                                                                                        |
+| -------- | -------------- | ----------------------------------------------------------------------------------------------------------- |
+| 宿主 dsh | **0.2.0-rc.2** | `system-prompt` 与 `tools` 运行时对齐;`pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude` 已同步放行 rc.2。 |
+| 插件包   | 0.1.0          | 插件版本号与 dsh 版本号解耦,只跟随契约调整升版本;此处不升。                                                 |
+
+> rc.2 引入稀疏 system-prompt section 命名注册(`ctx.systemPrompt.getSectionOrder()`),但 README 明确 "External contributions may use any finite order"——本插件作为外部插件不受影响,section 名仍为唯一名 `tool:taskboard`,`order: 2950` 与 rc.2 一方稀疏序列按 name 排序兜底,model-visible 顺序不变。
+
 ## 安装
 
 仓库内开发:`packages/dsh-taskboard` 已在 pnpm workspaces 收录,直接 `pnpm install` 即可。
@@ -49,6 +58,19 @@ agent:
 | `taskboard_delete`           | 软删除(写 trashedAt,数据保留供审计)                                    |
 | `taskboard_checklist`        | DoD 清单 add / check / uncheck(check 必带 note)                        |
 | `taskboard_execution_report` | 提交结构化报告(summary 必填)                                           |
+
+### 升级到 dsh 0.2.0-rc.2 的变化
+
+相比 0.1.0(对齐 dsh 0.2.0-rc.1),本次升级做了:
+
+- 运行时依赖 `@deepseek-ai/dsh-system-prompt` / `@deepseek-ai/dsh-tools` 由 `0.2.0-rc.1` 升到 `0.2.0-rc.2`;根 `package.json` 与 `pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude` 同步升级;`pnpm-lock.yaml` 重生成。
+- **不修改 `done` 协议闸、不修改 10 个工具的 schema 与返回形态**——契约层零破坏性变化。
+- `system-prompt` section 名仍为 `tool:taskboard`(唯一名),`order: 2950` 不变。rc.2 引入的一方稀疏 section 序列按 name 排序兜底,model-visible 顺序不变;新增 `system-prompt section 文本不含未解析 {{var}}` 单测(rc.2 `renderPrompt` 对未注册变量会拒绝渲染)。
+- **新功能:`taskboard_move → in_review` 调用 `exec.concludeTurn()`** — dsh 0.2.0-rc.2 的 `ToolRunContext` 新增 `concludeTurn()`,让工具把当前 turn 标记为终结。`in_review` 是 agent 工作流终点,加上 `concludeTurn` 后 loop 不会再让模型自动追加 tool calls(避免再调 in_review / 试探调 done / 写新评论等)。其它 `to` 状态(`todo` / `in_progress` / `canceled` / `archived`)不调用,允许后续的 checklist / comment / execution_report。`typeof exec.concludeTurn === 'function'` 守卫保证 rc.1 形态下不崩。
+- **类型适配:`defaultResolveContext` 改用 dsh-tools 公开类型 `ToolRunContext`** — 0.1.x 内部 `as` 强转替换为公开类型,并对 `Agent` 在 rc.2 简化为 `{ id: SessionId }` 的变化做兼容(保留 `legacySession` 路径向后兼容测试 stub 与 0.1.x 形态)。生产部署建议注入 `workspaceRegistry` 自定义 `resolveContext`,用本函数做兜底。
+- `TaskStore` 损坏文件 quarantine 副本命名升级为 `dsh-taskboard.json.corrupt.<pid>.<ms>.<uuid>`,新增对应单测覆盖并发 / 重复损坏场景,避免旧命名(`.<ms>`)在快速恢复时撞名。
+- `index.ts` 创建 `DSH_HOME` 目录时的 `mkdir` 错误处理精细化:仅吞 `EEXIST`,其它错误重抛便于宿主诊断。
+- `validateUpdatePatch` 删除了 `checked && note 空` 的死分支(注释说"不在 validate 拦截"实际未生效的哑代码),逻辑保持原契约。
 
 ## 代码级协议闸(非提示词约定)
 

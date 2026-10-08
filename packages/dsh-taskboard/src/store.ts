@@ -151,9 +151,9 @@ export class TaskStore {
       if (isMissingFileError(error)) {
         this.ledger = { ...EMPTY_LEDGER, settings: this.initialSettings };
       } else {
-        // 损坏:quarantine 备份后从空台账启动
+        // 损坏:quarantine 备份后从空台账启动。文件名加 pid+uuid 避免重入冲突。
         try {
-          const quarantine = `${path}.corrupt.${this.now()}`;
+          const quarantine = `${path}.corrupt.${process.pid}.${this.now()}.${randomUUID()}`;
           await writeFile(
             quarantine,
             await readFile(path, 'utf8').catch(() => ''),
@@ -851,13 +851,6 @@ function validateUpdatePatch(patch: UpdateTaskInput): void {
       if (item.text.trim().length === 0) {
         throw new TaskboardError('INVALID_INPUT', 'checklist 项 text 不能为空');
       }
-      if (
-        item.checked &&
-        (item.note === undefined || item.note.trim().length === 0)
-      ) {
-        // 允许外部预置 checked 但带 note;若只 checked 无 note 视为非法
-        // (但允许从已有数据导入时绕过 — 不在 validate 拦截;checklist() 钩子负责)
-      }
     }
   }
 }
@@ -909,6 +902,19 @@ function isMissingFileError(error: unknown): boolean {
     error !== null &&
     'code' in error &&
     (error as { code: unknown }).code === 'ENOENT'
+  );
+}
+
+/**
+ * Node 文件系统 mkdir 的 EEXIST 错误判定(目录已存在)。
+ * 用于递归创建 DSH 主目录时区分「无害已存在」与「真错误」(权限等)。
+ */
+export function isExistsError(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    (error as { code: unknown }).code === 'EEXIST'
   );
 }
 
