@@ -16,10 +16,9 @@ import {
   type SpawnSyncOptions,
   type SpawnSyncReturns,
 } from 'node:child_process';
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join, sep } from 'node:path';
 import {
-  buildPermissionDisablePatch,
   buildPermissionStripPatch,
   dshHomeDir,
   DEFAULT_PORT,
@@ -164,16 +163,7 @@ export async function reconcilePatch(args: {
   const home = dshHomeDir(args.env);
   const file = join(profileDir(args.profile, home), 'cordis.patch.yml');
   const current = (await exists(file)) ? await readFile(file, 'utf8') : '';
-  const disable = buildPermissionDisablePatch(current, args.pluginNames);
-  if (disable !== null) {
-    await mkdir(dirname(file), { recursive: true });
-    await writeFile(file, disable, 'utf8');
-    return {
-      changed: true,
-      reason: 'permission-presets-disabled(local executor)',
-    };
-  }
-  const strip = buildPermissionStripPatch(current, args.pluginNames);
+  const strip = buildPermissionStripPatch(current);
   if (strip !== null) {
     await writeFile(file, strip, 'utf8');
     return { changed: true, reason: 'permission-presets-stripped' };
