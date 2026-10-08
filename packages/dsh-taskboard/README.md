@@ -17,15 +17,61 @@
 
 ## 安装
 
-仓库内开发:`packages/dsh-taskboard` 已在 pnpm workspaces 收录,直接 `pnpm install` 即可。
+`dsh plugin add` 底层是 `pnpm add`,支持本地目录、`github:` / `git+https` / `git+ssh` / tarball 等多种源。本节给出本插件的四种常用形式。
 
-宿主 `dsh` 加载:
+### 仓库内开发(本地 link)
+
+`packages/dsh-taskboard` 已在 pnpm workspaces 收录。仓库根执行一次 `pnpm install` 后:
 
 ```sh
 dsh plugin add link:packages/dsh-taskboard
 ```
 
 包内 `dsh.bundle.patch` 声明使其自动进入 profile 层,无需 overlay 注入。
+
+### Git 安装(外部用户 / CI 缓存场景)
+
+以下四种形式等价,都只装 `packages/dsh-taskboard` 这个子包(其它子包不会拉入)。`#<ref>` 替换为想锁定的分支 / tag / 提交(默认 = 远端默认分支 `dev`):
+
+```sh
+# 1. github: 简写(pnpm 8+ 解析为 https://github.com/<user>/<repo>/tarball/<ref>)
+dsh plugin add github:lzhida/dsh-plugins-workspace#feat/dsh-taskboard-rc2:packages/dsh-taskboard
+
+# 2. git+https(显式完整 URL,需 git 客户端)
+dsh plugin add git+https://github.com/lzhida/dsh-plugins-workspace.git#feat/dsh-taskboard-rc2:packages/dsh-taskboard
+
+# 3. git+ssh(需本机配过 SSH key;CI 推镜像常用)
+dsh plugin add git+ssh://git@github.com/lzhida/dsh-plugins-workspace.git#feat/dsh-taskboard-rc2:packages/dsh-taskboard
+
+# 4. tarball 快照(从 GitHub 直接拉 release tarball;适合离线 / 复现)
+curl -L https://github.com/lzhida/dsh-plugins-workspace/archive/refs/heads/feat/dsh-taskboard-rc2.tar.gz | tar -xz -C /tmp
+dsh plugin add /tmp/dsh-plugins-workspace-feat-dsh-taskboard-rc2/packages/dsh-taskboard
+```
+
+> 上面 `:packages/dsh-taskboard` 是 pnpm 8+ 引入的 subpath filter,告诉 pnpm "只取 monorepo 里的这个子目录作为本次安装的入口包"。语法上 `git+ssh` 必须有 git 客户端(Windows 需 `scoop install git` 或 `choco install git`);`github:` 简写不依赖 git 客户端但需要 npm registry 联通 GitHub。
+
+### monorepo 依赖说明
+
+`dsh-taskboard` 的运行时依赖是 `@deepseek-ai/dsh-system-prompt` 与 `@deepseek-ai/dsh-tools`(均 `0.2.0-rc.2`)。git 安装仅拉取子包目录,dsh-tools / dsh-system-prompt 走 npm registry 解析。本仓库 `pnpm-workspace.yaml` 已把这两个以及全部传递 dsh-* 列入 `minimumReleaseAgeExclude`,允许 rc.2 通过。常见失败点:
+
+- **GitHub 联通失败**:切换 npm 镜像(`npm config set registry https://registry.npmmirror.com`)或为 `git+https` 形式配置 HTTP 代理。
+- **`@deepseek-ai/dsh-tools@0.2.0-rc.2` 拉不到**:确认 npm registry 已配置 `minimumReleaseAgeExclude` 白名单(本仓库已配;外部直接 `pnpm add` 可能被 pnpm 默认 release-age 拦截,加 `--no-strict-peer-dependencies` 与 `minimumReleaseAge=0` 兜底)。
+- **subpath 解析失败**:确认 pnpm ≥ 8;旧版 pnpm 不支持 `#ref:subpath` 语法,需升 pnpm。
+
+### 装好后的手工验证
+
+```sh
+# 1. 看子包是否真装入(本机 <DSH_HOME>/profiles/<name>/node_modules)
+ls "$(dsh config profile-dir 2>/dev/null || echo $HOME/.dsh/profiles/<name>)/node_modules/@lzhida/dsh-taskboard"
+
+# 2. 关键运行时依赖应该一并出现
+ls "$(dsh config profile-dir 2>/dev/null || echo $HOME/.dsh/profiles/<name>)/node_modules/@deepseek-ai/dsh-tools"  # 版本 = 0.2.0-rc.2
+ls "$(dsh config profile-dir 2>/dev/null || echo $HOME/.dsh/profiles/<name>)/node_modules/@deepseek-ai/dsh-system-prompt"  # 同上
+
+# 3. 重启 dsh,在 settings → 插件中确认 "已启用"(详见 .agents/skills/dsh-plugin-dev 的 e2e 浏览器验证)
+```
+
+如果第 2 步找不到 `dsh-tools`,说明 git install 走了 subpath 但 npm 依赖没拉起——回到 "monorepo 依赖说明" 排查 release-age 与镜像。
 
 ## 快速开始(教学版 agent 工作流)
 
