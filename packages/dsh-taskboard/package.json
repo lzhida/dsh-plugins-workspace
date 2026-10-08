@@ -1,0 +1,27 @@
+{
+  "name": "@lzhida/dsh-taskboard",
+  "description": "教学版 dsh-taskboard 插件：人建卡、agent 认领执行、人验收的核心契约复刻 — 10 个 taskboard_* agent 工具、ifVersion 乐观并发、代码级协议闸(agent 永远移不到 done/被持有时不可抢/跨项目不可认领)、DoD 验收清单、结构化执行报告",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-system-prompt": "0.2.0-rc.1",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.1"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
