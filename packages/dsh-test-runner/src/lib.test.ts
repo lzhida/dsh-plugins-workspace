@@ -6,7 +6,6 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
-  buildPermissionDisablePatch,
   buildPermissionStripPatch,
   dshHomeDir,
   DEFAULT_PORT,
@@ -16,14 +15,8 @@ import {
   filterArgvPnpmDash,
   hasPermissionRow,
   isLikelyTestProfile,
-  isLocalNushellExecutor,
   isPortBusy,
-  isSandboxNushellExecutor,
-  needsPermissionDisable,
-  needsPermissionStrip,
   packageDirOf,
-  PERMISSION_DISABLE_BLOCK,
-  permissionStripReason,
   pluginLoadedRegex,
   profileDir,
   tokenedUrlRegex,
@@ -38,60 +31,6 @@ describe('dsh-test-runner (lib)', () => {
       expect(DEFAULT_PROFILE).toBe('e2e');
       expect(DEFAULT_TIMEOUT_MS).toBe(180_000);
     });
-
-    it('PERMISSION_DISABLE_BLOCK 顶层是合法 YAML 数组段', () => {
-      // 顶层数组条目必须是 `- id: permission` 形态;末尾需有换行使后续
-      // 拼接不破坏 YAML 文档结构。
-      expect(PERMISSION_DISABLE_BLOCK).toContain('- id: permission');
-      expect(PERMISSION_DISABLE_BLOCK).toContain('  disabled: true');
-      expect(PERMISSION_DISABLE_BLOCK.endsWith('\n')).toBe(true);
-    });
-  });
-
-  describe('plugin 包名分类', () => {
-    it('识别 dsh-nushell-local 为 local executor(需禁用 permission presets)', () => {
-      expect(isLocalNushellExecutor('@lzhida/dsh-nushell-local')).toBe(true);
-      expect(isLocalNushellExecutor('dsh-nushell-local')).toBe(true);
-    });
-
-    it('识别 dsh-nushell-sandbox 为 sandbox executor(保留 permission 栈)', () => {
-      expect(isSandboxNushellExecutor('@lzhida/dsh-nushell-sandbox')).toBe(
-        true,
-      );
-      expect(isSandboxNushellExecutor('dsh-nushell-sandbox')).toBe(true);
-    });
-
-    it('无关包名一律返回 false(不与 nushell 命名碰撞)', () => {
-      expect(isLocalNushellExecutor('dsh-guided-goal')).toBe(false);
-      expect(isLocalNushellExecutor('dsh-taskboard')).toBe(false);
-      expect(isLocalNushellExecutor('dsh-nushell')).toBe(false); // combo 不算
-      expect(isSandboxNushellExecutor('dsh-nushell')).toBe(false); // combo 不算
-    });
-
-    it('needsPermissionDisable 仅在存在 local executor 时为 true', () => {
-      expect(needsPermissionDisable(['@lzhida/dsh-nushell-local'])).toBe(true);
-      expect(
-        needsPermissionDisable(['dsh-guided-goal', 'dsh-nushell-local']),
-      ).toBe(true);
-      expect(needsPermissionDisable(['dsh-guided-goal'])).toBe(false);
-      expect(needsPermissionDisable(['dsh-nushell-sandbox'])).toBe(false);
-      expect(needsPermissionDisable([])).toBe(false);
-    });
-
-    it('needsPermissionStrip 在 sandbox 或直跑时为 true', () => {
-      expect(needsPermissionStrip(['dsh-nushell-sandbox'])).toBe(true);
-      expect(needsPermissionStrip(['dsh-guided-goal'])).toBe(true);
-      expect(needsPermissionStrip([])).toBe(true);
-      // local 永远不剥(本来就没装)。
-      expect(needsPermissionStrip(['dsh-nushell-local'])).toBe(false);
-    });
-
-    it('permissionStripReason 在 sandbox / 直跑时返回不同解释', () => {
-      expect(permissionStripReason(['dsh-nushell-sandbox'])).toContain(
-        'sandbox',
-      );
-      expect(permissionStripReason(['dsh-guided-goal'])).toContain('直跑');
-    });
   });
 
   describe('cordis.patch.yml 补丁层构建', () => {
@@ -104,31 +43,6 @@ describe('dsh-test-runner (lib)', () => {
       expect(hasPermissionRow('- id: tools\n  disabled: true')).toBe(false);
     });
 
-    it('buildPermissionDisablePatch:local executor + 缺 permission 行 → 追加', () => {
-      const before = '[]\n';
-      const after = buildPermissionDisablePatch(before, [
-        '@lzhida/dsh-nushell-local',
-      ]);
-      expect(after).not.toBeNull();
-      expect(after).toContain('- id: permission');
-      expect(after).toContain('  disabled: true');
-      // 占位 `[]` 必须被剥离再追加(避免「[] + 追加行」双文档崩溃)。
-      expect(after).not.toMatch(/^\[\]\s*$/m);
-    });
-
-    it('buildPermissionDisablePatch:local executor + 已有 permission 行 → 不动', () => {
-      const before = '- id: permission\n  disabled: true\n';
-      expect(
-        buildPermissionDisablePatch(before, ['@lzhida/dsh-nushell-local']),
-      ).toBeNull();
-    });
-
-    it('buildPermissionDisablePatch:非 local 场景 → 不动', () => {
-      expect(
-        buildPermissionDisablePatch('[]\n', ['dsh-guided-goal']),
-      ).toBeNull();
-    });
-
     it('buildPermissionStripPatch:剥除 permission 行 + 紧邻 e2e 注释', () => {
       const before =
         '- id: tools\n' +
@@ -138,9 +52,7 @@ describe('dsh-test-runner (lib)', () => {
         '- id: permission\n' +
         '  disabled: true\n' +
         '- id: jobs\n';
-      const after = buildPermissionStripPatch(before, [
-        '@lzhida/dsh-nushell-sandbox',
-      ]);
+      const after = buildPermissionStripPatch(before);
       expect(after).not.toBeNull();
       expect(after).not.toContain('- id: permission');
       expect(after).not.toContain('e2e patch 层');
@@ -155,13 +67,13 @@ describe('dsh-test-runner (lib)', () => {
         '# 的 permission presets(…)\n' +
         '- id: permission\n' +
         '  disabled: true\n';
-      const after = buildPermissionStripPatch(before, ['dsh-guided-goal']);
+      const after = buildPermissionStripPatch(before);
       expect(after).toBe('[]\n');
     });
 
     it('buildPermissionStripPatch:无 permission 行 → 不动', () => {
       const before = '- id: tools\n';
-      expect(buildPermissionStripPatch(before, ['dsh-guided-goal'])).toBeNull();
+      expect(buildPermissionStripPatch(before)).toBeNull();
     });
   });
 

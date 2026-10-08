@@ -18,63 +18,6 @@ export const DEFAULT_TIMEOUT_MS = 180_000;
 /** 默认断言轮询 ms。 */
 export const DEFAULT_POLL_MS = 500;
 
-/** e2e 组合补丁:permission presets 在 confining(sandboxMode)非 undefined
- * 时才能构造。dsh-nushell-local 独占 ctx.shell 且非 confining,必须禁用
- * presets 否则 web 启动即崩;dsh-nushell-sandbox 满足该条件。
- *
- * 与 test-e2e.ts 保持一致 — 顶层是合法 YAML 数组文档,占位 `[]` 在新文档
- * 出现前剥离。
- */
-export const PERMISSION_DISABLE_BLOCK = [
-  '# e2e patch 层:被测 local 执行器按设计非禁闭(独占 ctx.shell),与 dsh-base',
-  '# 的 permission presets(要求禁闭执行器)互斥,禁用之;e2e 不测升权流。',
-  '- id: permission',
-  '  disabled: true',
-  '',
-].join('\n');
-
-/** 包名 → 是否为 dsh-nushell-local(local 执行器,需禁用 permission presets)。 */
-export function isLocalNushellExecutor(pkgName: string | undefined): boolean {
-  return typeof pkgName === 'string' && /dsh-nushell-local$/.test(pkgName);
-}
-
-/** 包名 → 是否为 dsh-nushell-sandbox(sandbox 执行器,confining,可保留 presets)。 */
-export function isSandboxNushellExecutor(pkgName: string | undefined): boolean {
-  return typeof pkgName === 'string' && /dsh-nushell-sandbox$/.test(pkgName);
-}
-
-/** 测试场景分类:任一 plugin 是 local executor → 需禁用 permission presets。 */
-export function needsPermissionDisable(
-  pluginNames: readonly string[],
-): boolean {
-  return pluginNames.some(isLocalNushellExecutor);
-}
-
-/** 测试场景分类:任一 plugin 是 sandbox executor → 保留 permission 栈。 */
-export function needsPermissionStrip(pluginNames: readonly string[]): boolean {
-  return (
-    pluginNames.some(isSandboxNushellExecutor) ||
-    pluginNames.every(
-      (n) => !isLocalNushellExecutor(n) && !isSandboxNushellExecutor(n),
-    )
-  );
-}
-
-/** Strip 理由:sandbox / 直跑 — 仅用于运行日志。 */
-export function permissionStripReason(pluginNames: readonly string[]): string {
-  return pluginNames.some(isSandboxNushellExecutor)
-    ? 'sandbox 执行器 confining,presets 可构造'
-    : '直跑组合';
-}
-
-/** 顶层 YAML 数组文档:扫描非注释/非空/非 `[]` 占位条目。 */
-function hasRealEntries(text: string): boolean {
-  return text.split(/\r?\n/).some((line) => {
-    const t = line.trim();
-    return t !== '' && !t.startsWith('#') && t !== '[]';
-  });
-}
-
 /** 顶层 `- id: permission` 是否已存在(允许前导空白)。 */
 export function hasPermissionRow(text: string): boolean {
   // 容许数组顶层前导空白(部分编辑器/工具会加),但 `- id:` 必须在 token 起始。
@@ -82,38 +25,17 @@ export function hasPermissionRow(text: string): boolean {
 }
 
 /**
- * 决定 profile 当前的 cordis.patch.yml 是否需要补「禁用 permission」段,
- * 若需要则返回写回内容(原内容+PERMISSION_DISABLE_BLOCK);否则返回 null。
- *
- * 行为对齐 test-e2e.ts:只有"非禁闭 local executor 出现 + 顶层尚未禁用"
- * 才追加;避免重复添加。`[]` 占位在追加前剥离,有真实条目则直接尾接。
- */
-export function buildPermissionDisablePatch(
-  currentPatch: string,
-  pluginNames: readonly string[],
-): string | null {
-  if (!needsPermissionDisable(pluginNames)) return null;
-  if (hasPermissionRow(currentPatch)) return null;
-  const hasEntries = hasRealEntries(currentPatch);
-  const base = hasEntries
-    ? currentPatch.replace(/\s*$/, '\n')
-    : `${currentPatch.replace(/^\s*\[\]\s*$/m, '').replace(/\s*$/, '\n')}`;
-  return base + PERMISSION_DISABLE_BLOCK;
-}
-
-/**
  * 决定 profile 当前的 cordis.patch.yml 是否需要剥「- id: permission / disabled: true」段,
  * 若需要则返回剥后内容;否则返回 null。
  *
- * 行为对齐 test-e2e.ts:仅当 (a) 顶层有 `- id: permission` 且 (b) 测试场景
- * 不是 local executor(sandbox/confining 或直跑) 时执行。剥离同时连同
+ * 行为对齐 test-e2e.ts:仅当顶层有 `- id: permission` 时执行。剥离同时连同
  * runner 自己写入的两行注释一并清掉,不留 e2e patch 残迹。
+ *
+ * 历史:2026-09-22 起为「测试 local executor 时补一行 `disabled: true`,其它
+ * 情况剥除」,nushell 系列下线后已无 local executor 触发补行场景(2026-10-08
+ * 删除 nushell 系列时同步简化),函数退化为「无条件剥除」。
  */
-export function buildPermissionStripPatch(
-  currentPatch: string,
-  pluginNames: readonly string[],
-): string | null {
-  if (needsPermissionDisable(pluginNames)) return null;
+export function buildPermissionStripPatch(currentPatch: string): string | null {
   if (!hasPermissionRow(currentPatch)) return null;
   const src = currentPatch.split(/\r?\n/);
   const kept: string[] = [];

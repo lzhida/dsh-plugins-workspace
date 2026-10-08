@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/cordis`）插件集合，pnpm workspaces 单层结构。插件以 TS 源码形态被宿主 dsh loader 直接加载——**没有构建步骤、不产出 dist**。当前包含 `packages/dsh-guided-goal`、`packages/dsh-obsidian`、`packages/dsh-taskboard`、`packages/dsh-test-runner`，以及 nushell 工具链（`dsh-tool-nushell` 模型契约 + `dsh-nushell-local` / `dsh-nushell-sandbox` 接缝薄壳 + `dsh-nushell` 组合包）。
+dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/cordis`）插件集合，pnpm workspaces 单层结构。插件以 TS 源码形态被宿主 dsh loader 直接加载——**没有构建步骤、不产出 dist**。当前包含 `packages/dsh-guided-goal`、`packages/dsh-obsidian`、`packages/dsh-taskboard`、`packages/dsh-test-runner`。
 
 ## Architecture & Data Flow
 
@@ -12,7 +12,7 @@ dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/c
   - `export function apply(ctx: Context)`——cordis 安装钩子，在此注册能力/副作用；
   - 业务辅助纯函数（如 `greet`）。
 - **生命周期**：副作用一律用 `ctx.effect(fn)` 注册。`fn` **立即执行**，其返回的函数在插件卸载时被 cordis 自动调用（事件监听、定时器、连接的清理都走这条路径，勿手写 removeListener/clearInterval 之外的反注册逻辑）。
-- **依赖注入**：需要其他服务时 `export const inject = ['tools']`，框架保证 `ctx.tools` 就绪后才调 `apply`（`dsh-nushell-tool` 即用此模式）。
+- **依赖注入**：需要其他服务时 `export const inject = ['tools']`，框架保证 `ctx.tools` 就绪后才调 `apply`（`dsh-tool-nushell` 即用此模式；该插件已在 2026-10-08 整包下线，示例仅供契约参考）。
 - **依赖策略**：`@deepseek-ai/cordis` 只放插件的 `devDependencies` 且仅 `import type` 引入——运行时由宿主提供，插件不打包框架。
 
 ## Key Directories
