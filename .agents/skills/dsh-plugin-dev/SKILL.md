@@ -103,7 +103,7 @@ export function apply(ctx: Context): void {
 e2e 编排脚本随本 skill 分发：`.agents/skills/dsh-plugin-dev/scripts/test-e2e.ts`（以仓库根为工作目录运行）：
 
 ```sh
-npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts                                  # 默认验证 packages/hello-plugin
+npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts                                       # 默认验证 packages/dsh-guided-goal
 npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts -- packages/my-plugin/src/index.ts     # 任意插件（可传多个）
 npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts -- .agents/tmp/my-plugin/src/index.ts  # 临时插件（.agents/tmp）
 ```
@@ -128,6 +128,38 @@ npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts -- .agents/tmp/my-plug
 4. **轨迹核查（比 UI 可靠）**：从 `~/.dsh/sessions/--<cwd-dir>--/session-*/session.v3.jsonl.zstd` 流式解压（Node `zstandard` 多帧流式读，`decompress()` 只出首帧），提取 `tool/call` 的 `arguments.command` 逐项核查；
 5. **纯净 profile 对比法**（排除 hindsight 记忆污染）：记忆会把过往成功经验注入新会话——验证「默认行为」必须用无记忆环境。建独立 profile（`pnpm dsh --profile <name> --from-default-profile web` 引导 + add 被测包），跑零工具暗示的任务，从该 profile 轨迹核实工具选择；
 6. **提示词契约**：description/section 等引导文案是行为定义，测试里加「存在性断言」（如 `toContain('Do NOT shell out')`）防回归删除。
+
+## 5bis. agent 自驱测试流程（`@lzhida/dsh-test-runner`）
+
+当 dsh agent 自己需要"测试一个插件"时（不是开发者 shell 手跑），使用 `dsh-test-runner` 宿主插件提供的 5 个分步工具。流程与上节 shell 脚本等价，但 agent 可在每步之间插入人类可读的中间报告、并发发起其它调用、或在失败时按上下文灵活重试。
+
+**5 步法**（每个工具独立可调用，agent 决定串行或并发的节奏）：
+
+| 步骤 | 工具 | 用途 |
+| --- | --- | --- |
+| 1 | `test_runner_review_profiles` | 审查 `~/.dsh/profiles/` 标记 test 用途 profile；`createIfMissing=true` 时基于官方 web 模板新建 |
+| 2 | `test_runner_install` | 把被测插件装入 test profile（自动维护 cordis.patch.yml 兼容 local executor） |
+| 3 | `test_runner_boot` | 后台启动 `dsh web`，返回 `sessionId` + tokened URL；cordis effect 卸载时强 kill |
+| 4 | `test_runner_run_assertions` | 轮询收集三项断言（`[<name>]` 加载日志 / 端口可达 / tokened URL 页面 < 400），**可重复调用直到就绪** |
+| 5 | `test_runner_cleanup` | 显式 kill 进程 + 卸载被测插件，恢复 profile 干净态 |
+
+**三种调用路径**（按 agent 上下文选最合适的一种）：
+
+1. **直接 CLI（开发者自跑）**：走 `npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts` —— 与上节脚本相同。
+2. **后台 job + 浏览器接管**：用 `test_runner_boot` + `E2E_KEEP_MS` 等价的 `timeoutMs` 让进程长跑；用浏览器/MCP 工具打开返回的 tokened URL 做真实验证。
+3. **dsh agent 会话内调用**：在任意 dsh 会话中加载 `dsh-test-runner`（已 `dsh plugin add link:packages/dsh-test-runner`），模型按 5 步法串行/并发调用工具，由 system-prompt section 引导协议。**清理必须显式**——后台 web 与被测插件会残留进后续会话。
+
+**审计清单（DoD 风格）**：
+- ✅ 加载日志契约：`apply` 必打印 `[<name>]` 前缀（避免路径/堆栈中裸包名假阳性）。
+- ✅ 默认 port=3865（3080 是上游默认；本机 3080 被占）；`TEST_RUNNER_PORT` 可覆盖。
+- ✅ profile 隔离插件列表，模型凭证全局共享；`test_runner_cleanup` 显式卸载恢复干净态。
+- ✅ local executor 自动禁 permission presets（与 test-e2e.ts 行为一致）。
+- ✅ 不要在 default profile 上跑 e2e —— 工具描述里硬编码了警告。
+
+**实现边界**：
+- 纯逻辑（端口检测 / 补丁层剥离 / token 解析 / 超时预算）下沉到 `packages/dsh-test-runner/src/lib.ts`，27 个 vitest 覆盖。
+- 副作用（spawn dsh / 读 `~/.dsh` / 写 cordis.patch.yml）封装在 `src/runner.ts`，经 `defineTool` 暴露给 dsh agent。
+- 命名 `tool:test-runner`，`order: 2850`（TOOL_REPORT 2900 与 TOOL_SUBAGENT 2800 之间的空档）。
 
 ## 6. 门禁链（提交前必过）
 
