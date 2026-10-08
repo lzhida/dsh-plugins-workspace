@@ -57,6 +57,23 @@
 
 受沙箱约束的 Nushell shell executor:与 `dsh-nushell-local` 互斥的 `ctx.shell` 提供方(角色对齐官方 bash/pwsh 家族的 local ↔ sandbox 执行器对)。每条命令的 argv 经 `ctx.sandbox.confine` 进程级包装后受限 spawn,策略拒绝与 runner 失败按方言分类进 `ShellSandboxInfo` 事实字段;fail-closed——无可用 runner 时报错,决不静默回退到未受限执行。详见[包 README](./packages/dsh-nushell-sandbox/README.md)。
 
+### @lzhida/dsh-taskboard
+
+任务看板插件(教学复刻自 [cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard#readme)):**人建卡 → agent 认领执行 → 人验收** 的核心契约层。10 个 `taskboard_*` agent 工具 + 代码级协议闸(agent 永远移不到 done、被持有时不可抢、跨项目不可认领、checklist 勾选必带 evidence note),ifVersion 乐观并发,DoD 验收清单(≤30 项),结构化执行报告,system-prompt section 写明认领纪律与 done-gate。台账落 `~/.dsh/dsh-taskboard.json` 原子写持久化。
+
+**核心特性**
+
+- **10 个 `taskboard_*` 工具**:`taskboard_list` / `get` / `comments` / `create` / `update` / `move` / `comment_add` / `delete` / `checklist` / `execution_report`——任何会话可用,按项目边界(workspaceId)校验;
+- **代码级协议闸**:四类失败路径由代码强制拒绝(`DONE_FORBIDDEN` / `TASK_HELD` / `CROSS_PROJECT_FORBIDDEN` / `CHECKLIST_NOTE_REQUIRED`),不靠提示词约定;
+- **ifVersion 乐观并发**:update / move / checklist / trash 全部要求 ifVersion 匹配,过期版本抛 `VERSION_CONFLICT`;
+- **DoD 验收清单**:建卡时定验收条件(≤30 项,每项 ≤200 字符),agent 勾选必须附 evidence note(命令/文件/测试),用户在详情页可独立勾选,清单全勾也不自动 done;
+- **结构化执行报告**:`taskboard_execution_report` 提交(摘要 / 改动文件 / 自验 / 产物 / 风险),待验收详情页分栏渲染;
+- **五列流转 + 软删除**:backlog / todo / in_progress / in_review / done + canceled / archived / trashed;状态机白名单限制非法转移;
+- **system-prompt section**:`tool:taskboard` order=2950 声明认领纪律、done-gate、retry 规则,模型在第一次调用前就知道协议;
+- **零配置**:安装即用,无需 Token / API Key,数据本地。
+
+**主动排除的能力**(教学复刻范围,非完整 1:1 移植):Web UI 看板、cron 调度器、worktree 隔离执行、外部会话自动同步、多仓库镜像、任务模板、图片附件。详见[包 README](./packages/dsh-taskboard/README.md)。
+
 ## 安装
 
 前置:Node ≥ 22、pnpm 11、已安装 dsh、本机安装 Nushell(`nu` 在 PATH 中)。
@@ -75,9 +92,12 @@ pnpm dsh plugin --profile default add link:packages/dsh-tool-nushell
 
 # 引导式 goal 命令(独立,不依赖执行器)
 pnpm dsh plugin --profile default add link:packages/dsh-guided-goal
+
+# 任务看板(独立,10 个 taskboard_* 工具 + 代码级协议闸)
+pnpm dsh plugin --profile default add link:packages/dsh-taskboard
 ```
 
-安装后在 dsh Web UI 的设置 → 插件中确认目标插件已启用:guided-goal 在会话输入框使用 `/guided-goal`;`nushell` 工具由模型按需调用。
+安装后在 dsh Web UI 的设置 → 插件中确认目标插件已启用:guided-goal 在会话输入框使用 `/guided-goal`;`nushell` 工具由模型按需调用;taskboard 在任意会话中由模型用 `taskboard_*` 工具集协作。
 
 ## 开发
 
