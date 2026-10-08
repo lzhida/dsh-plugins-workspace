@@ -74,6 +74,29 @@ Task board plugin (an architectural/teaching re-implementation of [cloader/dsh-t
 
 **Deliberately out of scope** (an architectural re-implementation, not a 1:1 port): the Web kanban UI, cron scheduler, worktree-isolated execution, external-session autosync, multi-repo mirror, task templates, image attachments. See the [package README](./packages/dsh-taskboard/README.md).
 
+### @lzhida/dsh-test-runner
+
+Repackages the e2e orchestration logic of `.agents/skills/dsh-plugin-dev/scripts/test-e2e.ts` into five `test_runner_*` agent tools, callable from any dsh session (instead of a developer running the shell script by hand). Boots real dsh Web UI under an isolated `~/.dsh/profiles/<name>` profile and runs three assertions (plugin load log, port reachable, tokened URL page); it never touches the current `default` profile or any running dsh instance.
+
+**Five-step method**
+
+| Step | Tool                          | Purpose                                                                                                                   |
+| ---- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| 1    | `test_runner_review_profiles` | Audit `~/.dsh/profiles/`, mark test-purpose profiles; if `createIfMissing=true`, bootstrap from the official web template |
+| 2    | `test_runner_install`         | Install the plugin under test into the test profile (auto-maintains cordis.patch.yml for local executors)                 |
+| 3    | `test_runner_boot`            | Spawn `dsh web` in the background, return `sessionId` and tokened URL; `ctx.effect` on unload force-kills the child       |
+| 4    | `test_runner_run_assertions`  | Poll the three assertions — **callable repeatedly until ready**                                                           |
+| 5    | `test_runner_cleanup`         | Explicit kill + uninstall the tested plugin; restore the profile to a clean state                                         |
+
+**Highlights**
+
+- **Three invocation paths**: developer shell (`npx tsx .../test-e2e.ts`) / background job + browser takeover / dsh-agent in-session five-step — pick the one that fits the context;
+- **Composable / concurrent**: every tool is independently callable; the agent decides the cadence and may retry on partial failure;
+- **Profile isolation + auto cleanup**: `test_runner_cleanup` explicitly kills the process and uninstalls the plugin; `ctx.effect` on unload is the safety net;
+- **Local executor compatibility**: automatically appends the "disable permission presets" block to the profile's `cordis.patch.yml` when needed (matches `test-e2e.ts` behaviour), so `dsh-nushell-local` installs alongside this plugin cleanly;
+- **system-prompt section**: `tool:test-runner` at order 2850; the model sees the five-step protocol before its first call;
+- **Hard-coded DoD**: load-log contract `[<name>]`, default port 3865, profile isolation, explicit cleanup — all baked into the tool descriptions.
+
 ## Installation
 
 Prerequisites: Node ≥ 22, pnpm 11, dsh installed, and Nushell installed locally (`nu` on PATH).
@@ -98,9 +121,12 @@ pnpm dsh plugin --profile default add link:packages/dsh-guided-goal
 
 # The task board plugin (independent — 10 taskboard_* tools + code-level protocol gates)
 pnpm dsh plugin --profile default add link:packages/dsh-taskboard
+
+# The plugin e2e test agent tool (independent — five test_runner_* tools)
+pnpm dsh plugin --profile default add link:packages/dsh-test-runner
 ```
 
-After installation, confirm the target plugins are enabled under dsh Web UI Settings → Plugins: use `/guided-goal` from the chat input for guided-goal; the `nushell` tool is invoked by the model on demand; the task-board agent uses the `taskboard_*` tool set collaboratively from any session.
+After installation, confirm the target plugins are enabled under dsh Web UI Settings → Plugins: use `/guided-goal` from the chat input for guided-goal; the `nushell` tool is invoked by the model on demand; the task-board agent uses the `taskboard_*` tool set collaboratively from any session; the test-runner agent uses the `test_runner_*` tool set to drive plugin e2e in any isolated profile.
 
 ## Development
 

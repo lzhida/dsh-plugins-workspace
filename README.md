@@ -74,6 +74,29 @@
 
 **主动排除的能力**(教学复刻范围,非完整 1:1 移植):Web UI 看板、cron 调度器、worktree 隔离执行、外部会话自动同步、多仓库镜像、任务模板、图片附件。详见[包 README](./packages/dsh-taskboard/README.md)。
 
+### @lzhida/dsh-test-runner
+
+把 `.agents/skills/dsh-plugin-dev/scripts/test-e2e.ts` 的 e2e 编排能力拆为 5 个 `test_runner_*` agent 工具,供任意 dsh agent 在会话内调用(而非开发者手跑 shell 脚本)。基于真实 dsh `~/.dsh/profiles/<name>` 隔离 profile 启动 Web,跑三项断言(插件加载日志 / 端口可达 / tokened URL 页面),不污染当前 default profile 与已运行实例。
+
+**5 步法**:
+
+| 步骤 | 工具                          | 用途                                                                                        |
+| ---- | ----------------------------- | ------------------------------------------------------------------------------------------- |
+| 1    | `test_runner_review_profiles` | 审查 `~/.dsh/profiles/`,标记 test 用途 profile;`createIfMissing=true` 时按官方 web 模板新建 |
+| 2    | `test_runner_install`         | 把被测插件装入 test profile(自动维护 cordis.patch.yml 兼容 local executor)                  |
+| 3    | `test_runner_boot`            | 后台启动 `dsh web`,返回 `sessionId` + tokened URL;`ctx.effect` 卸载时强 kill                |
+| 4    | `test_runner_run_assertions`  | 轮询收集三项断言,**可重复调用直到就绪**                                                     |
+| 5    | `test_runner_cleanup`         | 显式 kill 进程 + 卸载被测插件,恢复 profile 干净态                                           |
+
+**核心特性**
+
+- **三种调用路径**:开发者 shell 直跑(`npx tsx .../test-e2e.ts`)/ 后台 job + 浏览器接管 / dsh agent 会话内 5 步法 — 选最贴合上下文的;
+- **可分步 / 可并发**:每个工具独立可调,agent 决定串行或并发的节奏,失败时按上下文灵活重试;
+- **profile 隔离 + 自动清理**:`test_runner_cleanup` 显式杀进程与卸载插件;不调用 cleanup 时,`ctx.effect` 卸载兜底;
+- **local executor 兼容**:自动按需给 profile 的 cordis.patch.yml 追加"禁用 permission presets"段(与 test-e2e.ts 行为一致),`dsh-nushell-local` 与本插件一起安装即可用;
+- **system-prompt section**:`tool:test-runner` order=2850,模型在调用工具前能看到 5 步法协议;
+- **审计清单(DoD 风格)**:加载日志契约 `[<name>]`、默认 port=3865、profile 隔离、cleanup 显式 — 全部 hard-coded 进工具 description。
+
 ## 安装
 
 前置:Node ≥ 22、pnpm 11、已安装 dsh、本机安装 Nushell(`nu` 在 PATH 中)。
@@ -95,9 +118,12 @@ pnpm dsh plugin --profile default add link:packages/dsh-guided-goal
 
 # 任务看板(独立,10 个 taskboard_* 工具 + 代码级协议闸)
 pnpm dsh plugin --profile default add link:packages/dsh-taskboard
+
+# 插件 e2e 测试 agent 工具(独立,把 test-e2e 编排拆为 5 个 test_runner_* 工具)
+pnpm dsh plugin --profile default add link:packages/dsh-test-runner
 ```
 
-安装后在 dsh Web UI 的设置 → 插件中确认目标插件已启用:guided-goal 在会话输入框使用 `/guided-goal`;`nushell` 工具由模型按需调用;taskboard 在任意会话中由模型用 `taskboard_*` 工具集协作。
+安装后在 dsh Web UI 的设置 → 插件中确认目标插件已启用:guided-goal 在会话输入框使用 `/guided-goal`;`nushell` 工具由模型按需调用;taskboard 在任意会话中由模型用 `taskboard_*` 工具集协作;test-runner 在任意会话中由模型用 `test_runner_*` 工具集驱动插件 e2e 测试,默认 profile 名 `e2e`、默认端口 3865。
 
 ## 开发
 
