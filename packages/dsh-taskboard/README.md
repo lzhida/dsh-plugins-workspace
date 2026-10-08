@@ -31,24 +31,24 @@ dsh plugin add link:packages/dsh-taskboard
 
 ### Git 安装(外部用户 / CI 缓存场景)
 
-以下四种形式等价,都只装 `packages/dsh-taskboard` 这个子包(其它子包不会拉入)。`#<ref>` 替换为想锁定的分支 / tag / 提交(默认 = 远端默认分支 `main`):
+以下四种形式等价,都只装 `packages/dsh-taskboard` 这个子包(其它子包不会拉入)。`<ref>` 替换为想锁定的分支 / tag / 提交(默认 = 远端默认分支 `main`):
 
 ```sh
 # 1. github: 简写(pnpm 8+ 解析为 https://github.com/<user>/<repo>/tarball/<ref>)
-dsh plugin add github:lzhida/dsh-plugins-workspace#main:packages/dsh-taskboard
+dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-taskboard
 
 # 2. git+https(显式完整 URL,需 git 客户端)
-dsh plugin add git+https://github.com/lzhida/dsh-plugins-workspace.git#main:packages/dsh-taskboard
+dsh plugin add git+https://github.com/lzhida/dsh-plugins-workspace.git#main\&path:packages/dsh-taskboard
 
 # 3. git+ssh(需本机配过 SSH key;CI 推镜像常用)
-dsh plugin add git+ssh://git@github.com/lzhida/dsh-plugins-workspace.git#main:packages/dsh-taskboard
+dsh plugin add git+ssh://git@github.com/lzhida/dsh-plugins-workspace.git#main\&path:packages/dsh-taskboard
 
 # 4. tarball 快照(从 GitHub 直接拉 release tarball;适合离线 / 复现)
 curl -L https://github.com/lzhida/dsh-plugins-workspace/archive/refs/heads/main.tar.gz | tar -xz -C /tmp
 dsh plugin add /tmp/dsh-plugins-workspace-main/packages/dsh-taskboard
 ```
 
-> 上面 `:packages/dsh-taskboard` 是 pnpm 8+ 引入的 subpath filter,告诉 pnpm "只取 monorepo 里的这个子目录作为本次安装的入口包"。语法上 `git+ssh` 必须有 git 客户端(Windows 需 `scoop install git` 或 `choco install git`);`github:` 简写不依赖 git 客户端但需要 npm registry 联通 GitHub。
+> `&path:<subdir>` 是 pnpm 安装 git monorepo 子目录的标准语法(`#<ref>&path:<dir>`,把 ref 与 subdir 用 `&` 分隔)。`<subdir>` 必须指向 monorepo 内一个真实存在的子目录。语法上 `git+ssh` 必须有 git 客户端(Windows 需 `scoop install git` 或 `choco install git`);`github:` 简写不依赖 git 客户端但需要 npm registry 联通 GitHub。**注意**:历史上本 README 写的是 `#<ref>:<subdir>`(冒号),是错误的,pnpm 11/12 会报 `Could not resolve <ref>:<subdir> to a commit` —— 必须用 `&path:`。
 
 ### monorepo 依赖说明
 

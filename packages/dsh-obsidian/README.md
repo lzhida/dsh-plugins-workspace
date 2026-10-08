@@ -29,22 +29,24 @@ dsh plugin add link:packages/dsh-obsidian
 
 ### Git 安装(外部用户)
 
-四种形式等价,都只装 `packages/dsh-obsidian` 子目录。`#<ref>` 替换为想锁定的分支 / tag / 提交:
+四种形式等价,都只装 `packages/dsh-obsidian` 子目录。`<ref>` 替换为想锁定的分支 / tag / 提交:
 
 ```sh
 # 1. github: 简写(pnpm 8+ 解析为 https://github.com/<user>/<repo>/tarball/<ref>)
-dsh plugin add github:lzhida/dsh-plugins-workspace#main:packages/dsh-obsidian
+dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-obsidian
 
 # 2. git+https(显式完整 URL,需 git 客户端)
-dsh plugin add git+https://github.com/lzhida/dsh-plugins-workspace.git#main:packages/dsh-obsidian
+dsh plugin add git+https://github.com/lzhida/dsh-plugins-workspace.git#main\&path:packages/dsh-obsidian
 
 # 3. git+ssh(需本机配过 SSH key)
-dsh plugin add git+ssh://git@github.com/lzhida/dsh-plugins-workspace.git#main:packages/dsh-obsidian
+dsh plugin add git+ssh://git@github.com/lzhida/dsh-plugins-workspace.git#main\&path:packages/dsh-obsidian
 
 # 4. tarball 快照
 curl -L https://github.com/lzhida/dsh-plugins-workspace/archive/refs/heads/main.tar.gz | tar -xz -C /tmp
 dsh plugin add /tmp/dsh-plugins-workspace-main/packages/dsh-obsidian
 ```
+
+> `&path:<subdir>` 是 pnpm 安装 git monorepo 子目录的标准语法。`<subdir>` 必须指向 monorepo 内一个真实存在的子目录。**注意**:历史上本 README 写的是 `#<ref>:<subdir>`(冒号),是错误的,pnpm 11/12 会报 `Could not resolve <ref>:<subdir> to a commit` —— 必须用 `&path:`。
 
 ### 装好后的手工验证
 
