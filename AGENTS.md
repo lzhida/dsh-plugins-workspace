@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/cordis`）插件集合，pnpm workspaces 单层结构。插件以 TS 源码形态被宿主 dsh loader 直接加载——**没有构建步骤、不产出 dist**。当前包含 `packages/dsh-guided-goal`、`packages/dsh-nushell-tool`、`packages/dsh-taskboard`、`packages/dsh-test-runner`，以及 nushell 工具链的薄壳组合包（`dsh-nushell` / `dsh-nushell-local` / `dsh-nushell-sandbox` / `dsh-tool-nushell`）。
+dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/cordis`）插件集合，pnpm workspaces 单层结构。插件以 TS 源码形态被宿主 dsh loader 直接加载——**没有构建步骤、不产出 dist**。当前包含 `packages/dsh-guided-goal`、`packages/dsh-obsidian`、`packages/dsh-taskboard`、`packages/dsh-test-runner`，以及 nushell 工具链（`dsh-tool-nushell` 模型契约 + `dsh-nushell-local` / `dsh-nushell-sandbox` 接缝薄壳 + `dsh-nushell` 组合包）。
 
 ## Architecture & Data Flow
 

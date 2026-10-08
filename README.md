@@ -57,6 +57,22 @@
 
 受沙箱约束的 Nushell shell executor:与 `dsh-nushell-local` 互斥的 `ctx.shell` 提供方(角色对齐官方 bash/pwsh 家族的 local ↔ sandbox 执行器对)。每条命令的 argv 经 `ctx.sandbox.confine` 进程级包装后受限 spawn,策略拒绝与 runner 失败按方言分类进 `ShellSandboxInfo` 事实字段;fail-closed——无可用 runner 时报错,决不静默回退到未受限执行。详见[包 README](./packages/dsh-nushell-sandbox/README.md)。
 
+### @lzhida/dsh-obsidian
+
+把 [Obsidian 内置 CLI](https://obsidian.md/zh/help/cli)(`obsidian <command> [key=value ...]`)封装为 dsh agent 可调用的 `obsidian_*` 工具集,统一供 agent / 人工在 dsh 会话内操作 Obsidian vault。命令分类(35+ 条子命令,覆盖 `file:move` / `delete` / `property:set` / `plugin:enable` / `command` / `reload` 等)由 [`src/commands.ts`](./packages/dsh-obsidian/src/commands.ts) 单一真源维护,system-prompt section 同步渲染命令表与安全约束,README 不复述以防漂移。
+
+**核心特性**
+
+- **9 个 `obsidian_*` 工具**:`obsidian_read` / `create` / `append` / `search` / `daily` / `daily_append` / `properties` / `vault` + 通用入口 `obsidian_run`(覆盖 35+ 条子命令,model 知道命令名才能调;description 强制写明「command 取自 commands.ts 清单」防虚构);
+- **危险等级四档**:read / write / destructive / execute — 由 commands.ts 标注,protocol section 写明每档的二次确认/权限闸要求;
+- **错误归一**:所有失败归一为 `[CODE] message` 文本(`OBSIDIAN_CLI_NOT_FOUND` / `OBSIDIAN_INVALID_INPUT` / `OBSIDIAN_SPAWN_FAILED` / `OBSIDIAN_TIMEOUT` / `OBSIDIAN_NONZERO_EXIT` / `OBSIDIAN_PROTOCOL_ERROR`),model 直接字符串匹配;Obsidian 特有的 `Error:` stdout 前缀被 runner 转成 `OBSIDIAN_PROTOCOL_ERROR`;
+- **stdio 截断**:stdout 20k / stderr 4k(对齐 `dsh-tool-nushell`),超出加 `[truncated to N chars]` 标记;
+- **不打包二进制**:`obsidian` 由 Obsidian 应用暴露到 `PATH`;缺失时第一次调用即报 `OBSIDIAN_CLI_NOT_FOUND`,给出明确恢复提示;
+- **system-prompt section**:`tool:obsidian` order=2960(与 `tool:taskboard` 2950 同档,排在它之后),加载即向 model 注入 35+ 条命令清单与安全约束;
+- **零配置**:安装即用,默认用激活 vault;多 vault 场景在每次调用时显式传 `vault=<name>`。
+
+**前置**:本机安装 Obsidian(≥1.4,提供 `obsidian` CLI);若 `obsidian --version` 失败,先修复 PATH。
+
 ### @lzhida/dsh-taskboard
 
 任务看板插件(教学复刻自 [cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard#readme)):**人建卡 → agent 认领执行 → 人验收** 的核心契约层。10 个 `taskboard_*` agent 工具 + 代码级协议闸(agent 永远移不到 done、被持有时不可抢、跨项目不可认领、checklist 勾选必带 evidence note),ifVersion 乐观并发,DoD 验收清单(≤30 项),结构化执行报告,system-prompt section 写明认领纪律与 done-gate。台账落 `~/.dsh/dsh-taskboard.json` 原子写持久化。
@@ -115,6 +131,9 @@ pnpm dsh plugin --profile default add link:packages/dsh-tool-nushell
 
 # 引导式 goal 命令(独立,不依赖执行器)
 pnpm dsh plugin --profile default add link:packages/dsh-guided-goal
+
+# Obsidian 操作(独立,9 个 obsidian_* 工具 + 通用入口,封装 Obsidian 内置 CLI)
+pnpm dsh plugin --profile default add link:packages/dsh-obsidian
 
 # 任务看板(独立,10 个 taskboard_* 工具 + 代码级协议闸)
 pnpm dsh plugin --profile default add link:packages/dsh-taskboard

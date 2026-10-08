@@ -57,6 +57,22 @@ Local Nushell shell executor: injects the `ctx.shell` capability seam so nushell
 
 Sandboxed Nushell shell executor: a `ctx.shell` provider mutually exclusive with `dsh-nushell-local` (the counterpart of the official bash/pwsh local ↔ sandbox executor pair). Every command's argv is wrapped process-level via `ctx.sandbox.confine` and spawned under restriction; policy denials and runner failures are classified by dialect into `ShellSandboxInfo` fact fields; fail-closed — when no runner is available it errors out instead of silently falling back to unrestricted execution. See the [package README](./packages/dsh-nushell-sandbox/README.md).
 
+### @lzhida/dsh-obsidian
+
+Wraps the [Obsidian built-in CLI](https://obsidian.md/help/cli) (`obsidian <command> [key=value ...]`) as `obsidian_*` agent tools so models and humans can operate an Obsidian vault directly from a dsh session. The full command taxonomy (35+ sub-commands covering `file:move` / `delete` / `property:set` / `plugin:enable` / `command` / `reload` / …) lives in [`src/commands.ts`](./packages/dsh-obsidian/src/commands.ts) as a single source of truth; the system-prompt section renders the same list and the safety contract — the README deliberately does not duplicate the table to avoid drift.
+
+**Highlights**
+
+- **9 `obsidian_*` tools**: `obsidian_read` / `create` / `append` / `search` / `daily` / `daily_append` / `properties` / `vault` + the generic `obsidian_run` that covers the remaining 35+ sub-commands (the model must know the exact sub-command name; the description enforces "must come from the commands.ts inventory" to keep the model from inventing CLI flags);
+- **Four-tier danger model**: `read` / `write` / `destructive` / `execute`, tagged per command in `commands.ts`; the protocol section spells out which tier needs explicit user confirmation and which needs the host permission gate;
+- **Error normalisation**: every failure becomes a `[CODE] message` text (`OBSIDIAN_CLI_NOT_FOUND` / `OBSIDIAN_INVALID_INPUT` / `OBSIDIAN_SPAWN_FAILED` / `OBSIDIAN_TIMEOUT` / `OBSIDIAN_NONZERO_EXIT` / `OBSIDIAN_PROTOCOL_ERROR`) so the model can match by code; the Obsidian-specific `Error:` stdout prefix is detected and surfaced as `OBSIDIAN_PROTOCOL_ERROR`;
+- **stdio truncation**: stdout 20k / stderr 4k (aligned with `dsh-tool-nushell`); overflows gain a `[truncated to N chars]` marker;
+- **No bundled binary**: the `obsidian` command is provided by the Obsidian app and must be on `PATH`; the first call surfaces `OBSIDIAN_CLI_NOT_FOUND` with a clear recovery hint when missing;
+- **system-prompt section**: `tool:obsidian` at order 2960 (sits next to `tool:taskboard` 2950, ordered after by name); injects the 35+ command table and the safety contract at load time;
+- **Zero configuration**: install and use; defaults to the active vault; multi-vault callers pass `vault=<name>` per call.
+
+**Prerequisite**: Obsidian installed locally (≥ 1.4, which ships the CLI). If `obsidian --version` fails, fix the PATH first.
+
 ### @lzhida/dsh-taskboard
 
 Task board plugin (an architectural/teaching re-implementation of [cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard#readme)): the core contract for **human creates card → agent claims and executes → human accepts**. Ten `taskboard_*` agent tools plus code-level protocol gates (agent can never move to `done`, a held task cannot be stolen, cross-project actions are forbidden, checklist check must carry an evidence note), ifVersion optimistic concurrency, DoD checklist (≤30 items), structured execution report, and a system-prompt section spelling out the claim discipline and the done-gate. Ledger persisted to `~/.dsh/dsh-taskboard.json` via atomic write.
@@ -118,6 +134,9 @@ pnpm dsh plugin --profile default add link:packages/dsh-tool-nushell
 
 # The guided goal command (independent, no executor dependency)
 pnpm dsh plugin --profile default add link:packages/dsh-guided-goal
+
+# Obsidian operations (independent — 9 obsidian_* tools + a generic entry, wraps Obsidian's built-in CLI)
+pnpm dsh plugin --profile default add link:packages/dsh-obsidian
 
 # The task board plugin (independent — 10 taskboard_* tools + code-level protocol gates)
 pnpm dsh plugin --profile default add link:packages/dsh-taskboard
