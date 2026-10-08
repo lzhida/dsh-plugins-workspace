@@ -11,6 +11,12 @@
  * 与 dsh-tools 的对齐:
  * - 用 defineTool 注册,output.render 把结构化结果投影为 text;
  * - 系统提示 section 与 tool 同步注册,模型看得到工具就能读到协议。
+ * - 适配 dsh 0.2.0-rc.2:
+ *   1. 工具 execute 签名第二参用 dsh-tools 公开类型 `ToolRunContext`;
+ *   2. `Agent` 在 rc.2 简化为 `{ id: SessionId }`,`session.header.cwd`
+ *      不再在公开类型上 — 见 `defaultResolveContext` 的兼容实现;
+ *   3. `taskboard_move → in_review` 调用 `exec.concludeTurn()` 终止
+ *      agent 当前 turn(其它 to 状态不调),`typeof` 守卫兼容 rc.1。
  *
  * 设计选择:
  * - 这里把 tools 写成"工厂函数",接收 store + tools 注册器(便于单测);
@@ -18,6 +24,7 @@
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
+import type { ToolRunContext } from '@deepseek-ai/dsh-tools';
 
 import type { TaskStore } from './store.ts';
 import {
@@ -39,9 +46,10 @@ export interface TaskboardToolsOptions {
   /**
    * 从 execute 调用上下文抽取身份(workspaceId / author / authorKind / now)。
    * 若未提供,默认走「unknown workspaceId + author=system」;生产 ctx 注入
-   * (agent.session.header.cwd → workspaceId;agent.id → author)。
+   * (agent.id → author;session.header.cwd → workspaceId)。
+   * 0.2.0-rc.2 起 `Agent` 简化为 `{ id: SessionId }`,见 `defaultResolveContext`。
    */
-  readonly resolveContext?: (exec: unknown) => ResolvedCallContext;
+  readonly resolveContext?: (exec: ToolRunContext) => ResolvedCallContext;
 }
 
 /** 工具解析后的调用方身份(传给 store)。 */
@@ -120,20 +128,30 @@ function truncate(s: string, max: number): string {
     : `${s.slice(0, max)}\n…(truncated, total ${s.length} chars)`;
 }
 
-/** 默认 ctx 解析:从 ToolRunContext 抽取身份,失败兜底为 system/unknown。 */
+/**
+ * 默认 ctx 解析:从 ToolRunContext 抽取身份,失败兜底为 system/unknown。
+ *
+ * 适配 dsh 0.2.0-rc.2:
+ * - `Agent` 在 rc.2 简化为 `{ id: SessionId }`(`@deepseek-ai/dsh-agent`),不再含
+ *   `session.header.cwd`。author 优先取 `exec.agent.id`(SessionId 即会话身份);
+ * - workspaceId 优先尝试老的 `exec.session.header.cwd` 形状(向后兼容测试 stub
+ *   与 0.1.x 形态),失败再回退到 `cwd` 字段(若有)与 `'unknown'` 兜底;
+ * - 生产部署建议注入 `workspaceRegistry` 服务自定义 `resolveContext`,
+ *   用本函数做兜底。
+ */
 function defaultResolveContext(exec: unknown): ResolvedCallContext {
   const e = exec as
-    | {
-        agent?: {
-          id?: string;
-          session?: { id?: string; header?: { cwd?: string } };
-        };
-      }
+    | (Partial<ToolRunContext> & {
+        agent?: { id?: string };
+        // 教学版兼容:保留 0.1.x 形态的 `session.header.cwd`。
+        session?: { id?: string; header?: { cwd?: string } };
+        cwd?: string;
+      })
     | undefined;
-  const session = e?.agent?.session;
-  const author = e?.agent?.id ?? session?.id ?? 'system';
-  // workspaceId 优先从 session.header.cwd 抽取绝对路径的 basename + parent(简化:取 cwd)
-  const workspaceId = session?.header?.cwd ?? 'unknown';
+  const legacySession = e?.session;
+  const author = e?.agent?.id ?? legacySession?.id ?? 'system';
+  // workspaceId 多源尝试:legacy session.header.cwd → cwd 顶层字段 → 'unknown'
+  const workspaceId = legacySession?.header?.cwd ?? e?.cwd ?? 'unknown';
   return { workspaceId, author, authorKind: 'agent', now: Date.now() };
 }
 
@@ -598,6 +616,13 @@ export function createTaskboardTools(options: TaskboardToolsOptions) {
         const ctx = resolveCtx(exec);
         const a = args as { id: string; to: TaskStatus; ifVersion: number };
         const next = await store.move(ctx, a.id, a.to, a.ifVersion);
+        // rc.2 行为:`taskboard_move → in_review` 是 agent 工作流终点 —
+        // 告诉 agent loop 不要再自动追加 tool calls(避免模型瞎循环
+        // 再次调 in_review / 试探调 done / 写新评论等)。其它 to 状态
+        // 不调用,允许后续的 checklist / comment / execution_report。
+        if (a.to === 'in_review' && typeof exec.concludeTurn === 'function') {
+          exec.concludeTurn();
+        }
         return {
           text: `任务 ${next.id} 状态 → ${next.status} (v${next.version})`,
           id: next.id,

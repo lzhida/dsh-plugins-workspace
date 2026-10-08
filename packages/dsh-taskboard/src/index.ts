@@ -34,7 +34,7 @@ import { join } from 'node:path';
 import os from 'node:os';
 
 import { taskboardSection } from './protocol.ts';
-import { defaultLedgerPath, TaskStore } from './store.ts';
+import { defaultLedgerPath, isExistsError, TaskStore } from './store.ts';
 import { createTaskboardTools } from './tools.ts';
 
 /** Cordis 插件名(loader 依赖)。 */
@@ -64,8 +64,10 @@ export async function apply(ctx: Context): Promise<void> {
   const home = dshHomeDir();
   try {
     await mkdir(home, { recursive: true });
-  } catch {
-    // 目录已存在或权限受限:不阻塞 — store.flush 阶段会再尝试创建
+  } catch (error) {
+    // 目录已存在(EEXIST)视为成功 — 不阻塞。其它错误(权限等)重抛,便于宿主诊断;
+    // store.flush 阶段也会再尝试创建,所以 mkdir 失败不等于致命。
+    if (!isExistsError(error)) throw error;
   }
   const file = defaultLedgerPath(home);
   const store = new TaskStore({ file, now: () => Date.now() });

@@ -5,10 +5,15 @@
  * 1. 认领纪律:读卡 → 评论流(最新需求)→ claim 状态机 → 工作 → 报告 → 移交;
  * 2. done-gate:agent 永远到不了 done(代码已实现,这里强提示不要尝试);
  * 3. 重试规则:版本冲突重读,被持有时换任务,跨项目不可抢;
- * 4. 报告时序:report → comment → in_review;
+ * 4. 报告时序:report → comment → in_review(in_review 后由代码闸调用
+ *    `exec.concludeTurn()` 终止 turn,见 `tools.ts:taskboard_move`);
  * 5. 验收清单:check 必带 evidence note。
  *
- * 文本结构与 cloader 0.8.7 对齐(简化,去掉并发/调度相关段落)。
+ * 文本结构与 cloader 0.8.7 对齐(简化,去掉并发/调度相关段落);
+ * 适配 dsh 0.2.0-rc.2:本 section 名 `tool:taskboard`(唯一名,dsh rc.2 的
+ * `section()` 同名重复注册会抛错),order=2950(与 rc.2 引入的一方稀疏
+ * section 序列不冲突;按 name 排序兜底)。Section 文本不含 `{{var}}`
+ * 引用,避免 rc.2 `renderPrompt` 渲染时拒绝。
  */
 
 import type { PromptSection } from '@deepseek-ai/dsh-system-prompt';
