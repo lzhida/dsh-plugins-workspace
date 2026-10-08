@@ -4,7 +4,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type {
   ShellExecRequest,
   ShellExecSpec,
-  ShellProcess,
+  ShellExecution,
   ShellRunResult,
 } from '@deepseek-ai/dsh-shell';
 import {
@@ -12,6 +12,7 @@ import {
   assertServiceableNushellConfig,
   candidateNuPaths,
   DEFAULT_NUSHELL_CONFIG,
+  liveValue,
   NushellLocalExecutor,
   resolveNuPath,
   type NushellLocalConfig,
@@ -118,23 +119,34 @@ function makeExecutor(
 }
 
 describe('nushell-local 配置', () => {
-  it('缺省配置与显式覆盖并存', () => {
-    expect(makeExecutor().config).toMatchObject({
-      timeoutMs: 30_000,
-      maxTimeoutMs: 600_000,
-      maxOutputBytes: 64_000,
-      nuPath: 'nu',
-    });
+  it('缺省配置与显式覆盖并存(resolve 时生效)', () => {
+    expect(makeExecutor().resolve({ command: 'ls' }).timeoutMs).toBe(30_000);
     expect(
-      makeExecutor({ timeoutMs: 1_000, nuPath: 'F:/nu/nu.exe' }).config,
-    ).toMatchObject({ timeoutMs: 1_000, nuPath: 'F:/nu/nu.exe' });
+      makeExecutor({ timeoutMs: 1_000 }).resolve({ command: 'ls' }).timeoutMs,
+    ).toBe(1_000);
     expect(DEFAULT_NUSHELL_CONFIG.maxSpillBytes).toBe(64 * 1024 * 1024);
   });
 
-  it('拒绝不可运行的配置', () => {
-    expect(() => makeExecutor({ timeoutMs: -1 })).toThrow(
-      'timeoutMs must be a positive finite',
+  it('活值访问器字段按当前快照生效(直跑传普通值,组合行传访问器)', () => {
+    let snapshot = 5_000;
+    const executor = makeExecutor({
+      timeoutMs: { get: () => snapshot },
+      nuPath: { get: () => 'F:/live/nu.exe' },
+    });
+    expect(executor.resolve({ command: 'ls' }).timeoutMs).toBe(5_000);
+    expect(executor.argv({ command: 'ls' } as ShellExecSpec)[0]).toBe(
+      'F:/live/nu.exe',
     );
+    // volatile 热更:同一访问器对象内的快照更新,下次读取即生效。
+    snapshot = 7_000;
+    expect(liveValue({ get: () => snapshot })).toBe(7_000);
+    expect(executor.resolve({ command: 'ls' }).timeoutMs).toBe(7_000);
+  });
+
+  it('拒绝不可运行的配置', () => {
+    expect(() =>
+      makeExecutor({ timeoutMs: -1 }).resolve({ command: 'ls' }),
+    ).toThrow('timeoutMs must be a positive finite');
     expect(() =>
       assertServiceableNushellConfig({
         ...DEFAULT_NUSHELL_CONFIG,
@@ -172,6 +184,14 @@ describe('nushell-local resolve', () => {
     expect(
       executor.resolve({ command: 'ls', stdoutMaxBytes: 128 }).stdoutMaxBytes,
     ).toBe(128);
+  });
+
+  it('onExpiry 缺省 kill,请求值原样透传', () => {
+    const executor = makeExecutor();
+    expect(executor.resolve({ command: 'ls' }).onExpiry).toBe('kill');
+    expect(executor.resolve({ command: 'ls', onExpiry: 'none' }).onExpiry).toBe(
+      'none',
+    );
   });
 
   it('可选字段条件传播,sandboxPolicy 原样透传', () => {
@@ -251,14 +271,14 @@ describe('nushell-local argv 与 spawnSpec', () => {
   });
 });
 
-describe('nushell-local 前台 run', () => {
+describe('nushell-local 前台 execute().result()', () => {
   it('正常结算 resolve(非零退出也 resolve)并投影 collect readers', async () => {
     const { ctx, handle, spawn } = stubCtx('out', 'err');
     const executor = makeExecutor({}, ctx);
     const spec = executor.resolve({ command: 'ls' });
-    const pending = executor.run(spec);
+    const pending = executor.execute(spec);
     handle.resolveDone({ exitCode: 3, signal: null });
-    const result = await pending;
+    const result = await (await pending).result();
     expect(result).toMatchObject({
       exitCode: 3,
       signal: null,
@@ -277,10 +297,9 @@ describe('nushell-local 前台 run', () => {
     const { ctx, handle } = stubCtx();
     handle.collected.stdout = fakeReader('head', true, 'F:/spill/out.txt');
     const executor = makeExecutor({}, ctx);
-    const spec = executor.resolve({ command: 'ls' });
-    const pending = executor.run(spec);
+    const pending = executor.execute(executor.resolve({ command: 'ls' }));
     handle.resolveDone({ exitCode: 0, signal: null });
-    const result = await pending;
+    const result = await (await pending).result();
     expect(result.stdout).toEqual({
       text: 'head',
       truncated: true,
@@ -296,37 +315,60 @@ describe('nushell-local 前台 run', () => {
       command: 'sleep 5sec',
       signal: controller.signal,
     });
-    const pending = executor.run(spec);
+    const pending = executor.execute(spec);
     controller.abort();
     handle.resolveDone({ exitCode: null, signal: 'SIGTERM' });
-    const result = await pending;
+    const result = await (await pending).result();
     expect(result.aborted).toBe(true);
     expect(result.timedOut).toBe(false);
   });
 
-  it('基础设施失败(spawn 层拒绝)作为异常传播', async () => {
+  it('基础设施失败(spawn 层拒绝)只从 result() 拒绝,done 正常结算', async () => {
     const { ctx, handle } = stubCtx();
     const executor = makeExecutor({}, ctx);
-    const pending = executor.run(executor.resolve({ command: 'ls' }));
+    const execution = await executor.execute(
+      executor.resolve({ command: 'ls' }),
+    );
     handle.rejectDone(new Error('spawn EACCES'));
-    await expect(pending).rejects.toThrow('spawn EACCES');
+    await expect(execution.result()).rejects.toThrow('spawn EACCES');
+    expect(execution.status).toBe('killed');
+  });
+
+  it('result() memoized:多次调用共享同一 promise', async () => {
+    const { ctx, handle } = stubCtx('x', '');
+    const executor = makeExecutor({}, ctx);
+    const execution = await executor.execute(
+      executor.resolve({ command: 'ls' }),
+    );
+    handle.resolveDone({ exitCode: 0, signal: null });
+    const first = execution.result();
+    expect(execution.result()).toBe(first);
+    await first;
+  });
+
+  it('onExpiry none:不装截止,结果只响应调用方 signal', async () => {
+    const { ctx, handle } = stubCtx('ok', '');
+    const executor = makeExecutor({}, ctx);
+    const spec = executor.resolve({
+      command: 'sleep 5sec',
+      timeoutMs: 1_000,
+      onExpiry: 'none',
+    });
+    expect(spec.onExpiry).toBe('none');
+    const pending = executor.execute(spec);
+    handle.resolveDone({ exitCode: 0, signal: null });
+    const result: ShellRunResult = await (await pending).result();
+    expect(result.timedOut).toBe(false);
+    expect(result.timeoutMs).toBe(1_000);
   });
 });
 
-describe('nushell-local 后台 start', () => {
-  function startProc(
-    executor: NushellLocalExecutor,
-    spec: ShellExecSpec,
-  ): ShellProcess {
-    return executor.start(spec);
-  }
-
+describe('nushell-local 执行句柄(后台形态)', () => {
   it('启动即 running;done 结算 completed 与 exitCode', async () => {
     const { ctx, handle } = stubCtx();
     const executor = makeExecutor({}, ctx);
-    const proc = startProc(
-      executor,
-      executor.resolve({ command: 'sleep 5sec' }),
+    const proc = await executor.execute(
+      executor.resolve({ command: 'sleep 5sec', onExpiry: 'none' }),
     );
     expect(proc.status).toBe('running');
     handle.resolveDone({ exitCode: 7, signal: null });
@@ -339,9 +381,12 @@ describe('nushell-local 后台 start', () => {
     const { ctx, handle } = stubCtx();
     const executor = makeExecutor({}, ctx);
     const controller = new AbortController();
-    const proc = startProc(
-      executor,
-      executor.resolve({ command: 'sleep 5sec', signal: controller.signal }),
+    const proc = await executor.execute(
+      executor.resolve({
+        command: 'sleep 5sec',
+        signal: controller.signal,
+        onExpiry: 'none',
+      }),
     );
     controller.abort();
     handle.resolveDone({ exitCode: null, signal: 'SIGTERM' });
@@ -352,16 +397,15 @@ describe('nushell-local 后台 start', () => {
   it('kill 幂等:运行中终止并翻转状态,结算后返回 false', async () => {
     const { ctx, handle } = stubCtx();
     const executor = makeExecutor({}, ctx);
-    const proc = startProc(
-      executor,
-      executor.resolve({ command: 'sleep 5sec' }),
+    const proc = await executor.execute(
+      executor.resolve({ command: 'sleep 5sec', onExpiry: 'none' }),
     );
     expect(proc.kill()).toBe(true);
     expect(handle.terminate).toHaveBeenCalledTimes(1);
     expect(proc.kill()).toBe(false);
   });
 
-  it('readOutput 消费式增量:[stderr] 段、offset 推进、lossy 与 spill 路径', () => {
+  it('readOutput 消费式增量:[stderr] 段、offset 推进、lossy 与 spill 路径', async () => {
     const { ctx } = stubCtx();
     const executor = makeExecutor({}, ctx);
     const handle = fakeHandle();
@@ -384,7 +428,9 @@ describe('nushell-local 后台 start', () => {
     (
       ctx as unknown as { subprocess: { spawn: typeof spawn } }
     ).subprocess.spawn = spawn;
-    const proc = startProc(executor, executor.resolve({ command: 'ls' }));
+    const proc = await executor.execute(
+      executor.resolve({ command: 'ls', onExpiry: 'none' }),
+    );
     const first = proc.readOutput();
     expect(first.delta).toBe('chunk1 \n[stderr]\nwarn');
     expect(first.lossy).toBe(false);
@@ -394,10 +440,34 @@ describe('nushell-local 后台 start', () => {
     expect(second.lossy).toBe(true);
   });
 
-  it('provider 拒绝结算 killed,失败说明并入下次 readOutput', async () => {
+  it('observed 非消费读:与消费游标互不干扰', async () => {
+    const { ctx } = stubCtx();
+    const executor = makeExecutor({}, ctx);
+    const handle = fakeHandle();
+    handle.collected.stdout.readFrom = vi.fn((offset: number) => ({
+      text: 'stream ',
+      nextOffset: offset + 7,
+      lossy: false,
+    }));
+    const spawn = vi.fn(() => handle);
+    (
+      ctx as unknown as { subprocess: { spawn: typeof spawn } }
+    ).subprocess.spawn = spawn;
+    const proc = await executor.execute(
+      executor.resolve({ command: 'ls', onExpiry: 'none' }),
+    );
+    // 消费游标推到 7 后,observed 从 0 重读仍拿全量(offset 语义独立)。
+    proc.readOutput();
+    expect(proc.observed.stdout.readFrom(0).text).toBe('stream ');
+    expect(proc.observed.stdout.readFrom(0).nextOffset).toBe(7);
+  });
+
+  it('provider 拒绝结算 killed,失败说明并入下次 readOutput;observed.stderr 呈现注记', async () => {
     const { ctx, handle } = stubCtx();
     const executor = makeExecutor({}, ctx);
-    const proc = startProc(executor, executor.resolve({ command: 'ls' }));
+    const proc = await executor.execute(
+      executor.resolve({ command: 'ls', onExpiry: 'none' }),
+    );
     handle.rejectDone(new Error('boom'));
     await proc.done;
     expect(proc.status).toBe('killed');
@@ -406,6 +476,8 @@ describe('nushell-local 后台 start', () => {
       'subprocess failed before reporting an outcome: Error: boom',
     );
     expect(proc.readOutput().delta).not.toContain('boom');
+    // 非消费 stderr 观察读:provider 失败后整个流就是失败注记。
+    expect(proc.observed.stderr.readFrom(0).text).toContain('boom');
   });
 });
 
@@ -424,11 +496,11 @@ describe('nushell-local ShellRunResult 形状', () => {
   it('结果满足 shell 接缝 DTO(编译期形状 + 运行时字段)', async () => {
     const { ctx, handle } = stubCtx('ok', '');
     const executor = makeExecutor({}, ctx);
-    const pending: Promise<ShellRunResult> = executor.run(
+    const pending: Promise<ShellExecution> = executor.execute(
       executor.resolve({ command: 'ls' }),
     );
     handle.resolveDone({ exitCode: 0, signal: null });
-    const result = await pending;
+    const result = await (await pending).result();
     expect(Object.keys(result)).toEqual(
       expect.arrayContaining([
         'exitCode',
@@ -457,13 +529,14 @@ describe('nushell-local nu 包装层检测', () => {
     expect(annotated).toContain('official nu build');
   });
 
-  it('前台 run 的 stderr 命中特征时被注记,stdout 不受影响', async () => {
+  it('前台 result 的 stderr 命中特征时被注记,stdout 不受影响', async () => {
     const { ctx, handle } = stubCtx('out', 'pi-natives:command: syntax error');
     const executor = makeExecutor({}, ctx);
-    const spec = executor.resolve({ command: 'metadata 100' });
-    const pending = executor.run(spec);
+    const pending = executor.execute(
+      executor.resolve({ command: 'metadata 100' }),
+    );
     handle.resolveDone({ exitCode: 1, signal: null });
-    const result = await pending;
+    const result = await (await pending).result();
     expect(result.stdout.text).toBe('out');
     expect(result.stderr.text).toContain('[nushell-local:');
     expect(result.stderr.text).toContain('pi-natives:command: syntax error');
@@ -473,7 +546,9 @@ describe('nushell-local nu 包装层检测', () => {
   it('后台增量读的 stderr 命中特征时被注记', async () => {
     const { ctx, handle } = stubCtx('', 'pi-natives:command: syntax error');
     const executor = makeExecutor({}, ctx);
-    const proc = executor.start(executor.resolve({ command: 'metadata 100' }));
+    const proc = await executor.execute(
+      executor.resolve({ command: 'metadata 100', onExpiry: 'none' }),
+    );
     handle.resolveDone({ exitCode: 1, signal: null });
     await proc.done;
     const read = proc.readOutput();
@@ -546,83 +621,16 @@ describe('nushell-local nuPath 解析', () => {
     ).toBe('nu');
     expect(probed).toEqual([]);
   });
-});
 
-describe('nushell-local settings 热更新', () => {
-  /** 捕获 ctx.inject(['settings']) 回调,同步喂入 settings 服务假体。 */
-  function stubCtxWithSettings(config: NushellLocalConfig = {}): {
-    executor: NushellLocalExecutor;
-    installSection: ReturnType<typeof vi.fn>;
-  } {
-    const pending: Array<(scoped: unknown) => void> = [];
-    const installSection = vi.fn();
-    const ctx = {
-      reflect: { provide: vi.fn() },
-      subprocess: { spawn: vi.fn() },
-      inject: (_keys: unknown, cb: (scoped: unknown) => void) => {
-        pending.push(cb);
-      },
-    } as unknown as Context;
-    const executor = makeExecutor(config, ctx);
-    for (const cb of pending) cb({ settings: { installSection } });
-    return { executor, installSection };
-  }
-
-  it('组合入口登记为 shell 命名空间的 base 层', () => {
-    const { installSection } = stubCtxWithSettings({
-      nuPath: 'F:/bundled/nu.exe',
-    });
-    expect(installSection).toHaveBeenCalledOnce();
-    const [owner, ns, schema, entry] = installSection.mock.calls[0];
-    expect(ns).toBe('shell');
-    expect(entry).toMatchObject({ nuPath: 'F:/bundled/nu.exe' });
-    expect(schema).toBeDefined();
-    expect(owner).toBeDefined();
-  });
-
-  it('settings 段声明变化经 onChange 重解析 nuPath', () => {
-    const { executor, installSection } = stubCtxWithSettings({
-      nuPath: 'F:/bundled/nu.exe',
-    });
-    const hooks = installSection.mock.calls[0][4] as {
-      setSource: (current: () => NushellLocalConfig) => void;
-      onChange: () => void;
-    };
-    let current: NushellLocalConfig = { nuPath: 'F:/bundled/nu.exe' };
-    hooks.setSource(() => current);
-    hooks.onChange();
+  it('活值 nuPath 快照变化后重新解析(值比较,非访问器身份)', () => {
+    let declared: string | undefined = 'F:/a/nu.exe';
+    const executor = makeExecutor({ nuPath: { get: () => declared } });
     expect(executor.argv({ command: 'ls' } as ShellExecSpec)[0]).toBe(
-      'F:/bundled/nu.exe',
+      'F:/a/nu.exe',
     );
-    current = { nuPath: 'F:/official/nu.exe' };
-    hooks.onChange();
+    declared = 'F:/b/nu.exe';
     expect(executor.argv({ command: 'ls' } as ShellExecSpec)[0]).toBe(
-      'F:/official/nu.exe',
-    );
-  });
-
-  it('settings 卸载后回退组合入口,argv 随之回落', () => {
-    const { executor, installSection } = stubCtxWithSettings({
-      nuPath: 'F:/bundled/nu.exe',
-    });
-    const hooks = installSection.mock.calls[0][4] as {
-      setSource: (current: () => NushellLocalConfig) => void;
-      onChange: () => void;
-    };
-    hooks.setSource(() => ({ nuPath: 'F:/official/nu.exe' }));
-    hooks.onChange();
-    // 卸载:installSection 以组合入口为 fallback 源。
-    hooks.setSource(() => ({ nuPath: 'F:/bundled/nu.exe' }));
-    hooks.onChange();
-    expect(executor.argv({ command: 'ls' } as ShellExecSpec)[0]).toBe(
-      'F:/bundled/nu.exe',
-    );
-  });
-
-  it('未挂载 settings 时构造即可用,argv 使用组合入口声明', () => {
-    const executor = makeExecutor({ nuPath: 'F:/explicit/nu.exe' });
-    expect(executor.argv({ command: 'ls' } as ShellExecSpec)[0]).toBe(
-      'F:/explicit/nu.exe',
+      'F:/b/nu.exe',
     );
   });
 });

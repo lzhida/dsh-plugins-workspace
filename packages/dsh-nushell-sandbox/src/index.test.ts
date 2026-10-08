@@ -1,17 +1,12 @@
 import { describe, expect, it, vi, afterEach, beforeEach } from 'vitest';
 import type { Context } from '@deepseek-ai/cordis';
-import type {
-  ShellExecRequest,
-  ShellExecSpec,
-  ShellRunResult,
-} from '@deepseek-ai/dsh-shell';
+import type { ShellExecRequest, ShellExecSpec } from '@deepseek-ai/dsh-shell';
 import type {
   ConfinedArgv,
   SandboxExecutionPolicy,
 } from '@deepseek-ai/dsh-sandbox';
 import {
   assertServiceableNushellConfig,
-  classifySandboxFacts,
   DEFAULT_NUSHELL_CONFIG,
   NushellSandboxExecutor,
   resolveNuPath,
@@ -112,7 +107,7 @@ function stubCtx(
 } {
   const handle = fakeHandle(stdoutText, stderrText);
   const spawn = vi.fn(() => handle);
-  const confine = vi.fn(() => WRAPPED);
+  const confine = vi.fn(async () => WRAPPED);
   const resolvePolicy = vi.fn(() => READ_ONLY_POLICY);
   // cordis Service 构造仅要求 ctx.reflect.provide(name, instance);stub 之。
   const ctx = {
@@ -139,7 +134,7 @@ function makeExecutor(
       ({
         reflect: { provide: vi.fn() },
         subprocess: { spawn: vi.fn() },
-        sandbox: { confine: vi.fn() },
+        sandbox: { confine: vi.fn(async () => WRAPPED) },
         sandboxPolicy: {
           resolve: vi.fn(() => READ_ONLY_POLICY),
           defaultMode: 'read-only',
@@ -155,6 +150,7 @@ function specOf(overrides: Partial<ShellExecSpec> = {}): ShellExecSpec {
     command: 'ls',
     workdir: 'F:/ws',
     timeoutMs: 30_000,
+    onExpiry: 'kill',
     stdoutMaxBytes: 64_000,
     sandboxPolicy: READ_ONLY_POLICY,
     ...overrides,
@@ -190,24 +186,29 @@ describe('dsh-nushell-sandbox 契约', () => {
   });
 });
 
-describe('dsh-nushell-sandbox 前台 run', () => {
+describe('dsh-nushell-sandbox 前台 execute().result()', () => {
   it('受限模式经 confine 包装 argv 后 spawn,并结算沙箱事实', async () => {
     const { ctx, handle, spawn, sandbox } = stubCtx('out', '');
     handle.resolveDone({ exitCode: 0, signal: null });
     const executor = makeExecutor({ nuPath: 'nu' }, ctx);
-    const result = await executor.run(specOf());
+    const spec = specOf();
+    const result = await (await executor.execute(spec)).result();
     expect(sandbox.confine).toHaveBeenCalledOnce();
-    expect(sandbox.confine).toHaveBeenCalledWith(
-      ['nu', '--no-config-file', '-c', 'ls'],
-      READ_ONLY_POLICY,
-    );
-    const spawnedArgv = spawn.mock.calls[0][0].argv as string[];
+    const [argv, policy, signal] = sandbox.confine.mock.calls[0] as unknown as [
+      string[],
+      SandboxExecutionPolicy,
+      AbortSignal | undefined,
+    ];
+    expect(argv).toEqual(['nu', '--no-config-file', '-c', 'ls']);
+    expect(policy).toEqual(READ_ONLY_POLICY);
+    // 0.1.7:confine 在 executeArgv 准备期执行,携带取消信号。
+    expect(signal).toBeDefined();
+    const spawnedArgv = spawn.mock.calls[0]![0].argv as string[];
     expect(spawnedArgv.slice(0, 2)).toEqual(['runner', '--']);
     expect(result.sandbox).toEqual({
       mode: 'read-only',
       denied: false,
       enforcement: 'partial',
-      runnerFailed: false,
     });
   });
 
@@ -215,18 +216,18 @@ describe('dsh-nushell-sandbox 前台 run', () => {
     const { ctx, handle } = stubCtx('', 'Error: access is denied');
     handle.resolveDone({ exitCode: 1, signal: null });
     const executor = makeExecutor({}, ctx);
-    const result = await executor.run(specOf());
+    const result = await (await executor.execute(specOf())).result();
     expect(result.sandbox?.denied).toBe(true);
-    expect(result.sandbox?.runnerFailed).toBe(false);
+    expect(result.sandbox?.runnerFailed).toBeUndefined();
     expect(result.exitCode).toBe(1);
   });
 
-  it('runner 自身失败优先于拒绝分类并标记 runnerFailed', async () => {
+  it('runner 自身失败优先于拒绝分类:前台抛 SANDBOX_UNAVAILABLE', async () => {
     const { ctx, handle, sandbox } = stubCtx(
       '',
       'runner: refusing profile\nunrelated',
     );
-    sandbox.confine.mockReturnValue({
+    sandbox.confine.mockResolvedValue({
       ...WRAPPED,
       runnerFailureRules: [
         {
@@ -237,22 +238,27 @@ describe('dsh-nushell-sandbox 前台 run', () => {
     });
     handle.resolveDone({ exitCode: 2, signal: null });
     const executor = makeExecutor({}, ctx);
-    const result = await executor.run(specOf());
-    expect(result.sandbox?.runnerFailed).toBe(true);
-    expect(result.sandbox?.denied).toBe(false);
+    const execution = await executor.execute(specOf());
+    // 0.1.7 语义:runner 失败 = 命令从未运行,前台以基础设施失败拒绝,
+    // 决不把「沙箱问题」伪装成「命令结果」。
+    await expect(execution.result()).rejects.toMatchObject({
+      code: 'SANDBOX_UNAVAILABLE',
+    });
   });
 
   it('danger-full-access 不包装直接 spawn', async () => {
     const { ctx, handle, spawn, sandbox } = stubCtx('out', '');
     handle.resolveDone({ exitCode: 0, signal: null });
     const executor = makeExecutor({ nuPath: 'nu' }, ctx);
-    const result = await executor.run(
-      specOf({
-        sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: 'F:/ws' },
-      }),
-    );
+    const result = await (
+      await executor.execute(
+        specOf({
+          sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: 'F:/ws' },
+        }),
+      )
+    ).result();
     expect(sandbox.confine).not.toHaveBeenCalled();
-    const spawnedArgv = spawn.mock.calls[0][0].argv as string[];
+    const spawnedArgv = spawn.mock.calls[0]![0].argv as string[];
     expect(spawnedArgv).toEqual(['nu', '--no-config-file', '-c', 'ls']);
     expect(result.sandbox).toEqual({
       mode: 'danger-full-access',
@@ -264,18 +270,18 @@ describe('dsh-nushell-sandbox 前台 run', () => {
     const { ctx, handle } = stubCtx('', 'boom');
     handle.resolveDone({ exitCode: 3, signal: null });
     const executor = makeExecutor({}, ctx);
-    const result: ShellRunResult = await executor.run(specOf());
+    const result = await (await executor.execute(specOf())).result();
     expect(result.exitCode).toBe(3);
     expect(result.timedOut).toBe(false);
   });
 });
 
-describe('dsh-nushell-sandbox 后台 start', () => {
+describe('dsh-nushell-sandbox 执行句柄(后台形态)', () => {
   it('受限模式包装 argv,进程结算后盖上沙箱事实', async () => {
     const { ctx, handle, spawn } = stubCtx('out', '');
     const executor = makeExecutor({ nuPath: 'nu' }, ctx);
-    const proc = executor.start(specOf());
-    const spawnedArgv = spawn.mock.calls[0][0].argv as string[];
+    const proc = await executor.execute(specOf({ onExpiry: 'none' }));
+    const spawnedArgv = spawn.mock.calls[0]![0].argv as string[];
     expect(spawnedArgv.slice(0, 2)).toEqual(['runner', '--']);
     handle.resolveDone({ exitCode: 0, signal: null });
     await proc.done;
@@ -287,20 +293,39 @@ describe('dsh-nushell-sandbox 后台 start', () => {
     });
   });
 
-  it('spawn 阶段 runner 失败结算为 killed 且 runnerFailed 如实标记', async () => {
+  it('spawn 阶段 runner 可归因失败(ENOENT 且 path 即 argv[0])标记 runnerFailed', async () => {
     const { ctx, handle } = stubCtx('', '');
     const executor = makeExecutor({}, ctx);
-    const proc = executor.start(specOf());
-    handle.rejectDone(new Error('runner refused its profile'));
+    const proc = await executor.execute(
+      specOf({ workdir: process.cwd(), onExpiry: 'none' }),
+    );
+    // 官方诊断:仅当错误 code/syscall/path 精确指向 runner 本身才归因。
+    const runnerSpawnError = Object.assign(new Error('spawn runner ENOENT'), {
+      code: 'ENOENT',
+      syscall: 'spawn runner',
+      path: 'runner',
+    });
+    handle.rejectDone(runnerSpawnError);
     await proc.done;
     expect(proc.status).toBe('killed');
     expect(proc.sandbox?.runnerFailed).toBe(true);
+    expect(proc.sandbox?.denied).toBe(false);
+  });
+
+  it('无归因证据的 provider 拒绝不标记 runnerFailed(防误报)', async () => {
+    const { ctx, handle } = stubCtx('', '');
+    const executor = makeExecutor({}, ctx);
+    const proc = await executor.execute(specOf({ onExpiry: 'none' }));
+    handle.rejectDone(new Error('runner refused its profile'));
+    await proc.done;
+    expect(proc.sandbox?.runnerFailed).toBeUndefined();
+    expect(proc.sandbox?.denied).toBe(false);
   });
 
   it('kill 幂等并终止受管进程', async () => {
     const { ctx, handle } = stubCtx('', '');
     const executor = makeExecutor({}, ctx);
-    const proc = executor.start(specOf());
+    const proc = await executor.execute(specOf({ onExpiry: 'none' }));
     expect(proc.kill()).toBe(true);
     expect(proc.kill()).toBe(false);
     handle.resolveDone({ exitCode: null, signal: 'SIGTERM' });
@@ -309,86 +334,11 @@ describe('dsh-nushell-sandbox 后台 start', () => {
   });
 });
 
-describe('dsh-nushell-sandbox 方言分类', () => {
-  it('denialSignatures 大小写不敏感命中', () => {
-    const facts = classifySandboxFacts(WRAPPED, 1, 'x\nAccess Is Denied\n');
-    expect(facts).toEqual({ denied: true, runnerFailed: false });
-  });
-
-  it('informationalLines 全行排除后 fatal 签名仍命中', () => {
-    const facts = classifySandboxFacts(
-      {
-        denialSignatures: [],
-        runnerFailureRules: [
-          {
-            fatalSignatures: ['refusing profile'],
-            informationalLines: ['BENIGN banner'],
-          },
-        ],
-      },
-      2,
-      'benign banner\nrunner: refusing profile',
-    );
-    expect(facts).toEqual({ denied: false, runnerFailed: true });
-  });
-
-  it('allowedExitCodes 不匹配的退出码跳过该规则', () => {
-    const facts = classifySandboxFacts(
-      {
-        denialSignatures: [],
-        runnerFailureRules: [
-          { allowedExitCodes: [64], fatalSignatures: ['refusing profile'] },
-        ],
-      },
-      2,
-      'runner: refusing profile',
-    );
-    expect(facts).toEqual({ denied: false, runnerFailed: false });
-  });
-});
-
-describe('dsh-nushell-sandbox 配置', () => {
-  it('缺省配置与显式覆盖并存', () => {
-    expect(makeExecutor().config).toMatchObject({
-      timeoutMs: 30_000,
-      maxTimeoutMs: 600_000,
-      maxOutputBytes: 64_000,
-      maxSpillBytes: DEFAULT_NUSHELL_CONFIG.maxSpillBytes,
-      nuPath: 'nu',
-    });
-    expect(makeExecutor({ nuPath: 'F:/nu/nu.exe' }).config.nuPath).toBe(
-      'F:/nu/nu.exe',
-    );
-  });
-
-  it('拒绝负数与非法超时配置', () => {
-    expect(() => makeExecutor({ timeoutMs: -1 })).toThrow(
-      'nushell-sandbox: timeoutMs must be a positive finite number',
-    );
-    expect(() =>
-      assertServiceableNushellConfig({
-        ...DEFAULT_NUSHELL_CONFIG,
-        graceMs: 0,
-      }),
-    ).toThrow('nushell-sandbox: graceMs must be a positive finite number');
-  });
-
-  it('argv 固定 --no-config-file -c 形态,声明 nuPath 原样生效', () => {
-    const executor = makeExecutor({ nuPath: 'nu' });
-    expect(executor.argv(specOf())).toEqual([
-      'nu',
-      '--no-config-file',
-      '-c',
-      'ls',
-    ]);
-  });
-});
-
 describe('dsh-nushell-sandbox 后台结算沙箱事实', () => {
   it('结算点全量 stderr 命中 denial 签名 → denied 置位', async () => {
     const { ctx, handle } = stubCtx('out', 'access is denied: F:/outside');
     const executor = makeExecutor({ nuPath: 'nu' }, ctx);
-    const proc = executor.start(specOf());
+    const proc = await executor.execute(specOf({ onExpiry: 'none' }));
     handle.resolveDone({ exitCode: 1, signal: null });
     await proc.done;
     expect(proc.status).toBe('completed');
@@ -402,7 +352,7 @@ describe('dsh-nushell-sandbox 后台结算沙箱事实', () => {
   it('结算点 stderr 未命中签名 → facts 保持初始 denied:false', async () => {
     const { ctx, handle } = stubCtx('out', 'harmless warning');
     const executor = makeExecutor({ nuPath: 'nu' }, ctx);
-    const proc = executor.start(specOf());
+    const proc = await executor.execute(specOf({ onExpiry: 'none' }));
     handle.resolveDone({ exitCode: 1, signal: null });
     await proc.done;
     expect(proc.sandbox).toEqual({
@@ -414,56 +364,69 @@ describe('dsh-nushell-sandbox 后台结算沙箱事实', () => {
 
   it('runner 规则命中优先于 denial 签名', async () => {
     const { ctx, handle, sandbox } = stubCtx('', 'runner: refusing profile');
-    sandbox.confine.mockReturnValue({
+    sandbox.confine.mockResolvedValue({
       ...WRAPPED,
       denialSignatures: ['refusing profile'],
       runnerFailureRules: [{ fatalSignatures: ['refusing profile'] }],
     });
     const executor = makeExecutor({ nuPath: 'nu' }, ctx);
-    const proc = executor.start(specOf());
+    const proc = await executor.execute(specOf({ onExpiry: 'none' }));
     handle.resolveDone({ exitCode: 2, signal: null });
     await proc.done;
     expect(proc.sandbox).toMatchObject({ denied: false, runnerFailed: true });
   });
 
-  it('danger-full-access 后台不携带分类规则,facts 原样落地', async () => {
+  it('danger-full-access 后台不经过分类:句柄不携带沙箱事实(对齐官方)', async () => {
     const { ctx, handle } = stubCtx('', 'access is denied');
     const executor = makeExecutor({ nuPath: 'nu' }, ctx);
-    const proc = executor.start(
+    const proc = await executor.execute(
       specOf({
         sandboxPolicy: { mode: 'danger-full-access', workspaceRoot: 'F:/ws' },
+        onExpiry: 'none',
       }),
     );
     handle.resolveDone({ exitCode: 1, signal: null });
     await proc.done;
-    expect(proc.sandbox).toEqual({ mode: 'danger-full-access', denied: false });
+    // 官方语义:danger-full-access 只装饰前台 result();后台句柄无 facts。
+    expect(proc.sandbox).toBeUndefined();
   });
 });
 
-describe('dsh-nushell-sandbox nuPath 解析与 settings 热更新', () => {
-  /** 捕获 ctx.inject(['settings']) 回调,同步喂入 settings 服务假体。 */
-  function stubCtxWithSettings(config: NushellSandboxConfig = {}): {
-    executor: NushellSandboxExecutor;
-    installSection: ReturnType<typeof vi.fn>;
-  } {
-    const pending: Array<(scoped: unknown) => void> = [];
-    const installSection = vi.fn();
-    const ctx = {
-      reflect: { provide: vi.fn() },
-      subprocess: { spawn: vi.fn() },
-      sandbox: { confine: vi.fn() },
-      sandboxPolicy: {
-        resolve: vi.fn(() => READ_ONLY_POLICY),
-        defaultMode: 'read-only',
-      },
-      inject: (_keys: unknown, cb: (scoped: unknown) => void) => {
-        pending.push(cb);
-      },
-    } as unknown as Context;
-    const executor = makeExecutor(config, ctx);
-    for (const cb of pending) cb({ settings: { installSection } });
-    return { executor, installSection };
-  }
+describe('dsh-nushell-sandbox 配置与 nuPath', () => {
+  it('缺省配置与显式覆盖并存(resolve 时生效)', () => {
+    const { ctx } = stubCtx();
+    expect(makeExecutor({}, ctx).resolve({ command: 'ls' }).timeoutMs).toBe(
+      30_000,
+    );
+    expect(
+      makeExecutor({ nuPath: 'F:/nu/nu.exe' }, ctx).resolve({ command: 'ls' })
+        .timeoutMs,
+    ).toBe(30_000);
+    expect(DEFAULT_NUSHELL_CONFIG.maxSpillBytes).toBe(64 * 1024 * 1024);
+  });
+
+  it('拒绝负数与非法超时配置', () => {
+    const { ctx } = stubCtx();
+    expect(() =>
+      makeExecutor({ timeoutMs: -1 }, ctx).resolve({ command: 'ls' }),
+    ).toThrow(/timeoutMs must be a positive finite number/);
+    expect(() =>
+      assertServiceableNushellConfig({
+        ...DEFAULT_NUSHELL_CONFIG,
+        graceMs: 0,
+      }),
+    ).toThrow(/graceMs must be a positive finite number/);
+  });
+
+  it('argv 固定 --no-config-file -c 形态,声明 nuPath 原样生效', () => {
+    const executor = makeExecutor({ nuPath: 'nu' });
+    expect(executor.argv(specOf())).toEqual([
+      'nu',
+      '--no-config-file',
+      '-c',
+      'ls',
+    ]);
+  });
 
   it('显式 nuPath 原样生效;POSIX 兜底 PATH 语义', () => {
     expect(resolveNuPath('F:/nu/nu.exe', {}, 'win32', () => true)).toBe(
@@ -474,20 +437,12 @@ describe('dsh-nushell-sandbox nuPath 解析与 settings 热更新', () => {
     ).toBe('nu');
   });
 
-  it('settings 段声明变化经 onChange 重解析 nuPath', () => {
-    const { executor, installSection } = stubCtxWithSettings({
-      nuPath: 'F:/bundled/nu.exe',
-    });
-    const hooks = installSection.mock.calls[0][4] as {
-      setSource: (current: () => NushellSandboxConfig) => void;
-      onChange: () => void;
-    };
-    let current: NushellSandboxConfig = { nuPath: 'F:/bundled/nu.exe' };
-    hooks.setSource(() => current);
-    hooks.onChange();
+  it('活值 nuPath 快照变化后重新解析', () => {
+    const { ctx } = stubCtx();
+    let declared: string | undefined = 'F:/bundled/nu.exe';
+    const executor = makeExecutor({ nuPath: { get: () => declared } }, ctx);
     expect(executor.argv(specOf())[0]).toBe('F:/bundled/nu.exe');
-    current = { nuPath: 'F:/official/nu.exe' };
-    hooks.onChange();
+    declared = 'F:/official/nu.exe';
     expect(executor.argv(specOf())[0]).toBe('F:/official/nu.exe');
   });
 });

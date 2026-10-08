@@ -1,0 +1,20 @@
+{
+  "name": "@lzhida/dsh-nushell",
+  "description": "Nushell combo pack for DeepSeek Harness — one-package install: tool + confining sandbox executor, official bash/pwsh family replaced",
+  "version": "0.4.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@lzhida/dsh-nushell-sandbox": "github:lzhida/dsh-plugins-workspace#dev&path:packages/dsh-nushell-sandbox",
+    "@lzhida/dsh-tool-nushell": "github:lzhida/dsh-plugins-workspace#dev&path:packages/dsh-tool-nushell"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

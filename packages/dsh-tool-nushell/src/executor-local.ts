@@ -1,17 +1,19 @@
 import { lstatSync } from 'node:fs';
 import { join } from 'node:path';
-import {
-  SHELL_SETTINGS_NAMESPACE,
-  ShellExecutor,
-} from '@deepseek-ai/dsh-shell';
+import { ShellExecutor } from '@deepseek-ai/dsh-shell';
 import type {
   ShellExecRequest,
   ShellExecSpec,
+  ShellExecution,
   ShellProcess,
   ShellProcessRead,
   ShellRunResult,
 } from '@deepseek-ai/dsh-shell';
-import type { SubprocessHandle } from '@deepseek-ai/dsh-subprocess';
+import type {
+  SubprocessHandle,
+  SubprocessOutcome,
+  SubprocessOutputRead,
+} from '@deepseek-ai/dsh-subprocess';
 import {
   clampTimeout,
   deadline,
@@ -19,8 +21,6 @@ import {
   timeoutOf,
 } from '@deepseek-ai/dsh-timeout';
 import type { Context } from '@deepseek-ai/cordis';
-// 副作用导入:激活 dsh-settings 对 cordis Context 的 `ctx.settings` 类型增强。
-import '@deepseek-ai/dsh-settings';
 import z from '@deepseek-ai/schemastery';
 
 import { NUSHELL_RUNTIME } from './executor-runtime.ts';
@@ -35,24 +35,69 @@ import { NUSHELL_RUNTIME } from './executor-runtime.ts';
  * 只负责按配置供给预算并拼装 nu 方言的 argv(`nu --no-config-file -c`,
  * 禁用用户配置保证可复现的干净求值环境)。沙箱:nu 无语言级沙箱等价物,
  * 保持基类 `sandboxMode` 缺省(无沙箱),不做 confining 子类。
+ *
+ * 0.1.7 契约:执行器单一入口 `execute(spec)` 返回执行句柄
+ * `ShellExecution`(进程句柄 + `result()` 前台投影),前台/后台是调用方
+ * 等待方式的属性;`onExpiry: 'none'` 不设截止时间(后台/升格调用由调用方
+ * 自行设界)。配置采用 0.1.7 活值形态:`static Config` 声明 + 全字段
+ * volatile,loader 注入 `{ get() }` 快照访问器实现设置层热更新;直跑模式
+ * 传普通值,{@link liveValue} 统一读取。
  */
 
-/** executor 运行时配置(全部可选,缺省值见 {@link DEFAULT_NUSHELL_CONFIG})。 */
+/**
+ * 活值字段:0.1.7 loader 对 `static Config` 的 volatile 字段注入
+ * `{ get() }` 快照访问器(设置层编辑热生效);组合入口与直跑模式传普通值。
+ */
+export type LiveField<T> = T | { get(): T };
+
+/** 读一次活值字段:访问器取当前快照,普通值原样返回(直跑模式无热更新)。 */
+export function liveValue<T>(field: LiveField<T>): T {
+  if (typeof field === 'object' && field !== null && 'get' in field) {
+    return (field as { get(): T }).get();
+  }
+  return field;
+}
+
+/** 读一个可缺省的活值字段,未设(缺字段或快照为 undefined)时回退缺省值。 */
+function field<T>(value: LiveField<T | undefined> | undefined, fallback: T): T {
+  const current = peekField(value);
+  return current === undefined || current === null ? fallback : current;
+}
+
+/** 读一个可缺省的活值字段,字段缺失或快照为 undefined 时返回 undefined。 */
+export function peekField<T>(
+  value: LiveField<T | undefined> | undefined,
+): T | undefined {
+  return value === undefined ? undefined : liveValue(value);
+}
+
+/** executor 运行时配置(全部字段可为活值访问器;缺省值见 {@link DEFAULT_NUSHELL_CONFIG})。 */
 export interface NushellLocalConfig {
   /** 后台兜底工作目录;前台请求未带 workdir 时使用,再回退进程 cwd。 */
-  cwd?: string;
+  cwd?: LiveField<string | undefined>;
   /** 默认超时毫秒数。 */
-  timeoutMs?: number;
+  timeoutMs?: LiveField<number | undefined>;
   /** 超时上限(请求值钳制边界)。 */
-  maxTimeoutMs?: number;
+  maxTimeoutMs?: LiveField<number | undefined>;
   /** 单流在内存中收集的字节预算(超出落 spill)。 */
-  maxOutputBytes?: number;
+  maxOutputBytes?: LiveField<number | undefined>;
   /** 单流 spill 文件字节上限。 */
-  maxSpillBytes?: number;
+  maxSpillBytes?: LiveField<number | undefined>;
   /** SIGTERM → SIGKILL 宽限期。 */
-  graceMs?: number;
+  graceMs?: LiveField<number | undefined>;
   /** nu 可执行文件路径;缺省走 PATH 查找的 `nu`。 */
-  nuPath?: string;
+  nuPath?: LiveField<string | undefined>;
+}
+
+/** 生效配置快照:活值访问器已归一为普通值(每次读取即时快照)。 */
+export interface NushellResolvedConfig {
+  cwd: string;
+  timeoutMs: number;
+  maxTimeoutMs: number;
+  maxOutputBytes: number;
+  maxSpillBytes: number;
+  graceMs: number;
+  nuPath: string;
 }
 
 /** 默认超时代码:capability-owned,与官方 shell 家族(bash/pwsh)共享。 */
@@ -60,10 +105,7 @@ const NU_TIMEOUT = 'BASH_TIMEOUT';
 
 const DEFAULT_MAX_SPILL_BYTES = 64 * 1024 * 1024;
 
-export const DEFAULT_NUSHELL_CONFIG: Omit<
-  Required<NushellLocalConfig>,
-  'cwd'
-> = {
+export const DEFAULT_NUSHELL_CONFIG: Omit<NushellResolvedConfig, 'cwd'> = {
   timeoutMs: 30_000,
   maxTimeoutMs: 600_000,
   maxOutputBytes: 64_000,
@@ -88,9 +130,9 @@ function assertPositiveFinite(name: string, value: number): void {
   }
 }
 
-/** 拒绝无法运行的配置段:正数/有限性由 schema 表达不了,在写入处拒绝。 */
+/** 拒绝无法运行的配置段:正数/有限性由 schema 表达不了,在每次使用处拒绝。 */
 export function assertServiceableNushellConfig(
-  config: Omit<Required<NushellLocalConfig>, 'cwd'>,
+  config: Omit<NushellResolvedConfig, 'cwd'>,
 ): void {
   assertPositiveFinite('timeoutMs', config.timeoutMs);
   assertPositiveFinite('maxTimeoutMs', config.maxTimeoutMs);
@@ -211,6 +253,21 @@ function annotateStream<T extends { text: string }>(stream: T): T {
   return annotated === stream.text ? stream : { ...stream, text: annotated };
 }
 
+/** 手写 withResolvers:仓库 TS lib 为 ES2022,无 Promise.withResolvers。 */
+function withResolvers<T>(): {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+} {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 export class NushellLocalExecutor extends ShellExecutor {
   static inject = ['subprocess'];
 
@@ -218,91 +275,99 @@ export class NushellLocalExecutor extends ShellExecutor {
   readonly runtime = NUSHELL_RUNTIME;
 
   /**
-   * settings 命名空间 schema(与官方 PwshLocalExecutor.Config 同构):
-   * 数值字段带 schemastery 缺省;cwd/nuPath 无缺省——语义是「未设时回退」
-   * (cwd 回退进程 cwd,nuPath 回退 {@link resolveNuPath} 候选链)。
+   * 设置表单 schema(0.1.7 SettingsForms 时代:静态声明即注册,全部字段
+   * volatile——用户在设置层修改后经活值访问器热生效,无需重载插件;
+   * cwd/nuPath 无缺省——语义是「未设时回退」:cwd 回退进程 cwd,
+   * nuPath 回退 {@link resolveNuPath} 候选链)。与官方 PwshLocalExecutor.Config 同构。
    */
   static Config = z.object({
-    cwd: z.string(),
-    timeoutMs: z.number().default(DEFAULT_NUSHELL_CONFIG.timeoutMs),
-    maxTimeoutMs: z.number().default(DEFAULT_NUSHELL_CONFIG.maxTimeoutMs),
-    maxOutputBytes: z.number().default(DEFAULT_NUSHELL_CONFIG.maxOutputBytes),
-    maxSpillBytes: z.number().default(DEFAULT_NUSHELL_CONFIG.maxSpillBytes),
-    graceMs: z.number().default(DEFAULT_NUSHELL_CONFIG.graceMs),
-    nuPath: z.string(),
+    cwd: z.string().volatile(),
+    timeoutMs: z.number().default(DEFAULT_NUSHELL_CONFIG.timeoutMs).volatile(),
+    maxTimeoutMs: z
+      .number()
+      .default(DEFAULT_NUSHELL_CONFIG.maxTimeoutMs)
+      .volatile(),
+    maxOutputBytes: z
+      .number()
+      .default(DEFAULT_NUSHELL_CONFIG.maxOutputBytes)
+      .volatile(),
+    maxSpillBytes: z
+      .number()
+      .default(DEFAULT_NUSHELL_CONFIG.maxSpillBytes)
+      .volatile(),
+    graceMs: z.number().default(DEFAULT_NUSHELL_CONFIG.graceMs).volatile(),
+    nuPath: z.string().volatile(),
   });
 
-  /** 当前权威配置来源:settings 解析段,settings 未挂载时回退组合入口。 */
-  private source: () => NushellLocalConfig;
-  /** 最近一次可见的声明 nuPath(onChange 去重)。 */
+  /** 声明态配置:loader 活值访问器或普通值,读取时经 {@link liveValue} 归一。 */
+  protected readonly config: NushellLocalConfig;
+  /** 最近一次可见的声明 nuPath 值(解析值变化时才重新探测候选链)。 */
   private declaredNuPath: string | undefined;
   /** 声明值经候选链解析后的可执行文件(argv 实际使用)。 */
-  private resolvedNuPath: string;
-
-  /** 生效配置:settings 段或组合入口,缺省字段由 DEFAULT 兜底(cwd 回退进程 cwd)。 */
-  get config(): Required<NushellLocalConfig> {
-    const source = this.source();
-    return {
-      cwd: source.cwd ?? process.cwd(),
-      timeoutMs: source.timeoutMs ?? DEFAULT_NUSHELL_CONFIG.timeoutMs,
-      maxTimeoutMs: source.maxTimeoutMs ?? DEFAULT_NUSHELL_CONFIG.maxTimeoutMs,
-      maxOutputBytes:
-        source.maxOutputBytes ?? DEFAULT_NUSHELL_CONFIG.maxOutputBytes,
-      maxSpillBytes:
-        source.maxSpillBytes ?? DEFAULT_NUSHELL_CONFIG.maxSpillBytes,
-      graceMs: source.graceMs ?? DEFAULT_NUSHELL_CONFIG.graceMs,
-      nuPath: source.nuPath ?? DEFAULT_NUSHELL_CONFIG.nuPath,
-    };
-  }
+  private cachedNuPath: string;
 
   constructor(ctx: Context, config: NushellLocalConfig = {}) {
     super(ctx);
-    this.source = () => config;
-    this.declaredNuPath = config.nuPath;
-    this.resolvedNuPath = resolveNuPath(config.nuPath);
-    assertServiceableNushellConfig(this.config);
-    // settings 热更新(与官方 pwsh-local 同一接缝):组合入口登记为 shell
-    // 命名空间的 base 层;用户在设置层改 `nuPath` 后经 setSource 切换来源、
-    // onChange 重解析。声明值不变时 onChange 幂等。
-    ctx.inject(['settings'], (settingsCtx) => {
-      settingsCtx.settings.installSection(
-        ctx,
-        SHELL_SETTINGS_NAMESPACE,
-        NushellLocalExecutor.Config,
-        config as Required<NushellLocalConfig>,
-        {
-          validate: (value) => assertServiceableNushellConfig(value),
-          setSource: (current) => {
-            this.source = current;
-          },
-          onChange: () => {
-            const declared = this.source().nuPath;
-            if (declared === this.declaredNuPath) return;
-            this.declaredNuPath = declared;
-            this.resolvedNuPath = resolveNuPath(declared);
-          },
-        },
-      );
-    });
+    this.config = config;
+    this.declaredNuPath = peekField(config.nuPath);
+    this.cachedNuPath = resolveNuPath(this.declaredNuPath);
+  }
+
+  /**
+   * 当前生效的 nu 可执行文件:声明值变化(设置层 volatile 热更——同一
+   * 访问器对象内的快照更新)时重新探测候选链;身份不变的访问器也要比对
+   * 解析值,故这里比较的是值而非访问器引用。
+   */
+  protected get nuPath(): string {
+    const declared = peekField(this.config.nuPath);
+    if (declared !== this.declaredNuPath) {
+      this.cachedNuPath = resolveNuPath(declared);
+      this.declaredNuPath = declared;
+    }
+    return this.cachedNuPath;
+  }
+
+  /** 生效配置快照:活值取当前值,缺省字段由 DEFAULT 兜底(cwd 回退进程 cwd)。 */
+  protected get resolved(): NushellResolvedConfig {
+    const c = this.config;
+    return {
+      cwd: field(c.cwd, process.cwd()),
+      timeoutMs: field(c.timeoutMs, DEFAULT_NUSHELL_CONFIG.timeoutMs),
+      maxTimeoutMs: field(c.maxTimeoutMs, DEFAULT_NUSHELL_CONFIG.maxTimeoutMs),
+      maxOutputBytes: field(
+        c.maxOutputBytes,
+        DEFAULT_NUSHELL_CONFIG.maxOutputBytes,
+      ),
+      maxSpillBytes: field(
+        c.maxSpillBytes,
+        DEFAULT_NUSHELL_CONFIG.maxSpillBytes,
+      ),
+      graceMs: field(c.graceMs, DEFAULT_NUSHELL_CONFIG.graceMs),
+      nuPath: field(c.nuPath, DEFAULT_NUSHELL_CONFIG.nuPath),
+    };
   }
 
   /**
    * 把请求解析成完整 spec:workdir 取请求值(否则配置 cwd,再回退进程
-   * cwd),timeoutMs 取请求值并按默认/上限钳制,stdout 预算取请求值。
+   * cwd),timeoutMs 取请求值并按默认/上限钳制,stdout 预算取请求值,
+   * onExpiry 缺省 'kill'(到点杀)。
    */
   resolve(request: ShellExecRequest): ShellExecSpec {
+    const cfg = this.resolved;
+    assertServiceableNushellConfig(cfg);
     const timeoutMs = clampTimeout(
       request.timeoutMs,
-      this.config.timeoutMs,
-      this.config.maxTimeoutMs,
+      cfg.timeoutMs,
+      cfg.maxTimeoutMs,
       'nushell-local: request.timeoutMs',
     );
-    const stdoutMaxBytes = request.stdoutMaxBytes ?? this.config.maxOutputBytes;
+    const stdoutMaxBytes = request.stdoutMaxBytes ?? cfg.maxOutputBytes;
     assertPositiveFinite('request.stdoutMaxBytes', stdoutMaxBytes);
     return {
       command: request.command,
-      workdir: request.workdir ?? this.config.cwd ?? process.cwd(),
+      workdir: request.workdir ?? cfg.cwd ?? process.cwd(),
       timeoutMs,
+      onExpiry: request.onExpiry ?? 'kill',
       stdoutMaxBytes,
       ...(request.signal ? { signal: request.signal } : {}),
       ...(request.stdin !== undefined ? { stdin: request.stdin } : {}),
@@ -314,7 +379,7 @@ export class NushellLocalExecutor extends ShellExecutor {
 
   /** 一次已解析 spec 的 nu 调用 argv——供 confining 子类包装的 argv 层接缝。 */
   argv(spec: ShellExecSpec): string[] {
-    return [this.resolvedNuPath, '--no-config-file', '-c', spec.command];
+    return [this.nuPath, '--no-config-file', '-c', spec.command];
   }
 
   /** 把已解析 spec 加上映射后的 argv,组成完整的 subprocess spawn。 */
@@ -326,7 +391,7 @@ export class NushellLocalExecutor extends ShellExecutor {
   ): Parameters<Context['subprocess']['spawn']>[0] {
     const collect = (maxBytes: number) => ({
       maxBytes,
-      spill: { maxBytes: this.config.maxSpillBytes },
+      spill: { maxBytes: this.resolved.maxSpillBytes },
     });
     return {
       argv: [...argv],
@@ -334,9 +399,9 @@ export class NushellLocalExecutor extends ShellExecutor {
       stdio: {
         stdin: spec.stdin !== undefined ? { data: spec.stdin } : 'ignore',
         stdout: collect(stdoutMaxBytes),
-        stderr: collect(this.config.maxOutputBytes),
+        stderr: collect(this.resolved.maxOutputBytes),
       },
-      graceMs: this.config.graceMs,
+      graceMs: this.resolved.graceMs,
       signal,
       env: {
         ...ENV_OVERRIDES,
@@ -360,76 +425,195 @@ export class NushellLocalExecutor extends ShellExecutor {
     return { stdout, stderr };
   }
 
-  async run(spec: ShellExecSpec): Promise<ShellRunResult> {
-    return this.runArgv(spec, this.argv(spec));
+  /**
+   * 执行一次已解析 spec:`execute` 是 0.1.7 的单一入口,前台/后台由调用方
+   * 等待方式决定——`await` 返回句柄的 `result()` 即前台,保留句柄即后台。
+   */
+  async execute(spec: ShellExecSpec): Promise<ShellExecution> {
+    return this.executeArgv(spec, this.argv(spec));
   }
 
-  /** 按精确 argv 的前台运行(沙箱子类在此重新包装)。 */
-  async runArgv(spec: ShellExecSpec, argv: string[]): Promise<ShellRunResult> {
-    const d = deadline(spec.signal, spec.timeoutMs, NU_TIMEOUT);
-    try {
-      const handle = this.ctx.subprocess.spawn(
-        this.spawnSpec(spec, spec.stdoutMaxBytes, d.signal, argv),
-      );
-      const outcome = await handle.done;
-      const collected = NushellLocalExecutor.collected(handle);
-      const timedOut = timeoutOf(d.signal, NU_TIMEOUT) !== undefined;
-      const aborted = d.signal.aborted && !timedOut;
-      return {
-        ...outcome,
-        timedOut,
-        aborted,
-        timeoutMs: spec.timeoutMs,
-        stdout: finalOutput(collected.stdout),
-        stderr: annotateStream(finalOutput(collected.stderr)),
+  /**
+   * 按精确 argv 的执行(沙箱子类经此在准备期包装 argv)。生命周期、环境、
+   * 输出、截止与取消语义对齐官方 pwsh-local 的 executeArgv:
+   * - `onExpiry: 'kill'` 到点杀并按 first-cause 分类 timedOut/aborted;
+   *   `'none'` 不设截止,只响应调用方 signal。
+   * - 准备期(argv 为函数)取消/到点分别走抛错与「已结算的 timedOut 空句柄」。
+   * - spawn 失败:句柄按 killed 结算、读路径带 provider 失败注记,
+   *   `result()` 以同一失败拒绝(仅基础设施失败才拒绝)。
+   * - `onStarted` 在句柄发布前同步安装 per-process 事实(沙箱分类键)。
+   */
+  async executeArgv(
+    spec: ShellExecSpec,
+    argvOrPrepare:
+      string[] | ((signal: AbortSignal) => Promise<string[]> | string[]),
+    onStarted?: (proc: ShellProcess) => void,
+  ): Promise<ShellExecution> {
+    let spawnSignal: AbortSignal | undefined;
+    let classify: () => { timedOut: boolean; aborted: boolean };
+    let disarm = (): void => {};
+    if (spec.onExpiry === 'kill') {
+      const d = deadline(spec.signal, spec.timeoutMs, NU_TIMEOUT);
+      spawnSignal = d.signal;
+      classify = () => {
+        const timedOut = timeoutOf(d.signal, NU_TIMEOUT) !== undefined;
+        return {
+          timedOut,
+          aborted: d.signal.aborted && !timedOut,
+        };
       };
-    } finally {
-      d[Symbol.dispose]();
+      disarm = () => {
+        d[Symbol.dispose]();
+      };
+    } else {
+      spawnSignal = spec.signal;
+      classify = () => ({
+        timedOut: false,
+        aborted: spec.signal?.aborted === true,
+      });
     }
-  }
 
-  start(spec: ShellExecSpec): ShellProcess {
-    return this.startArgv(spec, this.argv(spec));
-  }
+    let argv: string[] = [];
+    let preparationTimedOut = false;
+    if (typeof argvOrPrepare === 'function') {
+      const signal = spawnSignal ?? new AbortController().signal;
+      const cancelled = withResolvers<never>();
+      const abort = (): void => {
+        cancelled.reject(signal.reason);
+      };
+      signal.addEventListener('abort', abort, { once: true });
+      try {
+        argv = await Promise.race([
+          Promise.resolve().then(() => {
+            signal.throwIfAborted();
+            return argvOrPrepare(signal);
+          }),
+          cancelled.promise,
+        ]);
+        signal.throwIfAborted();
+      } catch (error) {
+        if (!classify().timedOut) {
+          disarm();
+          throw error;
+        }
+        preparationTimedOut = true;
+      } finally {
+        signal.removeEventListener('abort', abort);
+      }
+    } else {
+      argv = argvOrPrepare;
+    }
 
-  /** 按精确 argv 的后台启动;无 executor 超时(接缝契约:后台不设时)。 */
-  startArgv(spec: ShellExecSpec, argv: string[]): ShellProcess {
-    const running = this.ctx.subprocess.spawn(
-      this.spawnSpec(spec, this.config.maxOutputBytes, spec.signal, argv),
-    );
-    const collected = NushellLocalExecutor.collected(running);
-    let providerFailureNote: string | undefined;
-    const consumeProviderFailure = (): string => {
-      const note = providerFailureNote ?? '';
-      providerFailureNote = undefined;
-      return note;
+    let running: SubprocessHandle | undefined;
+    let syncSpawnError: { error: unknown } | undefined;
+    try {
+      if (!preparationTimedOut) {
+        running = this.ctx.subprocess.spawn(
+          this.spawnSpec(spec, spec.stdoutMaxBytes, spawnSignal, argv),
+        );
+      }
+    } catch (error) {
+      syncSpawnError = { error };
+    }
+
+    /** 未 spawn(准备期到点)时的空读替身。 */
+    const emptyReader = {
+      readFrom: (): SubprocessOutputRead => ({
+        text: '',
+        lossy: false,
+        nextOffset: 0,
+      }),
     };
+    const collected =
+      running !== undefined
+        ? NushellLocalExecutor.collected(running)
+        : { stdout: emptyReader, stderr: emptyReader };
+    const spawnThrow = (): unknown => syncSpawnError?.error;
+    const spawned: Promise<SubprocessOutcome> = preparationTimedOut
+      ? Promise.resolve({ exitCode: null, signal: null })
+      : running !== undefined
+        ? running.done
+        : Promise.reject(spawnThrow());
+
+    let providerError: unknown;
+    let providerNote: string | undefined;
+    let providerNoteReported = false;
+    const consumeProviderNote = (): string => {
+      if (providerNote === undefined || providerNoteReported) return '';
+      providerNoteReported = true;
+      return providerNote;
+    };
+    /** 非消费 stderr 观察读:provider 失败后整个流就是失败注记。 */
+    const observedStderr = {
+      readFrom: (fromByte: number) => {
+        if (providerNote === undefined) {
+          return collected.stderr.readFrom(fromByte);
+        }
+        const note = Buffer.from(providerNote, 'utf8');
+        return {
+          text: note.subarray(Math.min(fromByte, note.length)).toString('utf8'),
+          nextOffset: note.length,
+          lossy: false,
+        };
+      },
+    };
+
     let stdoutOffset = 0;
     let stderrOffset = 0;
-    const proc: ShellProcess = {
+    let resultPromise: Promise<ShellRunResult> | undefined;
+    const proc: ShellExecution = {
       status: 'running',
       exitCode: null,
       signal: null,
-      done: running.done.then(
+      observed: {
+        stdout: collected.stdout,
+        stderr: observedStderr,
+      },
+      done: spawned.then(
         (outcome) => {
           if (proc.status === 'running') {
             proc.status =
-              spec.signal?.aborted === true || outcome.signal !== null
+              spawnSignal?.aborted === true || outcome.signal !== null
                 ? 'killed'
                 : 'completed';
           }
           proc.exitCode = outcome.exitCode;
           proc.signal = outcome.signal;
+          this.onProcessDone(
+            proc,
+            collected.stderr.readFrom(0).text,
+            false,
+            undefined,
+          );
+          disarm();
         },
         (error) => {
+          if (
+            running !== undefined &&
+            (proc.status === 'killed' || spawnSignal?.aborted === true)
+          ) {
+            // 我方终止引发的 provider 报错:按正常 killed 结算,不算失败。
+            proc.status = 'killed';
+            this.onProcessDone(
+              proc,
+              collected.stderr.readFrom(0).text,
+              false,
+              undefined,
+            );
+            disarm();
+            return;
+          }
           proc.status = 'killed';
+          providerError = error;
           let detail = 'unprintable provider failure';
           try {
             detail = String(error);
           } catch {
             /* keep sentinel */
           }
-          providerFailureNote = `subprocess failed before reporting an outcome: ${detail}`;
+          providerNote = `subprocess failed before reporting an outcome: ${detail}`;
+          this.onProcessDone(proc, providerNote, true, providerError);
+          disarm();
         },
       ),
       readOutput: (): ShellProcessRead => {
@@ -438,7 +622,7 @@ export class NushellLocalExecutor extends ShellExecutor {
         stdoutOffset = out.nextOffset;
         stderrOffset = err.nextOffset;
         const annotatedErr = annotateStream(err);
-        const providerFailure = consumeProviderFailure();
+        const providerFailure = consumeProviderNote();
         const failureSeparator =
           annotatedErr.text.length > 0 && !annotatedErr.text.endsWith('\n')
             ? '\n'
@@ -466,11 +650,45 @@ export class NushellLocalExecutor extends ShellExecutor {
       kill: () => {
         if (proc.status !== 'running') return false;
         proc.status = 'killed';
-        running.terminate();
+        running?.terminate();
         return true;
       },
+      result: () => {
+        resultPromise ??= proc.done.then(() => {
+          if (providerNote !== undefined) throw providerError;
+          return {
+            exitCode: proc.exitCode,
+            signal: proc.signal,
+            ...classify(),
+            timeoutMs: spec.timeoutMs,
+            stdout: finalOutput(collected.stdout),
+            stderr: annotateStream(finalOutput(collected.stderr)),
+          };
+        });
+        return resultPromise;
+      },
     };
+    if (!preparationTimedOut) {
+      onStarted?.(proc);
+    }
     return proc;
+  }
+
+  /**
+   * 结算钩子:子类在句柄上附加执行事实(本基类有意为空;镜像官方
+   * pwsh-local/bash-local——其沙箱消费方在结算点分类 runner 失败与拒绝)。
+   * 子类覆写以 (proc, stderr, providerRejected, providerError) 消费事实。
+   */
+  protected onProcessDone(
+    proc: ShellProcess,
+    stderr: string,
+    providerRejected: boolean,
+    providerError: unknown,
+  ): void {
+    void proc;
+    void stderr;
+    void providerRejected;
+    void providerError;
   }
 }
 

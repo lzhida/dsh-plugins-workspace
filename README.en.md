@@ -28,6 +28,10 @@ A guided persistent-goal command. It turns a one-line natural-language intent in
 /guided-goal <draft goal> # interview with a draft; if the draft is specific enough the model may create directly
 ```
 
+### @lzhida/dsh-nushell (combo pack, recommended)
+
+One-package install for the full replacement form: the `nushell` tool + a confining sandbox executor, with the official bash/pwsh family disabled automatically and the permission selector available. A pure wiring pack following the official agent-team-profile pattern (single install, one-patch wiring). See the [package README](./packages/dsh-nushell/README.md).
+
 ### @lzhida/dsh-tool-nushell
 
 A standalone `nushell` tool: invoked explicitly by the model, commands run via `nu --no-config-file -c <command>` and return structured results (exit code, stdout, stderr). Commands are dispatched through the `ctx.shell` capability seam to the currently mounted nushell executor; installed with a companion executor, it replaces the official bash/pwsh shell family.
@@ -53,24 +57,50 @@ Local Nushell shell executor: injects the `ctx.shell` capability seam so nushell
 
 Sandboxed Nushell shell executor: a `ctx.shell` provider mutually exclusive with `dsh-nushell-local` (the counterpart of the official bash/pwsh local ↔ sandbox executor pair). Every command's argv is wrapped process-level via `ctx.sandbox.confine` and spawned under restriction; policy denials and runner failures are classified by dialect into `ShellSandboxInfo` fact fields; fail-closed — when no runner is available it errors out instead of silently falling back to unrestricted execution. See the [package README](./packages/dsh-nushell-sandbox/README.md).
 
+### @lzhida/dsh-taskboard
+
+Task board plugin (an architectural/teaching re-implementation of [cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard#readme)): the core contract for **human creates card → agent claims and executes → human accepts**. Ten `taskboard_*` agent tools plus code-level protocol gates (agent can never move to `done`, a held task cannot be stolen, cross-project actions are forbidden, checklist check must carry an evidence note), ifVersion optimistic concurrency, DoD checklist (≤30 items), structured execution report, and a system-prompt section spelling out the claim discipline and the done-gate. Ledger persisted to `~/.dsh/dsh-taskboard.json` via atomic write.
+
+**Highlights**
+
+- **10 `taskboard_*` tools**: `taskboard_list` / `get` / `comments` / `create` / `update` / `move` / `comment_add` / `delete` / `checklist` / `execution_report` — available in any session, scoped by the `workspaceId` project boundary;
+- **Code-level protocol gates**: four failure paths are rejected by code, not by prompt convention — `DONE_FORBIDDEN` / `TASK_HELD` / `CROSS_PROJECT_FORBIDDEN` / `CHECKLIST_NOTE_REQUIRED`;
+- **ifVersion optimistic concurrency**: `update` / `move` / `checklist` / `trash` all require matching `ifVersion`; stale versions raise `VERSION_CONFLICT`;
+- **DoD checklist**: acceptance criteria set at creation (≤30 items, each ≤200 chars); agent check must include an evidence note (command / file / test); the user can check independently on the detail panel; even with every item checked, the task is not auto-`done`;
+- **Structured execution report**: `taskboard_execution_report` submits (summary / changed files / checks / artifacts / risk), rendered column-wise in the in-review detail panel;
+- **Five-column flow + soft delete**: `backlog` / `todo` / `in_progress` / `in_review` / `done` plus `canceled` / `archived` / `trashed`; the state-machine whitelist forbids illegal transitions;
+- **system-prompt section**: `tool:taskboard` at order 2950 spells out the claim discipline, the done-gate, and retry rules — the model learns the contract before its first call;
+- **Zero configuration**: install and use; no token / API key needed; data stays local.
+
+**Deliberately out of scope** (an architectural re-implementation, not a 1:1 port): the Web kanban UI, cron scheduler, worktree-isolated execution, external-session autosync, multi-repo mirror, task templates, image attachments. See the [package README](./packages/dsh-taskboard/README.md).
+
 ## Installation
 
 Prerequisites: Node ≥ 22, pnpm 11, dsh installed, and Nushell installed locally (`nu` on PATH).
 
 ```sh
-# Pick one executor (ctx.shell is a single-implementation seam; the two are mutually exclusive;
+# Recommended: the combo pack — one install for the full replacement form
+# (tool + confining sandbox executor; auto-disables the official bash/pwsh shell
+# family and tool-bash/tool-pwsh; permission selector available)
+pnpm dsh plugin --profile default add link:packages/dsh-nushell
+
+# Or piecewise: pick one executor (ctx.shell is a single-implementation seam; the two are mutually exclusive;
 # installing either disables the official bash/pwsh shell family and tool-bash/tool-pwsh)
 pnpm dsh plugin --profile default add link:packages/dsh-nushell-local
 pnpm dsh plugin --profile default add link:packages/dsh-nushell-sandbox
 
-# The nushell tool layer (consumes the ctx.shell injected by the executor above)
+# The nushell tool layer (consumes the ctx.shell injected by the executor above; do not install an
+# executor pack alongside the combo pack — entry id conflict)
 pnpm dsh plugin --profile default add link:packages/dsh-tool-nushell
 
 # The guided goal command (independent, no executor dependency)
 pnpm dsh plugin --profile default add link:packages/dsh-guided-goal
+
+# The task board plugin (independent — 10 taskboard_* tools + code-level protocol gates)
+pnpm dsh plugin --profile default add link:packages/dsh-taskboard
 ```
 
-After installation, confirm the target plugins are enabled under dsh Web UI Settings → Plugins: use `/guided-goal` from the chat input for guided-goal; the `nushell` tool is invoked by the model on demand.
+After installation, confirm the target plugins are enabled under dsh Web UI Settings → Plugins: use `/guided-goal` from the chat input for guided-goal; the `nushell` tool is invoked by the model on demand; the task-board agent uses the `taskboard_*` tool set collaboratively from any session.
 
 ## Development
 

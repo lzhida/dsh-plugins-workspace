@@ -19,8 +19,9 @@ export {
   annotateWrappedNu,
   assertServiceableNushellConfig,
   candidateNuPaths,
-  classifySandboxFacts,
   DEFAULT_NUSHELL_CONFIG,
+  liveValue,
+  peekField,
   resolveNuPath,
 } from '@lzhida/dsh-tool-nushell/src/executor-sandbox.ts';
 export type {

@@ -11,20 +11,22 @@
 | 仅本包                   | ✅ 原生保留         | ✅           | 官方执行器(不动)   | nushell 与官方并存,零侵入(推荐默认) |
 | 本包 + `nushell-local`   | 停用                | ✅           | nushell(无沙箱)    | 完全替换,不要沙箱                   |
 | 本包 + `nushell-sandbox` | 停用                | ✅           | nushell(confining) | 完全替换 + 沙箱约束                 |
+| `dsh-nushell` 组合包     | 停用                | ✅           | nushell(confining) | 单包安装,等价于上一行(推荐)         |
 
 直跑模式下宿主具备沙箱栈(base 组合恒备)时,内部执行器自动选 confining 形态——nu 命令照常受 `workspace-write` 约束,升权审批通道可用;`Config.executor`(可选)透传内部执行器配置(`nuPath`/`cwd`/超时与输出预算)。注意:直跑模式不经 `permission-presets` 外壳,审批链路与接缝模式有差异。
 
 ## 核心特性
 
 - **干净求值环境**:`--no-config-file` 禁用用户 nushell 配置,每次全新进程,状态不跨调用保留;
-- **前台/后台执行**:`run_in_background` 立即返回 job id,经通用 `ctx.jobs` 收集(`job_output`/`job_kill`);`Config.enableRunInBackground`(默认开启)可整体关闭;
+- **前台/后台执行(0.1.7 jobs 契约)**:`run_in_background` 立即返回 job id,输出经 registry 的 pull-sources 从执行句柄 `observed` 非消费读泵进 job 输出环(`job_output`/`job_kill`);`Config.enableRunInBackground`(默认开启)可整体关闭;
+- **到点升格(promoteOnTimeout,默认开启)**:jobs 在场时前台调用以 `onExpiry: 'none'` 的 job 形态启动,等待期到点**不再杀掉命令**,而是交回 `promoted` 结果(job id + 已产出输出),进程转入后台继续跑,模型可 `job_output` 跟进;
 - **结构化输出**:canonical oneOf(后台句柄 | 前台 `{exitCode, signal, timedOut, aborted, timeoutMs, stdout, stderr}`),单流超默认 64 000 字节截断(`maxOutputBytes`,stdout/stderr 各自计),完整输出落盘(上限 64 MiB)并在结果中报告 `spillPath`;
 - **marker 渲染**:非零退出 `[exit code: N]`、信号终止 `[killed by signal: X]`、超时 `[timed out after Nms]`,干净退出无 marker,空输出 `(no output)`——非零退出是报告而非失败,由模型决定后续动作;
 - **取消语义**:调用方取消以 `HarnessError(TOOL_ABORTED)` 中止,AbortSignal 透传给子进程;
 - **环境注入**:经 `ctx.shellEnv` 注入托管的 `DSH_*` 变量到子进程;
 - **系统提示**:注册 `tool:nushell` section(紧邻官方 pwsh section),说明退出码 marker 语义;
 - **UI 呈现**:前台调用渲染终端卡片(命令 + 说明 + 工作目录 + 退出状态),后台调用降级 generic 卡片;
-- **超时控制**:`timeoutMs` 参数(默认 30s,上限 600s),到期终止进程;后台任务不设超时。默认 30s 较官方 `dsh-pwsh-local` 的 120s 更保守,长任务请显式传大 `timeoutMs`;
+- **超时控制**:`timeoutMs` 参数(默认 30s,上限 600s);jobs 在场时到期升格为后台 job(`promoteOnTimeout` 可关),否则到期终止进程。默认 30s 较官方 `dsh-pwsh-local` 的 120s 更保守,长任务请显式传大 `timeoutMs`;
 - **沙箱感知**:confining 组合下,被策略拒绝的文件操作以 `[sandbox: file access denied under <mode> mode]` marker 呈现——是策略拒绝而非命令 bug;
 - **并行安全**:进程级隔离、无共享可变状态,声明 `isConcurrencySafe` 可与其他工具调用并行调度;
 - **生命周期清理**:插件卸载时经 `ctx.effect` 统一注销工具(后台进程由 `ctx.subprocess` 组合销毁统一终止);
@@ -50,9 +52,10 @@
 
 ## 插件配置
 
-| 配置                    | 类型    | 默认 | 说明                     |
-| ----------------------- | ------- | ---- | ------------------------ |
-| `enableRunInBackground` | boolean | true | 关闭后不提供后台执行能力 |
+| 配置                    | 类型    | 默认 | 说明                                            |
+| ----------------------- | ------- | ---- | ----------------------------------------------- |
+| `enableRunInBackground` | boolean | true | 关闭后不提供后台执行能力                        |
+| `promoteOnTimeout`      | boolean | true | 前台到点升格为后台 job(而非杀掉);依赖 jobs 组合 |
 
 ## 安装
 
