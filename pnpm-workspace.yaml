@@ -1,12 +1,6 @@
 packages:
   - 'packages/*'
 
-# 组合包(dsh-nushell)的 runtime 依赖声明为 github: specs(供 git 方式安装时
-# 从同仓库解析实现件);仓库内开发经 overrides 映射回本地链接,push 前即可用。
-overrides:
-  '@lzhida/dsh-tool-nushell': 'link:packages/dsh-tool-nushell'
-  '@lzhida/dsh-nushell-sandbox': 'link:packages/dsh-nushell-sandbox'
-
 allowBuilds:
   '@deepseek-ai/dsh-subprocess-local': true
   '@google/genai': true

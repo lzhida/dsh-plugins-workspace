@@ -28,34 +28,21 @@
 /guided-goal <草稿目标>   # 带草稿进入访谈;草稿足够明确时模型可跳过访谈直接创建
 ```
 
-### @lzhida/dsh-nushell(组合包,推荐)
+### @lzhida/dsh-obsidian
 
-一次安装即得完整替换形态:`nushell` 工具 + confining 沙箱执行器,官方 bash/pwsh 家族自动停用,permission 选择器可用。纯接线包,对齐官方 agent-team-profile 的「单包安装、patch 一次接线」模式。详见[包 README](./packages/dsh-nushell/README.md)。
-
-### @lzhida/dsh-tool-nushell
-
-独立 `nushell` 工具:模型显式调用,命令经 `nu --no-config-file -c <command>` 执行,回传结构化结果(exit code、stdout、stderr)。命令经 `ctx.shell` 能力接缝交由当前挂载的 nushell executor 执行;搭配执行器安装后取代官方 bash/pwsh shell 家族。
+把 [Obsidian 内置 CLI](https://obsidian.md/zh/help/cli)(`obsidian <command> [key=value ...]`)封装为 dsh agent 可调用的 `obsidian_*` 工具集,统一供 agent / 人工在 dsh 会话内操作 Obsidian vault。命令分类(35+ 条子命令,覆盖 `file:move` / `delete` / `property:set` / `plugin:enable` / `command` / `reload` 等)由 [`src/commands.ts`](./packages/dsh-obsidian/src/commands.ts) 单一真源维护,system-prompt section 同步渲染命令表与安全约束,README 不复述以防漂移。
 
 **核心特性**
 
-- **干净求值**:`--no-config-file` 禁用用户配置,行为可复现;
-- **前台/后台执行**:`run_in_background` 立即返回 job id,经通用 `ctx.jobs` 收集(`job_output`/`job_kill`);超时(默认 30s、上限 600s,到期 SIGTERM)与取消透传;
-- **结构化输出**:canonical oneOf(后台句柄 | 前台结果),单流超限截断、完整输出落盘并报告 `spillPath`;`outputFormat` 支持 `text`/`json`/`nuon`;
-- **沙箱感知**:搭配 `@lzhida/dsh-nushell-sandbox` 时公布 `sandbox_permissions` + `justification` 升权参数——被沙箱拒绝的命令可对同一命令以更宽模式一次性重试,须附理由并经用户批准;
-- **并行安全**:进程级隔离,可与其他工具调用并行调度;
-- **生命周期清理**:插件卸载时统一终止存活子进程;`nu` 经 PATH 查找,缺失时报错,不打包 nushell。
+- **9 个 `obsidian_*` 工具**:`obsidian_read` / `create` / `append` / `search` / `daily` / `daily_append` / `properties` / `vault` + 通用入口 `obsidian_run`(覆盖 35+ 条子命令,model 知道命令名才能调;description 强制写明「command 取自 commands.ts 清单」防虚构);
+- **危险等级四档**:read / write / destructive / execute — 由 commands.ts 标注,protocol section 写明每档的二次确认/权限闸要求;
+- **错误归一**:所有失败归一为 `[CODE] message` 文本(`OBSIDIAN_CLI_NOT_FOUND` / `OBSIDIAN_INVALID_INPUT` / `OBSIDIAN_SPAWN_FAILED` / `OBSIDIAN_TIMEOUT` / `OBSIDIAN_NONZERO_EXIT` / `OBSIDIAN_PROTOCOL_ERROR`),model 直接字符串匹配;Obsidian 特有的 `Error:` stdout 前缀被 runner 转成 `OBSIDIAN_PROTOCOL_ERROR`;
+- **stdio 截断**:stdout 20k / stderr 4k,超出加 `[truncated to N chars]` 标记;
+- **不打包二进制**:`obsidian` 由 Obsidian 应用暴露到 `PATH`;缺失时第一次调用即报 `OBSIDIAN_CLI_NOT_FOUND`,给出明确恢复提示;
+- **system-prompt section**:`tool:obsidian` order=2960(与 `tool:taskboard` 2950 同档,排在它之后),加载即向 model 注入 35+ 条命令清单与安全约束;
+- **零配置**:安装即用,默认用激活 vault;多 vault 场景在每次调用时显式传 `vault=<name>`。
 
-**工具参数**:`command`(必填)、`description`(必填)、`workdir`、`timeoutMs`、`run_in_background`、`outputFormat`、`stdin`;沙箱组合另公布 `sandbox_permissions`/`justification`。完整语义见[包 README](./packages/dsh-tool-nushell/README.md)。
-
-**前置**:本机安装 Nushell(`nu` 在 PATH 中)。
-
-### @lzhida/dsh-nushell-local
-
-本地 Nushell shell executor:注入 `ctx.shell` 能力接缝,使 nushell 以一等 shell 身份进入官方 shell 家族(角色对齐官方 `dsh-pwsh-local` 之于 PowerShell)。委托 `ctx.subprocess` 受管 spawn——有界输出、spill 落盘、超时宽限下沉于执行器;`nu` 方言干净求值,`nuPath` 可配置,stderr 命中已知包装层特征时自动附诊断注记。详见[包 README](./packages/dsh-nushell-local/README.md)。
-
-### @lzhida/dsh-nushell-sandbox
-
-受沙箱约束的 Nushell shell executor:与 `dsh-nushell-local` 互斥的 `ctx.shell` 提供方(角色对齐官方 bash/pwsh 家族的 local ↔ sandbox 执行器对)。每条命令的 argv 经 `ctx.sandbox.confine` 进程级包装后受限 spawn,策略拒绝与 runner 失败按方言分类进 `ShellSandboxInfo` 事实字段;fail-closed——无可用 runner 时报错,决不静默回退到未受限执行。详见[包 README](./packages/dsh-nushell-sandbox/README.md)。
+**前置**:本机安装 Obsidian(≥1.4,提供 `obsidian` CLI);若 `obsidian --version` 失败,先修复 PATH。
 
 ### @lzhida/dsh-taskboard
 
@@ -74,30 +61,48 @@
 
 **主动排除的能力**(教学复刻范围,非完整 1:1 移植):Web UI 看板、cron 调度器、worktree 隔离执行、外部会话自动同步、多仓库镜像、任务模板、图片附件。详见[包 README](./packages/dsh-taskboard/README.md)。
 
+### @lzhida/dsh-test-runner
+
+把 `.agents/skills/dsh-plugin-dev/scripts/test-e2e.ts` 的 e2e 编排能力拆为 5 个 `test_runner_*` agent 工具,供任意 dsh agent 在会话内调用(而非开发者手跑 shell 脚本)。基于真实 dsh `~/.dsh/profiles/<name>` 隔离 profile 启动 Web,跑三项断言(插件加载日志 / 端口可达 / tokened URL 页面),不污染当前 default profile 与已运行实例。
+
+**5 步法**:
+
+| 步骤 | 工具                          | 用途                                                                                        |
+| ---- | ----------------------------- | ------------------------------------------------------------------------------------------- |
+| 1    | `test_runner_review_profiles` | 审查 `~/.dsh/profiles/`,标记 test 用途 profile;`createIfMissing=true` 时按官方 web 模板新建 |
+| 2    | `test_runner_install`         | 把被测插件装入 test profile(自动维护 cordis.patch.yml 兼容 local executor)                  |
+| 3    | `test_runner_boot`            | 后台启动 `dsh web`,返回 `sessionId` + tokened URL;`ctx.effect` 卸载时强 kill                |
+| 4    | `test_runner_run_assertions`  | 轮询收集三项断言,**可重复调用直到就绪**                                                     |
+| 5    | `test_runner_cleanup`         | 显式 kill 进程 + 卸载被测插件,恢复 profile 干净态                                           |
+
+**核心特性**
+
+- **三种调用路径**:开发者 shell 直跑(`npx tsx .../test-e2e.ts`)/ 后台 job + 浏览器接管 / dsh agent 会话内 5 步法 — 选最贴合上下文的;
+- **可分步 / 可并发**:每个工具独立可调,agent 决定串行或并发的节奏,失败时按上下文灵活重试;
+- **profile 隔离 + 自动清理**:`test_runner_cleanup` 显式杀进程与卸载插件;不调用 cleanup 时,`ctx.effect` 卸载兜底;
+- **local executor 兼容**:自动按需给 profile 的 cordis.patch.yml 追加"禁用 permission presets"段(与 test-e2e.ts 行为一致);
+- **system-prompt section**:`tool:test-runner` order=2850,模型在调用工具前能看到 5 步法协议;
+- **审计清单(DoD 风格)**:加载日志契约 `[<name>]`、默认 port=3865、profile 隔离、cleanup 显式 — 全部 hard-coded 进工具 description。
+
 ## 安装
 
-前置:Node ≥ 22、pnpm 11、已安装 dsh、本机安装 Nushell(`nu` 在 PATH 中)。
+前置:Node ≥ 22、pnpm 11、已安装 dsh。
 
 ```sh
-# 推荐方式:组合包,一次安装即得完整替换形态(tool + confining 沙箱执行器,
-# 自动停用官方 bash/pwsh shell 家族与 tool-bash/tool-pwsh,权限选择器可用)
-pnpm dsh plugin --profile default add link:packages/dsh-nushell
-
-# 或分装:执行器二选一(ctx.shell 为单实现接缝,二者互斥;安装即停用官方 bash/pwsh shell 家族与 tool-bash/tool-pwsh)
-pnpm dsh plugin --profile default add link:packages/dsh-nushell-local
-pnpm dsh plugin --profile default add link:packages/dsh-nushell-sandbox
-
-# nushell 工具层(消费上述执行器注入的 ctx.shell;与执行器包二选一安装方式,不可与本包重复装执行器)
-pnpm dsh plugin --profile default add link:packages/dsh-tool-nushell
-
 # 引导式 goal 命令(独立,不依赖执行器)
 pnpm dsh plugin --profile default add link:packages/dsh-guided-goal
 
+# Obsidian 操作(独立,9 个 obsidian_* 工具 + 通用入口,封装 Obsidian 内置 CLI)
+pnpm dsh plugin --profile default add link:packages/dsh-obsidian
+
 # 任务看板(独立,10 个 taskboard_* 工具 + 代码级协议闸)
 pnpm dsh plugin --profile default add link:packages/dsh-taskboard
+
+# 插件 e2e 测试 agent 工具(独立,把 test-e2e 编排拆为 5 个 test_runner_* 工具)
+pnpm dsh plugin --profile default add link:packages/dsh-test-runner
 ```
 
-安装后在 dsh Web UI 的设置 → 插件中确认目标插件已启用:guided-goal 在会话输入框使用 `/guided-goal`;`nushell` 工具由模型按需调用;taskboard 在任意会话中由模型用 `taskboard_*` 工具集协作。
+安装后在 dsh Web UI 的设置 → 插件中确认目标插件已启用:guided-goal 在会话输入框使用 `/guided-goal`;taskboard 在任意会话中由模型用 `taskboard_*` 工具集协作;test-runner 在任意会话中由模型用 `test_runner_*` 工具集驱动插件 e2e 测试,默认 profile 名 `e2e`、默认端口 3865。
 
 ## 开发
 

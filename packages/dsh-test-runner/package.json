@@ -1,0 +1,27 @@
+{
+  "name": "@lzhida/dsh-test-runner",
+  "description": "把 .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts 的插件测试编排能力拆为可被 dsh agent 调用的 5 个工具(review_profiles / install / boot / run_assertions / cleanup),支持后台长跑 + 分步断言 + 浏览器接管;同时是仓库内 test profile 引导 + 补丁层维护的统一入口",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-system-prompt": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

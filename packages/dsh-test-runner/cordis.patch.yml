@@ -1,0 +1,6 @@
+# dsh-test-runner bundle 层：dsh plugin add 安装本包时自动激活。
+# name 用包名(profile 依赖树 link 安装)，格式对齐 dsh-taskboard。
+
+- insert:
+    - id: dsh-test-runner
+      name: '@lzhida/dsh-test-runner'
