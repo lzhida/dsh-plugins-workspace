@@ -1,0 +1,27 @@
+{
+  "name": "@lzhida/dsh-obsidian",
+  "description": "dsh-obsidian 插件：把 Obsidian 内置 CLI（obsidian <command> [options]）封装为 dsh agent 可调用的 obsidian_* 工具集，覆盖 file/daily/search/property/plugin-snippet/command/vault 七大族命令，附 system-prompt 协议 section 描述命令清单与安全约束，供 agent / 人工在 dsh 会话中统一操作 Obsidian vault。",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-system-prompt": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.0-rc.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
