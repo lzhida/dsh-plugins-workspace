@@ -59,8 +59,9 @@ import {
 /** Cordis 插件名(loader 依赖);与 cordis.patch.yml 的 id 对齐。 */
 export const name = 'dsh-llm-fallback';
 
-/** 依赖注入:无依赖——`agent/request` 与 `agent/request-error` 走全局 waterfall。 */
-export const inject: string[] = [];
+/** 依赖注入:注册 system-prompt section 需要等待 ctx.systemPrompt 就绪;
+ * `agent/request` 与 `agent/request-error` 走全局 waterfall,无需注入。 */
+export const inject: string[] = ['systemPrompt'];
 
 /** 插件配置(原样入参;loader 投影成 GUI)。 */
 export type FallbackConfigInput = unknown;
