@@ -90,7 +90,11 @@ export function resolveFallbackWhen(input: unknown): FallbackWhen {
 
 export function resolveConfig(input: unknown): ResolvedConfig {
   // schemastery 已校验过类型/默认值;此处做语义校验并派生 retryableCodes Set。
-  const raw = input as {
+  // 兼容 loader 在用户尚未填过任何配置时传入 undefined / null 的场景——视为空对象,
+  // 与 Config schema 的 .default() 默认值以及 src/index.ts:101 的契约保持一致。
+  // 后续对 raw.X 的访问都通过 !== false / Array.isArray / ?? / String(...) 等守卫
+  // 兜底,不会因为放宽入口而引入新 deref 风险。
+  const raw = (input ?? {}) as {
     enabled?: unknown;
     fallbackChains?: unknown;
     fallbackWhen?: unknown;

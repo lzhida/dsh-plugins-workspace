@@ -117,8 +117,12 @@ describe('dsh-llm-fallback plugin contract', () => {
     expect(name).toBe('dsh-llm-fallback');
   });
 
-  it('inject 是空数组(无依赖)', () => {
-    expect(inject).toEqual([]);
+  it('inject 声明 systemPrompt 依赖(register section 需 ctx.systemPrompt 就绪)', () => {
+    // agent/request 与 agent/request-error 走全局 waterfall,无需注入;
+    // 但 apply() 内调用 ctx.systemPrompt.section(...) 注册协议,需要让
+    // cordis 等到 systemPrompt service 就绪后再调 apply,否则触发
+    // "cannot get property \"systemPrompt\" without inject"。
+    expect(inject).toEqual(['systemPrompt']);
   });
 
   it('apply 打印 `[dsh-llm-fallback] plugin loaded` 装载日志(e2e 契约)', () => {
@@ -172,6 +176,18 @@ describe('dsh-llm-fallback plugin contract', () => {
     expect(listeners).toHaveLength(0);
   });
 
+  it('apply 无第二参数(undefined 配置)不抛,仍注册 section,不挂 listener', () => {
+    // 全新 profile + 用户尚未填任何配置 = loader 传 undefined;应走全 default 路径
+    // (enabled=true, chain=[]) 而非 console.error 路径——index.ts:101 的契约。
+    const { ctx, listeners, sections } = stubCtx();
+    expect(() => apply(ctx)).not.toThrow();
+    // section 仍注册(协议说明)
+    expect(sections.length).toBeGreaterThan(0);
+    expect(sections[0]?.name).toBe(PROTOCOL_SECTION_NAME);
+    // 空 chain → 短路,不挂监听器
+    expect(listeners).toHaveLength(0);
+  });
+
   it('effect 卸载时 dispose 被收集', () => {
     const { ctx, cleanups } = stubCtx();
     apply(ctx, {
@@ -195,6 +211,20 @@ describe('resolveConfig', () => {
     expect(c.baseDelayMs).toBe(500);
     expect(c.maxDelayMs).toBe(30000);
     expect(c.perTurn).toBe(true);
+  });
+
+  it('undefined / null 输入视为空对象,默认值与 resolveConfig({}) 一致', () => {
+    // 回归:loader 在全新 profile / 用户未填任何配置时传入 undefined,
+    // 不应让 raw.enabled 在 config.ts:103 处抛 TypeError。
+    const cEmpty = resolveConfig({});
+    const cUndef = resolveConfig(undefined);
+    const cNull = resolveConfig(null);
+    expect(cUndef).toEqual(cEmpty);
+    expect(cNull).toEqual(cEmpty);
+    expect(cUndef.enabled).toBe(true);
+    expect(cUndef.chain).toEqual([]);
+    expect(cUndef.fallbackWhen).toBe('afterRetry');
+    expect(cUndef.maxRetries).toBe(1);
   });
 
   it('链项解析为 {provider, model}', () => {
