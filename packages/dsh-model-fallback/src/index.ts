@@ -38,30 +38,11 @@ import type { Context } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/dsh-system-prompt';
 import type { LlmFailure } from '@deepseek-ai/dsh-llm';
 
-// 显式激活 cordis Events 模块增强 —— 让 dsh-agent-loop 暴露的 waterfall
-// 事件名在 TS 编译期可见。loader 用 tsx 转译 .ts 源码时,如果 augmentation
-// 仅作为 declare module 块存在而不被"激活",增强不生效,`ctx.on('agent/request', ...)`
-// 会因 Events 上没这个键而编译失败 → "failed to import"。
-// `import type {}` 是 TS 标准的 augmentation 激活形式。
-declare module '@deepseek-ai/cordis' {
-  interface Events {
-    'agent/request'(
-      payload: { turn: number; step: number; signal: AbortSignal },
-      next: () => Promise<RequestConfig>,
-    ): Promise<RequestConfig>;
-    'agent/request-error'(
-      payload: {
-        turn: number;
-        step: number;
-        provider: string;
-        failure: LlmFailure;
-        retryPolicy?: unknown;
-        signal: AbortSignal;
-      },
-      next: () => Promise<RequestErrorAction | undefined | void>,
-    ): Promise<RequestErrorAction | undefined | void>;
-  }
-}
+// Ambient augmentation:扩展 cordis Context.Events 增加 dsh-agent-loop 暴露的
+// 两个 waterfall 事件名(`agent/request` / `agent/request-error`)。
+// 跨包加载时 host(dsh desktop)走的是本插件 package.json 的 `types` 字段
+// 指向的 src/cordis.d.ts ambient 文件 —— 这条 augmentation 在 host 的
+// tsconfig include 路径之外生效。详见 ./cordis.d.ts。
 
 import { type ResolvedConfig, resolveConfig } from './config.ts';
 import { modelFallbackSection } from './protocol.ts';
