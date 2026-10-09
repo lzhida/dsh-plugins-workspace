@@ -1,6 +1,6 @@
-# @lzhida/dsh-model-fallback
+# @lzhida/dsh-llm-fallback
 
-dsh-model-fallback 插件:拦截 dsh 全局 LLM 调用,按 `fallbackChains` 在主模型失败时自动切换到下一个候选 `provider/model`,**对话不中断**。默认在官方 `@deepseek-ai/dsh-llm-retry` 重试预算耗尽(原本会直接把错误抛给 loop、结束轮次的位置)后才切换,作为同 provider 重试之后的第二道防线;也可配置为一次失败立即切换。
+dsh-llm-fallback 插件:拦截 dsh 全局 LLM 调用,按 `fallbackChains` 在主模型失败时自动切换到下一个候选 `provider/model`,**对话不中断**。默认在官方 `@deepseek-ai/dsh-llm-retry` 重试预算耗尽(原本会直接把错误抛给 loop、结束轮次的位置)后才切换,作为同 provider 重试之后的第二道防线;也可配置为一次失败立即切换。
 
 > 历史说明:本插件曾短期提取为独立仓库 `lzhida/dsh-llm-fallback`,现已回归 monorepo 并带上该仓库期间的 `fallbackWhen` 增强;独立仓库不再维护。
 
@@ -19,35 +19,35 @@ dsh-model-fallback 插件:拦截 dsh 全局 LLM 调用,按 `fallbackChains` 在�
 
 ```sh
 pnpm install                     # 仓库根
-dsh plugin add link:packages/dsh-model-fallback
+dsh plugin add link:packages/dsh-llm-fallback
 ```
 
 包内 `dsh.bundle.patch` 声明使其自动进入 profile 层,无需 overlay 注入。
 
 ### Git 安装(外部用户)
 
-四种形式等价,都只装 `packages/dsh-model-fallback` 子目录。`<ref>` 替换为想锁定的分支 / tag / 提交:
+四种形式等价,都只装 `packages/dsh-llm-fallback` 子目录。`<ref>` 替换为想锁定的分支 / tag / 提交:
 
 ```sh
 # 1. github: 简写(pnpm 8+ 解析为 https://github.com/<user>/<repo>/tarball/<ref>)
-dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-model-fallback
+dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-fallback
 
 # 2. git+https(显式完整 URL,需 git 客户端)
-dsh plugin add git+https://github.com/lzhida/dsh-plugins-workspace.git#main\&path:packages/dsh-model-fallback
+dsh plugin add git+https://github.com/lzhida/dsh-plugins-workspace.git#main\&path:packages/dsh-llm-fallback
 
 # 3. git+ssh(需本机配过 SSH key)
-dsh plugin add git+ssh://git@github.com/lzhida/dsh-plugins-workspace.git#main\&path:packages/dsh-model-fallback
+dsh plugin add git+ssh://git@github.com/lzhida/dsh-plugins-workspace.git#main\&path:packages/dsh-llm-fallback
 
 # 4. tarball 快照
 curl -L https://github.com/lzhida/dsh-plugins-workspace/archive/refs/heads/main.tar.gz | tar -xz -C /tmp
-dsh plugin add /tmp/dsh-plugins-workspace-main/packages/dsh-model-fallback
+dsh plugin add /tmp/dsh-plugins-workspace-main/packages/dsh-llm-fallback
 ```
 
 > `&path:<subdir>` 是 pnpm 安装 git monorepo 子目录的标准语法(`#<ref>&path:<dir>`,把 ref 与 subdir 用 `&` 分隔)。
 
 ## 配置
 
-启用插件后,在 dsh 设置面板中找到 "model-fallback" section(由插件通过 schemastery schema 投影),可配置以下字段:
+启用插件后,在 dsh 设置面板中找到 "llm-fallback" section(由插件通过 schemastery schema 投影),可配置以下字段:
 
 | 字段             | 类型                            | 默认                                                                                                               | 说明                            |
 | ---------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------- |
@@ -79,11 +79,11 @@ dsh plugin add /tmp/dsh-plugins-workspace-main/packages/dsh-model-fallback
 
 ```sh
 # 1. 确认子包已装入 profile node_modules
-ls "$(dsh config profile-dir 2>/dev/null || echo $HOME/.dsh/profiles/<name>)/node_modules/@lzhida/dsh-model-fallback"
+ls "$(dsh config profile-dir 2>/dev/null || echo $HOME/.dsh/profiles/<name>)/node_modules/@lzhida/dsh-llm-fallback"
 
 # 2. 重启 dsh,在设置 → 插件中确认 "已启用"
 
-# 3. 启动日志应有 [dsh-model-fallback] plugin loaded 一行(e2e 契约)
+# 3. 启动日志应有 [dsh-llm-fallback] plugin loaded 一行(e2e 契约)
 ```
 
 ## 已知限制

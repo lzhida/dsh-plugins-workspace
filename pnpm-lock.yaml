@@ -69,7 +69,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.4
 
-  packages/dsh-model-fallback:
+  packages/dsh-llm-fallback:
     dependencies:
       '@deepseek-ai/dsh-llm':
         specifier: 0.2.0-rc.2

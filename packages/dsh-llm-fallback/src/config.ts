@@ -1,5 +1,5 @@
 /**
- * dsh-model-fallback 配置 schema。
+ * dsh-llm-fallback 配置 schema。
  *
  * 命名/默认值对齐 oh-my-pi 的 `retry.*` 子树:
  * - `enabled`: 总开关
@@ -109,7 +109,7 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     const entry = chainsInput[i];
     const parsed = parseChainEntry(String(entry ?? ''), i);
     if ('error' in parsed) {
-      throw new Error(`Invalid dsh-model-fallback config: ${parsed.error}`);
+      throw new Error(`Invalid dsh-llm-fallback config: ${parsed.error}`);
     }
     chain.push(parsed);
   }

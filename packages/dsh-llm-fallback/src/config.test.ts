@@ -1,5 +1,5 @@
 /**
- * dsh-model-fallback 行为契约测试。
+ * dsh-llm-fallback 行为契约测试。
  *
  * 覆盖:
  * - 插件契约(name / inject / 装载日志);
@@ -112,20 +112,20 @@ async function callListener(
 
 // ── 1. 插件契约 ─────────────────────────────────────────────────────
 
-describe('dsh-model-fallback plugin contract', () => {
+describe('dsh-llm-fallback plugin contract', () => {
   it('name 与 cordis id 约定一致', () => {
-    expect(name).toBe('dsh-model-fallback');
+    expect(name).toBe('dsh-llm-fallback');
   });
 
   it('inject 是空数组(无依赖)', () => {
     expect(inject).toEqual([]);
   });
 
-  it('apply 打印 `[dsh-model-fallback] plugin loaded` 装载日志(e2e 契约)', () => {
+  it('apply 打印 `[dsh-llm-fallback] plugin loaded` 装载日志(e2e 契约)', () => {
     const { ctx } = stubCtx();
     apply(ctx);
     expect(console.log).toHaveBeenCalledWith(
-      '[dsh-model-fallback] plugin loaded',
+      '[dsh-llm-fallback] plugin loaded',
     );
   });
 

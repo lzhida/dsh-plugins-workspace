@@ -1,5 +1,5 @@
 /**
- * dsh-model-fallback system-prompt section。
+ * dsh-llm-fallback system-prompt section。
  *
  * 给 agent 看的协议说明:
  * - 何时会触发回退(可识别失败码 RATE_LIMIT / QUOTA / CONTEXT_WINDOW_EXCEEDED 等);
@@ -15,12 +15,12 @@
 import type { PromptSection } from '@deepseek-ai/dsh-system-prompt';
 
 /** section 名(全局唯一;dsh 0.2.0 重复注册会抛,故用包名空间)。 */
-export const PROTOCOL_SECTION_NAME = 'tool:model-fallback';
+export const PROTOCOL_SECTION_NAME = 'tool:llm-fallback';
 
 /** section order:PLUGIN 类,排在 dsh-obsidian(2960)之后。 */
 export const PROTOCOL_SECTION_ORDER = 2970;
 
-const MODEL_FALLBACK_PROTOCOL_TEXT = `A host-level plugin (\`dsh-model-fallback\`) wraps every model call in a configured fallback chain. When the current provider/model keeps failing, the next candidate is tried automatically before the error surfaces to you.
+const MODEL_FALLBACK_PROTOCOL_TEXT = `A host-level plugin (\`dsh-llm-fallback\`) wraps every model call in a configured fallback chain. When the current provider/model keeps failing, the next candidate is tried automatically before the error surfaces to you.
 
 ## What this means for you
 

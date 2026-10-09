@@ -1,10 +1,10 @@
 /**
- * dsh-model-fallback 插件入口。
+ * dsh-llm-fallback 插件入口。
  *
  * 职责:
  * - 导出 loader 依赖的 name / apply / inject / Config;
  * - apply() 内:
- *   1. 打印 `[dsh-model-fallback] plugin loaded`(e2e 契约);
+ *   1. 打印 `[dsh-llm-fallback] plugin loaded`(e2e 契约);
  *   2. 解析 config(loader 已把 settings 投影成普通值,直接读取);
  *   3. 注册 system-prompt section(对 agent 的协议说明);
  *   4. 监听 `agent/request` waterfall:每次 loop 准备发请求时,如果 state 要求
@@ -20,7 +20,7 @@
  *   **不在本次失败上切换候选**;只有上游无决策(预算耗尽 / 委派下游 / 未装载
  *   官方插件)时才切换——这正是官方行为"重试之后直接中断"的位置,本插件在那里
  *   接手,把中断变成跨 provider 的继续运行。
- * - `immediately`:白名单命中即切,不等上游(兼容 dsh-model-fallback 0.1.x 语义)。
+ * - `immediately`:白名单命中即切,不等上游(兼容 dsh-llm-fallback 0.1.x 语义)。
  *
  * 扩展点选择:
  * - `llm/stream` waterfall(stream-level)只允许在适配器流上叠加监听,不允许
@@ -57,7 +57,7 @@ import {
 } from './state.ts';
 
 /** Cordis 插件名(loader 依赖);与 cordis.patch.yml 的 id 对齐。 */
-export const name = 'dsh-model-fallback';
+export const name = 'dsh-llm-fallback';
 
 /** 依赖注入:无依赖——`agent/request` 与 `agent/request-error` 走全局 waterfall。 */
 export const inject: string[] = [];
@@ -117,7 +117,7 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
   ctx.effect(() => {
     const disposeSection = ctx.systemPrompt.section(modelFallbackSection());
     return () => disposeSection();
-  }, 'dsh-model-fallback: protocol section');
+  }, 'dsh-llm-fallback: protocol section');
 
   // 3. disabled 或空链 → 不挂监听器(只装 section)
   if (!resolved.enabled || resolved.chain.length === 0) {
@@ -159,7 +159,7 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
       },
     );
     return () => dispose();
-  }, 'dsh-model-fallback: agent/request listener');
+  }, 'dsh-llm-fallback: agent/request listener');
 
   // 6. 监听 agent/request-error:失败时按 fallbackWhen 决定是否切下一候选
   ctx.effect(() => {
@@ -214,7 +214,7 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
       },
     );
     return () => dispose();
-  }, 'dsh-model-fallback: agent/request-error listener');
+  }, 'dsh-llm-fallback: agent/request-error listener');
 }
 
 function sleep(ms: number): Promise<void> {
