@@ -1,10 +1,11 @@
 {
   "name": "@lzhida/dsh-model-fallback",
-  "description": "dsh-model-fallback 插件：拦截全局 LLM 调用，按 fallbackChains 在主模型失败时自动切换到下一个候选 provider/model，提供最大重试次数与可识别失败码配置；语义对齐 oh-my-pi 的 retry.modelFallback / retry.fallbackChains。",
-  "version": "0.1.0",
+  "description": "dsh-model-fallback 插件：拦截全局 LLM 调用，按 fallbackChains 在主模型失败时自动切换到下一个候选 provider/model。fallbackWhen=afterRetry(默认) 在官方 dsh-llm-retry 重试耗尽后才切换（对话不中断）；immediately 为一次失败即切。",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "main": "src/index.ts",
+  "types": "src/cordis.d.ts",
   "exports": {
     ".": "./src/index.ts",
     "./package.json": "./package.json"

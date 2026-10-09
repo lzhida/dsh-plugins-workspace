@@ -3,13 +3,15 @@
  *
  * 覆盖:
  * - 插件契约(name / inject / 装载日志);
- * - resolveConfig:默认值 / 链项解析 / 错误码识别 / maxRetries=0(链长上限);
+ * - resolveConfig:默认值 / 链项解析 / fallbackWhen / 错误码识别 / maxRetries=0(链长上限);
  * - state 模块:nextCandidate 推进与边界 / backoffDelayMs 退避曲线;
  * - protocol section:无 {{var}} + 命令名一致 + order;
  * - apply 路径:
  *   - disabled / 空链 → 不挂监听器;
  *   - agent/request 不改写 seed(首次);
- *   - agent/request-error 切下一候选 + 返回 retry;
+ *   - agent/request-error 的 fallbackWhen 两种时机:
+ *     - afterRetry(默认):upstream={retry} → 透传不切换;upstream 无决策 → 切换;
+ *     - immediately:白名单命中即切,忽略 upstream;
  *   - 链耗尽 / 失败码不在白名单 → 透传 upstream;
  *   - effect 卸载时 dispose 被收集。
  *
@@ -22,7 +24,12 @@ import type { Context } from '@deepseek-ai/cordis';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { apply, inject, name } from './index.ts';
-import { resolveConfig, DEFAULT_RETRYABLE_CODES, Config } from './config.ts';
+import {
+  resolveConfig,
+  resolveFallbackWhen,
+  DEFAULT_RETRYABLE_CODES,
+  Config,
+} from './config.ts';
 import {
   type FallbackState,
   backoffDelayMs,
@@ -178,10 +185,11 @@ describe('dsh-model-fallback plugin contract', () => {
 // ── 2. resolveConfig ────────────────────────────────────────────────
 
 describe('resolveConfig', () => {
-  it('默认值:enabled=true / chain=[] / maxRetries=1 / 默认失败码', () => {
+  it('默认值:enabled=true / chain=[] / fallbackWhen=afterRetry / maxRetries=1 / 默认失败码', () => {
     const c = resolveConfig({});
     expect(c.enabled).toBe(true);
     expect(c.chain).toEqual([]);
+    expect(c.fallbackWhen).toBe('afterRetry');
     expect(c.maxRetries).toBe(1); // 链空时 maxRetries 强制 ≥1
     expect(c.retryableCodes).toEqual(new Set(DEFAULT_RETRYABLE_CODES));
     expect(c.baseDelayMs).toBe(500);
@@ -210,6 +218,25 @@ describe('resolveConfig', () => {
     expect(() => resolveConfig({ fallbackChains: ['missing-model/'] })).toThrow(
       /not in "provider\/model"/,
     );
+  });
+
+  it('fallbackWhen:显式 immediately 生效;非法值宽容回落 afterRetry', () => {
+    expect(resolveConfig({ fallbackWhen: 'immediately' }).fallbackWhen).toBe(
+      'immediately',
+    );
+    expect(resolveConfig({ fallbackWhen: 'afterRetry' }).fallbackWhen).toBe(
+      'afterRetry',
+    );
+    expect(resolveConfig({ fallbackWhen: 'bogus' }).fallbackWhen).toBe(
+      'afterRetry',
+    );
+    expect(resolveConfig({ fallbackWhen: 42 }).fallbackWhen).toBe('afterRetry');
+  });
+
+  it('resolveFallbackWhen 独立导出行为一致', () => {
+    expect(resolveFallbackWhen(undefined)).toBe('afterRetry');
+    expect(resolveFallbackWhen(null)).toBe('afterRetry');
+    expect(resolveFallbackWhen('immediately')).toBe('immediately');
   });
 
   it('maxRetries=0 时退化为链长', () => {
@@ -371,6 +398,12 @@ describe('modelFallbackSection', () => {
     expect(s.text).toContain('QUOTA');
     expect(s.text).toContain('CONTEXT_WINDOW_EXCEEDED');
   });
+
+  it('文本说明默认回退时机为官方 retry 耗尽后(afterRetry)', () => {
+    const s = modelFallbackSection();
+    expect(s.text).toContain('dsh-llm-retry');
+    expect(s.text).toContain('exhausted its budget');
+  });
 });
 
 // ── 5. agent/request 与 agent/request-error 行为 ─────────────────────
@@ -454,7 +487,7 @@ describe('agent/request listener', () => {
 });
 
 describe('agent/request-error listener', () => {
-  it('可重试失败码 + 还有下一候选 → backoff + 返回 {kind: "retry"}', async () => {
+  it('可重试失败码 + 还有下一候选 + upstream 无决策 → backoff + 返回 {kind: "retry"}', async () => {
     const { ctx, listeners } = stubCtx();
     apply(ctx, {
       fallbackChains: ['deepseek/deepseek-chat', 'openai/gpt-4o'],
@@ -477,6 +510,72 @@ describe('agent/request-error listener', () => {
     expect(result).toEqual({ kind: 'retry' });
   });
 
+  it('afterRetry(默认)+ upstream={retry}(官方 retry 预算内)→ 透传 upstream,不切换', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['deepseek/deepseek-chat', 'openai/gpt-4o'],
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const errListener = findListener(listeners, 'agent/request-error');
+    const upstreamRetry = { kind: 'retry' as const };
+    const result = await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure: stubFailure('RATE_LIMIT'),
+        signal: new AbortController().signal,
+      },
+      async () => upstreamRetry,
+    );
+    // 决策权交还官方 dsh-llm-retry(同 provider 内重试)
+    expect(result).toBe(upstreamRetry);
+
+    // 状态未推进:下一个请求进来,seed 仍不被改写
+    const reqListener = findListener(listeners, 'agent/request');
+    const seed = { provider: 'deepseek', model: 'deepseek-chat' };
+    const nextSeed = await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => seed,
+    );
+    expect(nextSeed).toEqual(seed);
+  });
+
+  it('immediately + upstream={retry} → 仍立即切换并返回 {kind: "retry"}', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['deepseek/deepseek-chat', 'openai/gpt-4o'],
+      fallbackWhen: 'immediately',
+      baseDelayMs: 100,
+      maxDelayMs: 500,
+    });
+    const errListener = findListener(listeners, 'agent/request-error');
+    const result = await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure: stubFailure('RATE_LIMIT'),
+        signal: new AbortController().signal,
+      },
+      async () => ({ kind: 'retry' as const }),
+    );
+    expect(result).toEqual({ kind: 'retry' });
+
+    // 状态已推进:seed 被改写为下一候选
+    const reqListener = findListener(listeners, 'agent/request');
+    const nextSeed = await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    expect(nextSeed).toEqual({ provider: 'openai', model: 'gpt-4o' });
+  });
+
   it('失败码不在白名单 → 透传 upstream(undefined)', async () => {
     const { ctx, listeners } = stubCtx();
     apply(ctx, {
@@ -495,26 +594,6 @@ describe('agent/request-error listener', () => {
       async () => undefined,
     );
     expect(result).toBeUndefined();
-  });
-
-  it('upstream 已返回 retry → 我们仍返回 retry(让 loop 重试,顺便切 model)', async () => {
-    const { ctx, listeners } = stubCtx();
-    apply(ctx, {
-      fallbackChains: ['deepseek/deepseek-chat', 'openai/gpt-4o'],
-    });
-    const errListener = findListener(listeners, 'agent/request-error');
-    const result = await callListener(
-      errListener,
-      {
-        turn: 1,
-        step: 1,
-        provider: 'deepseek',
-        failure: stubFailure('RATE_LIMIT'),
-        signal: new AbortController().signal,
-      },
-      async () => ({ kind: 'retry' as const }),
-    );
-    expect(result).toEqual({ kind: 'retry' });
   });
 
   it('链耗尽 → 透传 upstream(undefined)并标记 exhausted', async () => {
@@ -537,7 +616,7 @@ describe('agent/request-error listener', () => {
     expect(result).toBeUndefined();
   });
 
-  it('连续失败按链顺序切:deepseek → openai → anthropic', async () => {
+  it('afterRetry 连续失败按链顺序切:deepseek → openai → anthropic', async () => {
     const { ctx, listeners } = stubCtx();
     apply(ctx, {
       fallbackChains: ['deepseek/x', 'openai/y', 'anthropic/z'],

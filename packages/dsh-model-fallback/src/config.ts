@@ -4,10 +4,14 @@
  * 命名/默认值对齐 oh-my-pi 的 `retry.*` 子树:
  * - `enabled`: 总开关
  * - `fallbackChains`:候选列表(首项=主模型);用字符串 `provider/model`
- * - `maxRetries`:最多尝试次数;`0` = 等于链长(全跑完才报错,与 omp 默认行为一致)
- * - `baseDelayMs` / `maxDelayMs`:指数退避的初值与上界
+ * - `fallbackWhen`:回退时机——`afterRetry`(默认)= 官方 dsh-llm-retry 等上游
+ *   恢复器仍在预算内决定同 provider 重试时透传其决策,耗尽/委派后才切下一候选;
+ *   `immediately` = 一次失败立即切换,不等上游
+ * - `maxRetries`:单次请求最多**切换**次数(链上换候选的次数,不含同 provider 重试);
+ *   `0` = 等于链长(全跑完才报错,与 omp 默认行为一致)
+ * - `baseDelayMs` / `maxDelayMs`:指数退避的初值与上界;`0` = 禁用退避(失败后立即切换)
  * - `retryableCodes`:视为可重试的失败码(白名单;默认包含 omp 视为可重试的几个稳定码)
- * - `perTurn`:同一次 `llm/stream` 调用内允许的回退次数(`true` = 不限,等价于链长上限)
+ * - `perTurn`:同一 step(`turn:step`)内是否允许多次切换;`false` = 至多切换一次(one-shot)
  *
  * 设计简化(本期不做):
  * - 不区分 role/specificity 的多链(`retry.fallbackChains.<role>`);本期就是"按 provider/model 串行"
@@ -19,6 +23,14 @@
  */
 
 import Schema from '@deepseek-ai/schemastery';
+
+/** `fallbackWhen` 的合法取值。 */
+export const FALLBACK_WHEN_VALUES = ['afterRetry', 'immediately'] as const;
+
+/** 回退时机:afterRetry = 官方重试耗尽后才切;immediately = 一次失败即切。 */
+export type FallbackWhen = (typeof FALLBACK_WHEN_VALUES)[number];
+
+/** 退避延迟的下限语义:0 = 禁用退避;负数/非有限数在 resolveConfig 中回落默认值。 */
 
 /** 默认视为可重试的稳定失败码。 */
 export const DEFAULT_RETRYABLE_CODES: readonly string[] = [
@@ -61,6 +73,8 @@ export interface ResolvedConfig {
   enabled: boolean;
   /** 链中每项的 (provider, model)。首项为主模型;空链=插件不做事。 */
   chain: ReadonlyArray<{ provider: string; model: string }>;
+  /** 回退时机;默认 afterRetry(官方重试耗尽后再切)。 */
+  fallbackWhen: FallbackWhen;
   /** 最大尝试次数;0 = 链长(默认行为) */
   maxRetries: number;
   baseDelayMs: number;
@@ -69,11 +83,17 @@ export interface ResolvedConfig {
   perTurn: boolean;
 }
 
+/** 规整 fallbackWhen:仅接受字面 'immediately',其余(含非法值)回落 afterRetry。 */
+export function resolveFallbackWhen(input: unknown): FallbackWhen {
+  return input === 'immediately' ? 'immediately' : 'afterRetry';
+}
+
 export function resolveConfig(input: unknown): ResolvedConfig {
   // schemastery 已校验过类型/默认值;此处做语义校验并派生 retryableCodes Set。
   const raw = input as {
     enabled?: unknown;
     fallbackChains?: unknown;
+    fallbackWhen?: unknown;
     maxRetries?: unknown;
     baseDelayMs?: unknown;
     maxDelayMs?: unknown;
@@ -94,6 +114,7 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     chain.push(parsed);
   }
   const chainLen = chain.length;
+  const fallbackWhen = resolveFallbackWhen(raw.fallbackWhen);
   const maxRetriesRaw = Number(raw.maxRetries ?? 0);
   const maxRetries = maxRetriesRaw > 0 ? Math.floor(maxRetriesRaw) : chainLen;
   const baseDelayMsRaw = Number(raw.baseDelayMs ?? 500);
@@ -115,6 +136,7 @@ export function resolveConfig(input: unknown): ResolvedConfig {
   return {
     enabled,
     chain,
+    fallbackWhen,
     maxRetries: Math.max(maxRetries, 1), // 至少 1(否则什么都做不了)
     baseDelayMs,
     maxDelayMs,
@@ -140,6 +162,11 @@ export const Config = Schema.object({
     .default([])
     .description(
       'Ordered fallback chain; first entry is the primary model; subsequent entries are tried in order when the current one fails',
+    ),
+  fallbackWhen: Schema.union([...FALLBACK_WHEN_VALUES])
+    .default('afterRetry')
+    .description(
+      'When to switch to the next candidate: "afterRetry" (default) only falls back after the official dsh-llm-retry executor exhausts its budget; "immediately" switches on the first retryable failure',
     ),
   maxRetries: Schema.number()
     .default(0)

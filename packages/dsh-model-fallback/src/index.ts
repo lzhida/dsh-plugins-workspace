@@ -4,28 +4,36 @@
  * 职责:
  * - 导出 loader 依赖的 name / apply / inject / Config;
  * - apply() 内:
- *   1. 打印 `[dsh-model-fallback] plugin loaded`(e2e 契约,见 dsh-plugin-dev skill);
+ *   1. 打印 `[dsh-model-fallback] plugin loaded`(e2e 契约);
  *   2. 解析 config(loader 已把 settings 投影成普通值,直接读取);
  *   3. 注册 system-prompt section(对 agent 的协议说明);
  *   4. 监听 `agent/request` waterfall:每次 loop 准备发请求时,如果 state 要求
  *      换 model,则改写 proposedConfig 的 provider/model;
  *   5. 监听 `agent/request-error` waterfall:每次 LLM 请求失败,若在 retryable
- *      失败码白名单 + 还有下一候选 → backoff + 切下一候选 + 返回 retry;
- *      否则透传 dsh-llm-retry 的决策(让同 provider 内重试或抛错);
+ *      失败码白名单内且还有下一候选 → backoff + 切下一候选 + 返回 retry;
+ *      否则透传上游决策(让同 provider 内重试或抛错);
  *   6. effect 卸载时一次性清理(disposeSection + disposeListeners)。
+ *
+ * 回退时机(fallbackWhen):
+ * - `afterRetry`(默认):先 `await next()` 观察上游决策。官方 `dsh-llm-retry`
+ *   执行器(normal mode 预算内,或 always mode)返回 `{kind:'retry'}` 时透传之,
+ *   **不在本次失败上切换候选**;只有上游无决策(预算耗尽 / 委派下游 / 未装载
+ *   官方插件)时才切换——这正是官方行为"重试之后直接中断"的位置,本插件在那里
+ *   接手,把中断变成跨 provider 的继续运行。
+ * - `immediately`:白名单命中即切,不等上游(兼容 dsh-model-fallback 0.1.x 语义)。
  *
  * 扩展点选择:
  * - `llm/stream` waterfall(stream-level)只允许在适配器流上叠加监听,不允许
  *   换 options(provider/model);不适合做"换 model 重试";
  * - `agent/request` + `agent/request-error`(loop-level)允许监听器改写
- *   `proposedConfig.provider/model`,且 dsh-llm-retry 已经用这条路径做
+ *   `proposedConfig.provider/model`,且官方 dsh-llm-retry 已经用这条路径做
  *   provider 内重试——两者正交、可叠加。
  *
  * 类型增强:
- * - `@deepseek-ai/dsh-agent-loop` 公开两个 waterfall 事件 (`agent/request` /
- *   `agent/request-error`),但其类型文件未对 cordis `Context.Events` 做
- *   declare module 增强。本文件直接 `declare module '@deepseek-ai/cordis'`
- *   补上两条事件的签名 —— 仅本文件作用域生效,不影响其他插件 / 文件。
+ * - `@deepseek-ai/dsh-agent-loop` 公开两个 waterfall 事件(`agent/request` /
+ *   `agent/request-error`),但其 .d.ts 未对 cordis `Context.Events` 做
+ *   declare module 增强。由 src/cordis.d.ts(package.json `types` 字段指向)
+ *   提供 ambient augmentation。
  *
  * 局限性:
  * - 不实现 provider/* 通配条目、role/specificity 分派链;
@@ -73,39 +81,15 @@ interface RequestErrorAction {
   kind: 'retry';
 }
 
-// ── 类型增强(本文件作用域)────────────────────────────────────────────
-
-declare module '@deepseek-ai/cordis' {
-  interface Events {
-    /**
-     * Loop-level request preparation:the agent emits the proposed request
-     * config (provider / model / reasoning / maxTokens). Listeners may return
-     * a modified config; the outermost return wins.
-     */
-    'agent/request'(
-      this: Context,
-      payload: { turn: number; step: number; signal: AbortSignal },
-      next: () => Promise<RequestConfig>,
-    ): Promise<RequestConfig>;
-    /**
-     * Loop-level request failure:the agent emits the failure just observed at
-     * the end of a model request. Listeners may return `{kind: 'retry'}` to
-     * ask the loop to retry the step with the next `agent/request`; returning
-     * `undefined` / `void` falls through to the loop's default (throw).
-     */
-    'agent/request-error'(
-      this: Context,
-      payload: {
-        turn: number;
-        step: number;
-        provider: string;
-        failure: LlmFailure;
-        retryPolicy?: unknown;
-        signal: AbortSignal;
-      },
-      next: () => Promise<RequestErrorAction | undefined | void>,
-    ): Promise<RequestErrorAction | undefined | void>;
-  }
+/** upstream 决策是否为"重试"(由官方 dsh-llm-retry 等恢复器返回)。 */
+function isRetryAction(
+  action: RequestErrorAction | undefined | void,
+): action is RequestErrorAction {
+  return (
+    typeof action === 'object' &&
+    action !== null &&
+    (action as { kind?: unknown }).kind === 'retry'
+  );
 }
 
 // ── 插件入口 ────────────────────────────────────────────────────────
@@ -177,7 +161,7 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
     return () => dispose();
   }, 'dsh-model-fallback: agent/request listener');
 
-  // 6. 监听 agent/request-error:失败时切下一候选(若还有)
+  // 6. 监听 agent/request-error:失败时按 fallbackWhen 决定是否切下一候选
   ctx.effect(() => {
     const dispose = ctx.on(
       'agent/request-error',
@@ -195,14 +179,19 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
         const { turn, step, failure, signal } = payload;
         const key: StepKey = `${turn}:${step}`;
 
-        // 让 dsh-llm-retry 先跑(若装载了)——它的结果决定 retry 与否
+        // 观察上游决策(dsh-llm-retry 若装载,其 retry 决策从这里返回)
         const upstream = await next();
         // 不可重试的失败码 → 透传上游决策(可能 throw)
         if (!isFailureRetryable(failure, resolved.retryableCodes)) {
           return upstream;
         }
+        // afterRetry(默认):上游仍在预算内决定同 provider 重试 → 透传,
+        // 不在本次失败上切换;等上游耗尽(无决策)才由本插件接手。
+        if (resolved.fallbackWhen === 'afterRetry' && isRetryAction(upstream)) {
+          return upstream;
+        }
         const state = getState(key);
-        // 链耗尽 → 透传上游决策(dsh-llm-retry 的 retry 也会到这里)
+        // 链耗尽 → 透传上游决策(上游的 retry 也到此为止)
         const advance = nextCandidate(state, resolved.maxRetries);
         if (!advance) {
           state.exhausted = true;
