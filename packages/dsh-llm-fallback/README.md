@@ -9,7 +9,7 @@ dsh-llm-fallback 插件:拦截 dsh 全局 LLM 调用,按 `fallbackChains` 在主
 | 组件     | 版本           | 说明                                                                                                                       |
 | -------- | -------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | 宿主 dsh | **0.2.0-rc.2** | `agent/request` 与 `agent/request-error` waterfall 在 rc.2 提供;`pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude` 已放行 |
-| 插件包   | 0.2.0          | 插件版本号与 dsh 版本号解耦                                                                                                |
+| 插件包   | 0.3.0          | 0.3.0 起 `fallbackChains` schema 升级为对象数组(带 `displayName` / `description`),旧 `string[]` 形态自动归一               |
 
 ## 安装
 
@@ -49,16 +49,40 @@ dsh plugin add /tmp/dsh-plugins-workspace-main/packages/dsh-llm-fallback
 
 启用插件后,在 dsh 设置面板中找到 "llm-fallback" section(由插件通过 schemastery schema 投影),可配置以下字段:
 
-| 字段             | 类型                            | 默认                                                                                                               | 说明                            |
-| ---------------- | ------------------------------- | ------------------------------------------------------------------------------------------------------------------ | ------------------------------- |
-| `enabled`        | `boolean`                       | `true`                                                                                                             | 总开关                          |
-| `fallbackChains` | `string[]`(`provider/model`)    | `[]`                                                                                                               | 候选列表;首项 = 主模型,逐个回退 |
-| `fallbackWhen`   | `'afterRetry' \| 'immediately'` | `'afterRetry'`                                                                                                     | 回退时机,见下节                 |
-| `maxRetries`     | `number`                        | `0`(= 链长,即全跑完才报错)                                                                                         | 单次请求最多**切换**次数        |
-| `baseDelayMs`    | `number`                        | `500`                                                                                                              | 指数退避初值                    |
-| `maxDelayMs`     | `number`                        | `30000`                                                                                                            | 指数退避上限                    |
-| `retryableCodes` | `string[]`                      | `RATE_LIMIT / QUOTA / ACCOUNT_QUOTA / CONTEXT_WINDOW_EXCEEDED / EMPTY_RESPONSE / SERVER_ERROR / TIMEOUT / NETWORK` | 视为可重试的稳定失败码白名单    |
-| `perTurn`        | `boolean`                       | `true`                                                                                                             | 是否在同 step 内允许回退        |
+| 字段             | 类型                                                   | 默认                                                                                                               | 说明                                                        |
+| ---------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------- |
+| `enabled`        | `boolean`                                              | `true`                                                                                                             | 总开关                                                      |
+| `fallbackChains` | `Array<{provider, model, displayName?, description?}>` | `[]`                                                                                                               | 候选列表;首项 = 主模型,逐个回退。旧 `string[]` 形态自动归一 |
+| `fallbackWhen`   | `'afterRetry' \| 'immediately'`                        | `'afterRetry'`                                                                                                     | 回退时机,见下节                                             |
+| `maxRetries`     | `number`                                               | `0`(= 链长,即全跑完才报错)                                                                                         | 单次请求最多**切换**次数                                    |
+| `baseDelayMs`    | `number`                                               | `500`                                                                                                              | 指数退避初值                                                |
+| `maxDelayMs`     | `number`                                               | `30000`                                                                                                            | 指数退避上限                                                |
+| `retryableCodes` | `string[]`                                             | `RATE_LIMIT / QUOTA / ACCOUNT_QUOTA / CONTEXT_WINDOW_EXCEEDED / EMPTY_RESPONSE / SERVER_ERROR / TIMEOUT / NETWORK` | 视为可重试的稳定失败码白名单                                |
+| `perTurn`        | `boolean`                                              | `true`                                                                                                             | 是否在同 step 内允许回退                                    |
+
+### 设置界面(内嵌配置卡)
+
+dsh 0.2.0-rc.2 没有 schema→表单的通用自动渲染;配置 UI 由本插件**自带的 client bundle**(`client/index.js`,零构建)注册进插件管理页的 `plugins.bundle.config` 插槽,直接**内嵌在本插件的详情页里**(设置 → 插件 → 点开 `@lzhida/dsh-llm-fallback`):
+
+- **模型勾选**:候选池来自 `remote.session.modelCatalog()`(宿主已配置 provider 的模型目录,按 provider 分组),勾选即加入队列;
+- **排序**:已选队列支持上移/下移/移除,顺序即回退优先级(首项 = 主模型);
+- **最大回退次数**(`maxRetries`,0 = 链长)与**回退时机**(`fallbackWhen`);
+- 保存 / 放弃,带 revision 冲突检测(`SETTINGS_CONFLICT` 时提示重试)。
+
+读写走 `ctx.configForms.get('<条目id>')` → `mutate(...)`,持久化到 profile 的 cordis patch 层。所有可编辑字段在服务端 schema 上标记 `.volatile()`——宿主 `dsh-settings.describe()` 只投影 volatile 字段,没有 volatile 字段的插件不会出现在设置面板。
+
+`fallbackChains` schema 同时挂 `role('modelList', { source: 'dsh-llm-runtime' })`,保留给未来可能出现的通用渲染器;当前 UI 不依赖它。
+
+### Schema 迁移(0.2.x → 0.3.0)
+
+旧版本 `fallbackChains` 形态是 `string[]`,每项为 `"provider/model"`。0.3.0 起改为 `Object[]`,但 `resolveConfig` **自动归一**:
+
+- 旧 `['deepseek/deepseek-chat', 'openai/gpt-4o']` → 自动转为 `[{provider:'deepseek', model:'deepseek-chat', displayName:'deepseek/deepseek-chat', description:''}, ...]`
+- 新 `[{provider:'openai', model:'gpt-4o', displayName:'GPT-4o'}]` → 原样保留
+- 混形态(`['a/x', {provider:'b', model:'y'}]`)→ 逐项归一
+- 持久化形态(写到 `cordis.yml` / settings)是 `Object[]`;旧 `string[]` 配置被运行时归一为对象后,首次写回也是对象
+
+**无 breaking change**:旧 `string[]` 配置继续可用,无需手动改。
 
 ## 回退时机(`fallbackWhen`)
 
@@ -81,7 +105,8 @@ dsh plugin add /tmp/dsh-plugins-workspace-main/packages/dsh-llm-fallback
 # 1. 确认子包已装入 profile node_modules
 ls "$(dsh config profile-dir 2>/dev/null || echo $HOME/.dsh/profiles/<name>)/node_modules/@lzhida/dsh-llm-fallback"
 
-# 2. 重启 dsh,在设置 → 插件中确认 "已启用"
+# 2. 重启 dsh,在 设置 → 插件 → @lzhida/dsh-llm-fallback 详情页确认
+#    内嵌「模型回退」配置卡(勾选模型 / 排序 / 最大次数 / 保存)
 
 # 3. 启动日志应有 [dsh-llm-fallback] plugin loaded 一行(e2e 契约)
 ```

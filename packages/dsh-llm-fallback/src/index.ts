@@ -59,8 +59,12 @@ import {
 /** Cordis 插件名(loader 依赖);与 cordis.patch.yml 的 id 对齐。 */
 export const name = 'dsh-llm-fallback';
 
-/** 依赖注入:注册 system-prompt section 需要等待 ctx.systemPrompt 就绪;
- * `agent/request` 与 `agent/request-error` 走全局 waterfall,无需注入。 */
+/** 依赖注入:
+ * - `systemPrompt`:注册协议 section 需要等待 ctx.systemPrompt 就绪,否则
+ *   cordis proxy 抛 "cannot get property systemPrompt without inject"。
+ * `agent/request` 与 `agent/request-error` 走全局 waterfall,无需注入。
+ * (设置面板的模型目录由自带 client 经 `remote.session.modelCatalog()` 获取,
+ * 不经过宿主侧本插件,故无需注入 `llm`。) */
 export const inject: string[] = ['systemPrompt'];
 
 /** 插件配置(原样入参;loader 投影成 GUI)。 */
@@ -114,6 +118,19 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
     return;
   }
 
+  // 1a. Config 字段均为 volatile(设置面板可编辑,applies: 'live'),运行时
+  //     收到的是 Volatile 引用。每次使用时重新解包+解析,让设置面板里的改动
+  //     立即生效(无需重载插件);解析失败(用户在 UI 里存了非法值)时保留
+  //     上一次成功值,绝不让监听器抛错。
+  const current = (): ResolvedConfig => {
+    try {
+      resolved = resolveConfig(configInput);
+    } catch {
+      // 保留 last good
+    }
+    return resolved;
+  };
+
   // 2. 注册 system-prompt section(总是注册;即便 disabled,section 仍告知 agent 协议存在)
   ctx.effect(() => {
     const disposeSection = ctx.systemPrompt.section(modelFallbackSection());
@@ -128,9 +145,9 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
   // 4. per-step 回退状态:`turn:step` 当 key
   const states = new Map<StepKey, FallbackState>();
 
-  /** 取出或惰性初始化该 step 的回退状态(从 seed chain 开始)。 */
+  /** 取出或惰性初始化该 step 的回退状态(从当前 chain 开始)。 */
   const getState = (key: StepKey): FallbackState =>
-    stateFor(states, key, resolved.chain);
+    stateFor(states, key, current().chain);
 
   // 5. 监听 agent/request:每次 loop 准备发请求时,若 state 要求换 model,
   //    则改写 proposedConfig 的 provider/model。
@@ -179,21 +196,23 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
       ): Promise<RequestErrorAction | undefined | void> => {
         const { turn, step, failure, signal } = payload;
         const key: StepKey = `${turn}:${step}`;
+        // 读取当前(可能已被设置面板改过的)配置
+        const cfg = current();
 
         // 观察上游决策(dsh-llm-retry 若装载,其 retry 决策从这里返回)
         const upstream = await next();
         // 不可重试的失败码 → 透传上游决策(可能 throw)
-        if (!isFailureRetryable(failure, resolved.retryableCodes)) {
+        if (!isFailureRetryable(failure, cfg.retryableCodes)) {
           return upstream;
         }
         // afterRetry(默认):上游仍在预算内决定同 provider 重试 → 透传,
         // 不在本次失败上切换;等上游耗尽(无决策)才由本插件接手。
-        if (resolved.fallbackWhen === 'afterRetry' && isRetryAction(upstream)) {
+        if (cfg.fallbackWhen === 'afterRetry' && isRetryAction(upstream)) {
           return upstream;
         }
         const state = getState(key);
         // 链耗尽 → 透传上游决策(上游的 retry 也到此为止)
-        const advance = nextCandidate(state, resolved.maxRetries);
+        const advance = nextCandidate(state, cfg.maxRetries);
         if (!advance) {
           state.exhausted = true;
           return upstream;
@@ -201,8 +220,8 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
         // backoff(按当前 attempt 数)+ 切下一候选
         const delay = backoffDelayMs(
           state.retries,
-          resolved.baseDelayMs,
-          resolved.maxDelayMs,
+          cfg.baseDelayMs,
+          cfg.maxDelayMs,
         );
         if (delay > 0) {
           await sleep(delay);
@@ -223,7 +242,10 @@ function sleep(ms: number): Promise<void> {
 }
 
 // re-export 供测试使用
-export { resolveConfig } from './config.ts';
+// 注意:`Config` 必须 re-export 出来——dsh 加载器通过 `plugin.Config` 读 schemastery schema
+// 生成 settings UI 的 settings 表单(`dsh-app-boot` 的 `collectConfigSchemas`)。
+// 不 re-export 会让 status 变成 "absent" / configRef = "#/$defs/unknownConfig",设置面板不渲染字段。
+export { resolveConfig, Config } from './config.ts';
 export type { FallbackState, StepKey } from './state.ts';
 export {
   backoffDelayMs,
