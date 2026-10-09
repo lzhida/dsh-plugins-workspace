@@ -1,13 +1,14 @@
 {
   "name": "@lzhida/dsh-llm-fallback",
   "description": "dsh-llm-fallback 插件：拦截全局 LLM 调用，按 fallbackChains 在主模型失败时自动切换到下一个候选 provider/model。fallbackWhen=afterRetry(默认) 在官方 dsh-llm-retry 重试耗尽后才切换（对话不中断）；immediately 为一次失败即切。",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "main": "src/index.ts",
   "types": "src/cordis.d.ts",
   "exports": {
     ".": "./src/index.ts",
+    "./client": "./client/index.js",
     "./package.json": "./package.json"
   },
   "scripts": {
@@ -24,6 +25,17 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-slots",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-api-session-controller"
+      ]
     }
   }
 }

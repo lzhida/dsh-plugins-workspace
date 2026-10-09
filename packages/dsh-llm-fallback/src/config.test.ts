@@ -27,9 +27,14 @@ import { apply, inject, name } from './index.ts';
 import {
   resolveConfig,
   resolveFallbackWhen,
+  normalizeChainEntry,
+  isVolatileLike,
+  unwrapVolatile,
+  volatileField,
   DEFAULT_RETRYABLE_CODES,
   Config,
 } from './config.ts';
+import { Config as ConfigFromIndex } from './index.ts';
 import {
   type FallbackState,
   backoffDelayMs,
@@ -122,6 +127,8 @@ describe('dsh-llm-fallback plugin contract', () => {
     // 但 apply() 内调用 ctx.systemPrompt.section(...) 注册协议,需要让
     // cordis 等到 systemPrompt service 就绪后再调 apply,否则触发
     // "cannot get property \"systemPrompt\" without inject"。
+    // (设置面板的模型目录由自带 client 经 remote.session.modelCatalog 获取,
+    //  不经过宿主侧本插件,故无需注入 llm。)
     expect(inject).toEqual(['systemPrompt']);
   });
 
@@ -267,6 +274,126 @@ describe('resolveConfig', () => {
     expect(resolveFallbackWhen(undefined)).toBe('afterRetry');
     expect(resolveFallbackWhen(null)).toBe('afterRetry');
     expect(resolveFallbackWhen('immediately')).toBe('immediately');
+  });
+
+  // ── 0.2.x → 0.3.0 schema 迁移(向后兼容) ─────────────────────────
+
+  it('旧 string[] 输入("provider/model")自动归一为 object entries', () => {
+    // 0.2.x 形态的旧配置不应破坏;displayName 回填 "provider/model",description 空。
+    const c = resolveConfig({
+      fallbackChains: ['deepseek/deepseek-chat', 'openai/gpt-4o'],
+    });
+    expect(c.entries).toEqual([
+      {
+        provider: 'deepseek',
+        model: 'deepseek-chat',
+        displayName: 'deepseek/deepseek-chat',
+        description: '',
+      },
+      {
+        provider: 'openai',
+        model: 'gpt-4o',
+        displayName: 'openai/gpt-4o',
+        description: '',
+      },
+    ]);
+    // chain 字段保持旧的 (provider, model) 形态(下游 state.ts / 监听器不变)
+    expect(c.chain).toEqual([
+      { provider: 'deepseek', model: 'deepseek-chat' },
+      { provider: 'openai', model: 'gpt-4o' },
+    ]);
+  });
+
+  it('新 object[] 输入保留 displayName / description(显式给值)', () => {
+    const c = resolveConfig({
+      fallbackChains: [
+        {
+          provider: 'deepseek',
+          model: 'deepseek-chat',
+          displayName: 'DeepSeek Chat (primary)',
+          description: 'cheapest default',
+        },
+      ],
+    });
+    expect(c.entries[0]).toEqual({
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+      displayName: 'DeepSeek Chat (primary)',
+      description: 'cheapest default',
+    });
+  });
+
+  it('混形态输入(部分 string、部分 object)逐项归一', () => {
+    const c = resolveConfig({
+      fallbackChains: [
+        'deepseek/deepseek-chat',
+        {
+          provider: 'openai',
+          model: 'gpt-4o',
+          displayName: 'GPT-4o',
+        },
+        'anthropic/claude-sonnet-4',
+      ],
+    });
+    expect(c.entries.map((e) => e.displayName)).toEqual([
+      'deepseek/deepseek-chat', // string → 回填 "provider/model"
+      'GPT-4o', // object → 显式保留
+      'anthropic/claude-sonnet-4',
+    ]);
+    expect(c.chain).toHaveLength(3);
+  });
+
+  it('object 形态缺省 displayName / description 时回填', () => {
+    const c = resolveConfig({
+      fallbackChains: [{ provider: 'openai', model: 'gpt-4o' }],
+    });
+    expect(c.entries[0]).toEqual({
+      provider: 'openai',
+      model: 'gpt-4o',
+      displayName: 'openai/gpt-4o',
+      description: '',
+    });
+  });
+
+  it('非法形态(null / number / object 缺字段)抛错', () => {
+    expect(() =>
+      resolveConfig({ fallbackChains: [null as unknown as string] }),
+    ).toThrow(/must be a string or object/);
+    expect(() =>
+      resolveConfig({
+        fallbackChains: [42 as unknown as string],
+      }),
+    ).toThrow(/must be a string or object/);
+    expect(() =>
+      resolveConfig({
+        fallbackChains: [{ provider: 'openai' } as unknown as string],
+      }),
+    ).toThrow(/non-empty "provider" and "model"/);
+    expect(() =>
+      resolveConfig({
+        fallbackChains: [
+          { provider: 'openai', model: '' } as unknown as string,
+        ],
+      }),
+    ).toThrow(/non-empty "provider" and "model"/);
+  });
+
+  it('normalizeChainEntry 独立导出对单条归一', () => {
+    expect(normalizeChainEntry('a/x', 0)).toEqual({
+      provider: 'a',
+      model: 'x',
+      displayName: 'a/x',
+      description: '',
+    });
+    expect(normalizeChainEntry({ provider: 'b', model: 'y' }, 0)).toEqual({
+      provider: 'b',
+      model: 'y',
+      displayName: 'b/y',
+      description: '',
+    });
+    expect(
+      'error' in normalizeChainEntry({ provider: '', model: 'x' }, 0),
+    ).toBe(true);
   });
 
   it('maxRetries=0 时退化为链长', () => {
@@ -729,5 +856,166 @@ describe('Config schema', () => {
     expect(
       typeof (Config as unknown as { description: unknown }).description,
     ).toBe('function');
+  });
+
+  it('fallbackChains 挂 role("modelList", { source: "dsh-llm-runtime" })', () => {
+    // role 字段给 dsh 前端 SettingsValueField 提示用 modelList 渲染器;
+    // 若前端不识别,降级为对象数组输入框(功能不受影响)。
+    const chains = (
+      Config as unknown as {
+        dict: Record<
+          string,
+          {
+            role?: string;
+            meta?: { role?: string; extra?: Record<string, unknown> };
+          }
+        >;
+      }
+    ).dict?.fallbackChains;
+    expect(chains).toBeDefined();
+    // schemastery 内部把 .role() 写到 meta.role;role 文本是 "modelList"。
+    // 我们不强求 meta.role 一定是字符串(不同 schemastery 版本可能存为 list),
+    // 但要确认 meta 中存在 role 字段,值含 "modelList"。
+    const meta = chains?.meta;
+    expect(meta).toBeDefined();
+    const roleValue = meta?.role;
+    // role 可能是字符串,也可能被包成 list(若用 .role() 链式调多次)—— 至少含 modelList
+    const roleStr = Array.isArray(roleValue)
+      ? roleValue.join(',')
+      : String(roleValue);
+    expect(roleStr).toContain('modelList');
+  });
+
+  it('fallbackChains meta.extra 包含 role 传来的 { source: "dsh-llm-runtime" }', () => {
+    // schemastery 的 .role(role, extra) 把 extra 直接挂在 meta.extra;
+    // 前端 modelList 渲染器读此字段决定候选模型来源(snapshot 由插件运行时填)。
+    const chains = (
+      Config as unknown as {
+        dict: Record<string, { meta?: { role?: unknown; extra?: unknown } }>;
+      }
+    ).dict?.fallbackChains;
+    const extra = chains?.meta?.extra;
+    expect(extra).toBeDefined();
+    expect((extra as { source?: string } | undefined)?.source).toBe(
+      'dsh-llm-runtime',
+    );
+  });
+
+  it('每个字段都标了 meta.volatile(否则设置面板整个不出现该插件)', () => {
+    // 宿主 `@deepseek-ai/dsh-settings` 的 describe() 用 volatileForm(schema) 过滤,
+    // 没有 volatile 字段的条目会被整个丢弃(describe 返回 [] + 写入抛
+    // "Plugin entry X has no volatile fields")。故这是设置 UI 的硬前提。
+    const dict = (
+      Config as unknown as {
+        dict: Record<string, { meta?: { volatile?: unknown } }>;
+      }
+    ).dict;
+    const fields = [
+      'enabled',
+      'fallbackChains',
+      'fallbackWhen',
+      'maxRetries',
+      'baseDelayMs',
+      'maxDelayMs',
+      'retryableCodes',
+      'perTurn',
+    ];
+    for (const field of fields) {
+      expect(dict[field], `missing field ${field}`).toBeDefined();
+      expect(dict[field]?.meta?.volatile, `${field} not volatile`).toBe(true);
+    }
+  });
+
+  it('maxRetries 挂 role("modelChainMeta", { kind: "retries" })', () => {
+    // 给 dsh 前端提示"这是 fallback 链的元数据",可与 fallbackChains
+    // 在同一 UI 区块里联排显示。
+    const maxRetries = (
+      Config as unknown as {
+        dict: Record<string, { meta?: { role?: unknown } }>;
+      }
+    ).dict?.maxRetries;
+    const roleValue = maxRetries?.meta?.role;
+    const roleStr = Array.isArray(roleValue)
+      ? roleValue.join(',')
+      : String(roleValue);
+    expect(roleStr).toContain('modelChainMeta');
+  });
+});
+
+describe('volatile 解包', () => {
+  it('isVolatileLike 按 cosmokit 协议识别(全局 Symbol)', () => {
+    const write = Symbol.for('cosmokit.volatile.write');
+    const ref = { get: () => 1, [write]: () => {} };
+    expect(isVolatileLike(ref)).toBe(true);
+    expect(isVolatileLike({ get: () => 1 })).toBe(false);
+    expect(isVolatileLike(null)).toBe(false);
+    expect(isVolatileLike(42)).toBe(false);
+  });
+
+  it('unwrapVolatile 深度解包对象/数组里的引用', () => {
+    const write = Symbol.for('cosmokit.volatile.write');
+    const wrap = (value: unknown): unknown => ({
+      get: () => value,
+      [write]: () => {},
+    });
+    const input = {
+      enabled: wrap(false),
+      fallbackChains: wrap([
+        wrap({ provider: 'a', model: 'x' }),
+        { provider: 'b', model: 'y' },
+      ]),
+      maxRetries: wrap(3),
+    };
+    expect(unwrapVolatile(input)).toEqual({
+      enabled: false,
+      fallbackChains: [
+        { provider: 'a', model: 'x' },
+        { provider: 'b', model: 'y' },
+      ],
+      maxRetries: 3,
+    });
+  });
+
+  it('resolveConfig 接受 volatile 引用形态的配置(设置面板写入路径)', () => {
+    const write = Symbol.for('cosmokit.volatile.write');
+    const wrap = (value: unknown): unknown => ({
+      get: () => value,
+      [write]: () => {},
+    });
+    // 模拟 loader 把 volatile 字段投影给 apply() 的形态
+    const resolved = resolveConfig({
+      enabled: wrap(true),
+      fallbackChains: wrap([
+        wrap({ provider: 'deepseek', model: 'deepseek-chat' }),
+        wrap('openai/gpt-4o'),
+      ]),
+      maxRetries: wrap(2),
+      fallbackWhen: wrap('immediately'),
+    });
+    expect(resolved.enabled).toBe(true);
+    expect(resolved.chain).toEqual([
+      { provider: 'deepseek', model: 'deepseek-chat' },
+      { provider: 'openai', model: 'gpt-4o' },
+    ]);
+    expect(resolved.maxRetries).toBe(2);
+    expect(resolved.fallbackWhen).toBe('immediately');
+  });
+
+  it('volatileField 无 volatile 方法时原样返回(守卫)', () => {
+    const plain = { tag: 'plain' } as { tag: string; volatile?: unknown };
+    expect(volatileField(plain)).toBe(plain);
+  });
+});
+
+// ── 8. index.ts re-exports Config(避免 dsh settings UI 不渲染字段)──
+
+describe('Config re-export from index.ts', () => {
+  it('index.ts 显式 re-export Config(否则 dsh loader 读不到 schema)', () => {
+    // 回归:`Config` 定义在 config.ts,但 dsh 加载器 import 的是
+    // package.json `main` 指向的 src/index.ts。若 index.ts 不 re-export,
+    // dsh-app-boot 的 collectConfigSchemas 拿不到 schema,configRef
+    // 会变成 "#/$defs/unknownConfig",settings 面板不渲染本插件字段。
+    expect(ConfigFromIndex).toBeDefined();
+    expect(ConfigFromIndex).toBe(Config); // 与 config.ts 同一对象引用
   });
 });
