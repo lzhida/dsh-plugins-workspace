@@ -139,10 +139,11 @@ pnpm typecheck
 pnpm test
 ```
 
-e2e(走真实 dsh Web UI 验证):
+e2e(走真实 dsh Web UI 验证,手工 CLI 流程见 skill §5):
 
 ```sh
-npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts -- packages/dsh-taskboard/src/index.ts
+pnpm dsh plugin --profile e2e add link:<仓库绝对路径>/packages/dsh-taskboard   # link: 必须绝对路径
+pnpm dsh --profile e2e --no-open --port 3865
 ```
 
 ## 教学版 vs 原版对比

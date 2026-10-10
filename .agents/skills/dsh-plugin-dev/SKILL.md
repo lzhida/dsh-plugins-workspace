@@ -1,15 +1,15 @@
 ---
 name: dsh-plugin-dev
-description: 开发 DeepSeek Harness (dsh) 插件：从零脚手架新插件包、cordis 契约与 ctx.effect 生命周期、defineTool 工具开发，到 e2e 实例编排脚本的 Web UI 级自验与提交门禁。当任务涉及创建、修改或验证 dsh 插件（packages/*/src、apply(ctx)、ctx.effect、defineTool、e2e 自验）时使用。
+description: 开发 DeepSeek Harness (dsh) 插件：从零脚手架新插件包、cordis 契约与 ctx.effect 生命周期、defineTool 工具开发，到 e2e（真实 dsh 实例手工 CLI 编排）的 Web UI 级自验与提交门禁。当任务涉及创建、修改或验证 dsh 插件（packages/*/src、apply(ctx)、ctx.effect、defineTool、e2e 自验）时使用。
 ---
 
 # dsh 插件开发工作流
 
-本 skill 针对 **本 monorepo 的真实工具链**（pnpm workspaces + tsx + lefthook + 自研 e2e 运行器），把「能跑」的插件开发流程压缩为可照抄的步骤。背景知识见文末延伸阅读。
+本 skill 针对 **本 monorepo 的真实工具链**（pnpm workspaces + tsx + lefthook + dsh 原生 CLI），把「能跑」的插件开发流程压缩为可照抄的步骤。背景知识见文末延伸阅读。
 
 ## 1. 仓库速览
 
-- 插件以 **TS 源码** 被宿主 dsh loader 直接加载——**无构建步骤、不产出 dist**，`package.json` 的 `main` 直指 `src/index.ts`。
+- 插件以 **TS 源码** 被宿主 dsh loader 直接加载——**默认无构建步骤、不产出 dist**，`package.json` 的 `main` 直指 `src/index.ts`（例外：`dsh-llm-fallback` 为构建式发行，`main` 指 esbuild 打包的 `dist/index.js`）。
 - 一个插件一个目录：`packages/<kebab-name>/`；测试与源码同目录 `src/*.test.ts`（vitest）。
 - 全仓 ESM（`type: "module"`）+ `verbatimModuleSyntax`：类型导入必须写 `import type`。
 
@@ -52,7 +52,7 @@ import type { Context } from '@deepseek-ai/cordis'
 export const name = 'my-plugin'
 
 export function apply(ctx: Context): void {
-  console.log(`[${name}] plugin loaded`)   // e2e 契约，见 §5
+  console.log(`[${name}] plugin loaded`)   // e2e 契约，见 §5.2
   ctx.effect(() => {
     const timer = setInterval(() => {
       console.log(`[${name}] heartbeat`)
@@ -98,68 +98,53 @@ export function apply(ctx: Context): void {
 
 要点：注册 disposer 自动附着到插件（卸载即注销）；`parameters` 规约转 JSON Schema 并在 execute 前校验；组合中需有 `@deepseek-ai/dsh-system-prompt` / `@deepseek-ai/dsh-tools` 提供方，否则 PENDING。
 
-## 5. e2e 自验（Web UI 加载级）
+## 5. e2e 自验（真实 dsh 实例，手工 CLI 编排）
 
-e2e 编排脚本随本 skill 分发：`.agents/skills/dsh-plugin-dev/scripts/test-e2e.ts`（以仓库根为工作目录运行）：
+e2e **无专用脚本**：直接用 `pnpm dsh` 原生命令，在独立 profile 中编排一个真实 dsh Web 实例做「加载级」验证；真实效果由浏览器工具在同一实例上无缝接管（§5.3）。全程以仓库根为工作目录。
+
+### 5.1 编排流程（照抄即可）
 
 ```sh
-npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts                                       # 默认验证 packages/dsh-guided-goal
-npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts -- packages/my-plugin/src/index.ts     # 任意插件（可传多个）
-npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts -- .agents/tmp/my-plugin/src/index.ts  # 临时插件（.agents/tmp）
+# 0) 预检：默认端口 3865 空闲（3080 是上游默认，本机被占）；全局 ~/.dsh 已存在
+# 1) profile 引导（仅首次；约 30-60s；命令非零退出但 profile 目录已生成 = 成功）
+pnpm dsh --profile e2e --from-default-profile web
+# 2) 构建式插件预构建（package.json 有 scripts.build 的包，如 dsh-llm-fallback）：
+#    link: 安装不触发任何生命周期脚本（pnpm 对 link: 不跑 prepare），
+#    dist 缺失时宿主只报静默的 failed to import
+pnpm --filter <pkg-name> build
+# 3) 安装被测插件（--profile 必须置于 plugin 子命令之后，否则 too many arguments；
+#    link: 后必须是绝对路径——相对路径按 pnpm 语义解析到 profile 目录而非 CWD）
+pnpm dsh plugin --profile e2e add link:<仓库绝对路径>/packages/<name>
+#    临时插件同理：pnpm dsh plugin --profile e2e add link:<仓库绝对路径>/.agents/tmp/<kebab>
+# 4) 启动 Web UI（进程前台长跑即保活；带 token 的 UI 地址 banner 可能 40s+ 才打印）
+pnpm dsh --profile e2e --no-open --port 3865
+# 5) 断言通过、浏览器验证完成后，结束进程（Ctrl/C 或杀进程树）并清理
+pnpm dsh plugin --profile e2e remove <pkg-name>
 ```
 
-- 机制：走真实 dsh——全局 `~/.dsh` + 独立 profile（`~/.dsh/profiles/<name>`，缺失时自动从官方 web 模板引导）启动 Web UI：profile 隔离**插件列表**，模型凭证全局共享，不触碰默认 profile 与已运行实例。断言后自动卸载被测插件恢复 profile 干净态。脚本只做**实例编排**（启动+装插件+三断言+保活）；真实效果验证由 AI 经浏览器工具接管（见下）。
-- **加载日志契约**：插件 `apply` 时必须打印 `[name] ` 前缀格式的日志行（如 `[my-plugin] plugin loaded`）。e2e 按 `\[name\]` 结构化正则匹配——路径/堆栈中出现裸包名**不算**加载成功。类式插件（`extends Service`，如 shell executor）为惰性实例化，装载日志须打在**模块顶层**。
-- 首次运行会引导 profile（约 30-60s）；默认端口 3865（`E2E_PORT` 可覆盖）。
+### 5.2 三项断言（加载级）
 
-### 验证层级（同一环境）
+1. **加载日志契约**：实例输出出现 `[<name>] ` 前缀格式的日志行（如 `[my-plugin] plugin loaded`）——插件 `apply` 时必须打印。按该结构化格式匹配，路径/堆栈中出现裸包名**不算**加载成功。类式插件（`extends Service`，如 shell executor）为惰性实例化，装载日志须打在**模块顶层**。
+2. **端口可达**：`http://127.0.0.1:3865` 有响应。
+3. **UI 页面健康**：打开 banner 打印的带 token URL，页面状态 <400（auth 中间件对带 token 首访返回 303 属健康——认证决策流由后续会话续接）。
 
-装载级断言（本脚本）不发起模型调用；因为凭证全局共享，**真实调用验证可在同一 profile 无缝继续**（`E2E_KEEP_MS` 保活后浏览器接管，或直接在会话发任务）。
+### 5.3 浏览器级验证（真实效果，chrome devtool MCP 接管）
 
-清理义务：profile 只隔离插件列表——脚本结束已自动 `plugin remove`；手动建 profile 测完同样要 `pnpm dsh plugin --profile <name> remove <包名>`，避免被测插件残留进后续会话。
-
-### 真实测试操作（chrome devtool MCP 接管，核心方法论）
-
-脚本断言只覆盖「装载」；「真实效果」用浏览器工具完成。`E2E_KEEP_MS=180000` 保活实例并拿 tokened URL 后：
+装载级断言不发起模型调用；凭证全局共享，**真实调用验证可在同一 profile 无缝继续**。保持 §5.1 步骤 4 的实例不退出，用浏览器工具打开 tokened URL：
 
 1. **页面健康**：标题 `DeepSeek Harness`，console 无与目标插件相关的错误（web-all/git-graph 等生态噪音可忽略）；
-2. **插件面板**：设置/全局面板 → 插件 →「已安装」分组中目标插件 switch 显示「已启用」；
-3. **真实调用**：新会话发自然任务（如需专测语法合规则加「用 nushell 工具」前缀），发送后等响应，展开「N 次工具调用」核查 command；
-4. **轨迹核查（比 UI 可靠）**：从 `~/.dsh/sessions/--<cwd-dir>--/session-*/session.v3.jsonl.zstd` 流式解压（Node `zstandard` 多帧流式读，`decompress()` 只出首帧），提取 `tool/call` 的 `arguments.command` 逐项核查；
+2. **插件面板**：设置 → 插件 →「已安装」分组中目标插件显示「已启用」；
+3. **真实调用**：新会话发自然任务（需要专测某工具时在任务里点名该工具），发送后等响应，展开「N 次工具调用」核查参数；
+4. **轨迹核查（比 UI 可靠）**：从 `~/.dsh/sessions/--<cwd-dir>--/session-*/session.v3.jsonl.zstd` 流式解压（Node `zstandard` 多帧流式读，`decompress()` 只出首帧），提取 `tool/call` 的 arguments 逐项核查；
 5. **纯净 profile 对比法**（排除 hindsight 记忆污染）：记忆会把过往成功经验注入新会话——验证「默认行为」必须用无记忆环境。建独立 profile（`pnpm dsh --profile <name> --from-default-profile web` 引导 + add 被测包），跑零工具暗示的任务，从该 profile 轨迹核实工具选择；
 6. **提示词契约**：description/section 等引导文案是行为定义，测试里加「存在性断言」（如 `toContain('Do NOT shell out')`）防回归删除。
 
-## 5bis. agent 自驱测试流程（`@lzhida/dsh-test-runner`）
+### 5.4 注意事项
 
-当 dsh agent 自己需要"测试一个插件"时（不是开发者 shell 手跑），使用 `dsh-test-runner` 宿主插件提供的 5 个分步工具。流程与上节 shell 脚本等价，但 agent 可在每步之间插入人类可读的中间报告、并发发起其它调用、或在失败时按上下文灵活重试。
-
-**5 步法**（每个工具独立可调用，agent 决定串行或并发的节奏）：
-
-| 步骤 | 工具 | 用途 |
-| --- | --- | --- |
-| 1 | `test_runner_review_profiles` | 审查 `~/.dsh/profiles/` 标记 test 用途 profile；`createIfMissing=true` 时基于官方 web 模板新建 |
-| 2 | `test_runner_install` | 把被测插件装入 test profile（自动维护 cordis.patch.yml 兼容 local executor） |
-| 3 | `test_runner_boot` | 后台启动 `dsh web`，返回 `sessionId` + tokened URL；cordis effect 卸载时强 kill |
-| 4 | `test_runner_run_assertions` | 轮询收集三项断言（`[<name>]` 加载日志 / 端口可达 / tokened URL 页面 < 400），**可重复调用直到就绪** |
-| 5 | `test_runner_cleanup` | 显式 kill 进程 + 卸载被测插件，恢复 profile 干净态 |
-
-**三种调用路径**（按 agent 上下文选最合适的一种）：
-
-1. **直接 CLI（开发者自跑）**：走 `npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts` —— 与上节脚本相同。
-2. **后台 job + 浏览器接管**：用 `test_runner_boot` + `E2E_KEEP_MS` 等价的 `timeoutMs` 让进程长跑；用浏览器/MCP 工具打开返回的 tokened URL 做真实验证。
-3. **dsh agent 会话内调用**：在任意 dsh 会话中加载 `dsh-test-runner`（已 `dsh plugin add link:packages/dsh-test-runner`），模型按 5 步法串行/并发调用工具，由 system-prompt section 引导协议。**清理必须显式**——后台 web 与被测插件会残留进后续会话。
-
-**审计清单（DoD 风格）**：
-- ✅ 加载日志契约：`apply` 必打印 `[<name>]` 前缀（避免路径/堆栈中裸包名假阳性）。
-- ✅ 默认 port=3865（3080 是上游默认；本机 3080 被占）；`TEST_RUNNER_PORT` 可覆盖。
-- ✅ profile 隔离插件列表，模型凭证全局共享；`test_runner_cleanup` 显式卸载恢复干净态。
-- ✅ local executor 自动禁 permission presets（与 test-e2e.ts 行为一致）。
-- ✅ 不要在 default profile 上跑 e2e —— 工具描述里硬编码了警告。
-
-**实现边界**：
-- 纯逻辑（端口检测 / 补丁层剥离 / token 解析 / 超时预算）下沉到 `packages/dsh-test-runner/src/lib.ts`，27 个 vitest 覆盖。
-- 副作用（spawn dsh / 读 `~/.dsh` / 写 cordis.patch.yml）封装在 `src/runner.ts`，经 `defineTool` 暴露给 dsh agent。
-- 命名 `tool:test-runner`，`order: 2850`（TOOL_REPORT 2900 与 TOOL_SUBAGENT 2800 之间的空档）。
+- **profile 隔离**：profile 只隔离**插件列表**，`DSH_HOME` 共享全局 `~/.dsh`（模型凭证不隔离）；不触碰默认 profile 与已运行实例。**不要在 default profile 上跑 e2e**。
+- **清理义务**：profile 只隔离插件列表——测完必须 `plugin remove` 被测插件并结束实例（§5.1 步骤 5），残留会进入后续会话。
+- **agent 自驱**：dsh agent 会话内可用后台 job 方式执行同一流程（步骤 4 后台长跑 + 浏览器/MCP 工具接管验证），步骤与 §5.1 完全一致；清理同样必须显式执行。
+- **permission presets 互斥**（仅非禁闭执行器类插件）：被测插件独占 `ctx.shell` 且非 confining 时，permission presets 构造期检查抛错（要求禁闭执行器）——在该 profile 的 `cordis.patch.yml` 顶层追加 `- id: permission` + `  disabled: true`（附注释行说明缘由），测完剥离恢复官方 permission 栈。
 
 ## 6. 门禁链（提交前必过）
 

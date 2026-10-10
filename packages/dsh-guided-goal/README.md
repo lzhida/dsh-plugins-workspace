@@ -33,7 +33,8 @@ pnpm dsh plugin --profile default add link:packages/dsh-guided-goal
 ```sh
 pnpm install    # 仓库根执行
 pnpm test       # vitest(含本包 src/index.test.ts)
-npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts -- packages/dsh-guided-goal/src/index.ts   # 真实 dsh Web UI 加载验证
+pnpm dsh plugin --profile e2e add link:<仓库绝对路径>/packages/dsh-guided-goal   # 装入 e2e profile(link: 必须绝对路径)
+pnpm dsh --profile e2e --no-open --port 3865                                     # 启动真实 dsh Web UI(三断言与清理见 skill §5)
 ```
 
 插件契约(`src/index.ts`):`export const name = 'dsh-guided-goal'`、`inject = ['commands', 'settings']`、`apply(ctx)` 内经 `ctx.effect` 注册 settings 驱动的命令同步。
