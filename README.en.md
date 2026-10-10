@@ -65,15 +65,13 @@ Task board plugin (an architectural/teaching re-implementation of [cloader/dsh-t
 
 Prerequisites: Node ≥ 22, pnpm 11, dsh installed.
 
-```sh
-# The guided goal command (independent, no executor dependency)
-pnpm dsh plugin --profile default add link:packages/dsh-guided-goal
+> **⚠️ Install restriction**: the plugins below are TS-source entries. They only support a local `link:` install **with an absolute path** — a relative `link:` path is resolved by pnpm against the profile directory (`~/.dsh/profiles/<name>/packages/...`), so the install always fails; git/npm/tarball entity installs are rejected by Node with `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`. Entity installs are only supported by the dist-entry [dsh-llm-fallback](./packages/dsh-llm-fallback/README.md).
 
-# Obsidian operations (independent — 9 obsidian_* tools + a generic entry, wraps Obsidian's built-in CLI)
-pnpm dsh plugin --profile default add link:packages/dsh-obsidian
-
-# The task board plugin (independent — 10 taskboard_* tools + code-level protocol gates)
-pnpm dsh plugin --profile default add link:packages/dsh-taskboard
+```powershell
+# Run from the repository root (PowerShell). Git Bash: swap the path expression for "$(pwd -W)"; POSIX: "$(pwd)"
+pnpm dsh plugin --profile default add "link:$($PWD.Path -replace '\\','/')/packages/dsh-guided-goal"   # the guided goal command (independent, no executor dependency)
+pnpm dsh plugin --profile default add "link:$($PWD.Path -replace '\\','/')/packages/dsh-obsidian"      # Obsidian operations (independent — 9 obsidian_* tools + a generic entry, wraps Obsidian's built-in CLI)
+pnpm dsh plugin --profile default add "link:$($PWD.Path -replace '\\','/')/packages/dsh-taskboard"     # the task board (independent — 10 taskboard_* tools + code-level protocol gates)
 ```
 
 After installation, confirm the target plugins are enabled under dsh Web UI Settings → Plugins: use `/guided-goal` from the chat input for guided-goal; the task-board agent uses the `taskboard_*` tool set collaboratively from any session.

@@ -23,7 +23,8 @@
 前置:Node ≥ 22、pnpm 11、已安装 dsh。
 
 ```sh
-pnpm dsh plugin --profile default add link:packages/dsh-guided-goal
+# link: 必须绝对路径(相对路径按 pnpm 语义解析到 profile 目录,安装必败)
+pnpm dsh plugin --profile default add link:<仓库绝对路径>/packages/dsh-guided-goal
 ```
 
 安装后在 dsh Web UI 的设置 → 插件中确认「dsh-guided-goal」已启用,即可在会话输入框使用 `/guided-goal`。

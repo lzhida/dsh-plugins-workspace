@@ -65,15 +65,13 @@
 
 前置:Node ≥ 22、pnpm 11、已安装 dsh。
 
-```sh
-# 引导式 goal 命令(独立,不依赖执行器)
-pnpm dsh plugin --profile default add link:packages/dsh-guided-goal
+> **⚠️ 安装限制**:以下插件均为 TS 源码入口,**仅支持本地 `link:` 安装且必须为绝对路径**——`link:` 相对路径按 pnpm 语义解析到 profile 目录(`~/.dsh/profiles/<name>/packages/...`),安装必败;git/npm/tarball 实体安装会被 Node 以 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING` 拒绝加载。实体安装仅支持 dist 入口的 [dsh-llm-fallback](./packages/dsh-llm-fallback/README.md)。
 
-# Obsidian 操作(独立,9 个 obsidian_* 工具 + 通用入口,封装 Obsidian 内置 CLI)
-pnpm dsh plugin --profile default add link:packages/dsh-obsidian
-
-# 任务看板(独立,10 个 taskboard_* 工具 + 代码级协议闸)
-pnpm dsh plugin --profile default add link:packages/dsh-taskboard
+```powershell
+# 仓库根目录执行(PowerShell)。Git Bash 把路径表达式换成 "$(pwd -W)",POSIX 用 "$(pwd)"
+pnpm dsh plugin --profile default add "link:$($PWD.Path -replace '\\','/')/packages/dsh-guided-goal"   # 引导式 goal 命令(独立,不依赖执行器)
+pnpm dsh plugin --profile default add "link:$($PWD.Path -replace '\\','/')/packages/dsh-obsidian"      # Obsidian 操作(独立,9 个 obsidian_* 工具 + 通用入口,封装 Obsidian 内置 CLI)
+pnpm dsh plugin --profile default add "link:$($PWD.Path -replace '\\','/')/packages/dsh-taskboard"     # 任务看板(独立,10 个 taskboard_* 工具 + 代码级协议闸)
 ```
 
 安装后在 dsh Web UI 的设置 → 插件中确认目标插件已启用:guided-goal 在会话输入框使用 `/guided-goal`;taskboard 在任意会话中由模型用 `taskboard_*` 工具集协作。
