@@ -53,7 +53,7 @@ pnpm test           # vitest run（集中在根，子包无 test 脚本）
 ## Runtime/Tooling Preferences
 
 - Node ≥22（`engines`），包管理器锁定 pnpm 11（`packageManager` 字段），勿用 npm/yarn。
-- **纯 TypeScript**：源码与工具链配置均为 `.ts`（`scripts/*.ts` 由 tsx 运行，`eslint.config.ts` 由 ESLint 加载）；仓库内无 `.js`/`.mjs` 源文件。
+- **纯 TypeScript**：源码与工具链配置均为 `.ts`（`eslint.config.ts` 由 ESLint 加载）；仓库内无 `.js`/`.mjs` 源文件。
 - TypeScript 锁 5.x 稳定线——typescript-eslint 8 的 peer 范围是 `<6.1.0`，勿升级 TS 7。
 - 插件默认禁止引入构建步骤；`dist`、`coverage` 等产物目录已入 `.gitignore`。**例外**：`dsh-llm-fallback` 为构建式发行（esbuild 打包 `dist/index.js`，`main` 指 dist，`prepare`/`prepack` 自动构建）——因为 Node 拒绝对 realpath 位于 node_modules 之下的 `.ts` 文件做 type-stripping（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`），TS 源码入口在 git/npm/tarball 实体安装下必然加载失败；其他 TS 插件如需支持实体安装，照此模式改造（构建依赖 esbuild、运行时依赖放 `dependencies`——pnpm 对 git 依赖不保证安装 devDeps；git 安装的消费方还需在 allowBuilds 放行且 pnpm 要求 sha 全形态键，详见 dsh-llm-fallback README）。
 - remote origin：`github:lzhida/dsh-plugins-workspace`（push 操作留给用户）。

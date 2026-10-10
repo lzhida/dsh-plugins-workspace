@@ -5,7 +5,7 @@ description: 开发 DeepSeek Harness (dsh) 插件：从零脚手架新插件包�
 
 # dsh 插件开发工作流
 
-本 skill 针对 **本 monorepo 的真实工具链**（pnpm workspaces + tsx + lefthook + dsh 原生 CLI），把「能跑」的插件开发流程压缩为可照抄的步骤。背景知识见文末延伸阅读。
+本 skill 针对 **本 monorepo 的真实工具链**（pnpm workspaces + vitest + lefthook + dsh 原生 CLI），把「能跑」的插件开发流程压缩为可照抄的步骤。背景知识见文末延伸阅读。
 
 ## 1. 仓库速览
 
