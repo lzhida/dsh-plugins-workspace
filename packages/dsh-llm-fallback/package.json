@@ -4,23 +4,34 @@
   "version": "0.3.0",
   "private": true,
   "type": "module",
-  "main": "src/index.ts",
+  "main": "dist/index.js",
   "types": "src/cordis.d.ts",
   "exports": {
-    ".": "./src/index.ts",
+    ".": "./dist/index.js",
     "./client": "./client/index.js",
     "./package.json": "./package.json"
   },
+  "files": [
+    "dist",
+    "client",
+    "src/cordis.d.ts",
+    "cordis.patch.yml",
+    "README.md"
+  ],
   "scripts": {
+    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js --sourcemap",
+    "prepare": "npm run build",
+    "prepack": "npm run build",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-system-prompt": "0.2.0-rc.2"
+    "@deepseek-ai/schemastery": "^3.18.4",
+    "esbuild": "^0.28.2"
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",
-    "@deepseek-ai/schemastery": "^3.18.4"
+    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "0.2.0-rc.2"
   },
   "dsh": {
     "bundle": {
