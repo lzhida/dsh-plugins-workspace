@@ -1,4 +1,4 @@
-# @lzhida/dsh-llm-fallback
+# @zhidal/dsh-llm-fallback
 
 dsh-llm-fallback 插件:拦截 dsh 全局 LLM 调用,按 `fallbackChains` 在主模型失败时自动切换到下一个候选 `provider/model`,**对话不中断**。默认在官方 `@deepseek-ai/dsh-llm-retry` 重试预算耗尽(原本会直接把错误抛给 loop、结束轮次的位置)后才切换,作为同 provider 重试之后的第二道防线;也可配置为一次失败立即切换。
 
@@ -26,7 +26,7 @@ dsh 0.2.0-rc.2 宿主加载 TS 插件走 Node 原生 type-stripping(cordis-plugi
 >
 > ```sh
 > # 实体目录安装 → 必报 ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING
-> node --input-type=module -e "import('file:///<profile-dir>/node_modules/@lzhida/dsh-llm-fallback/src/index.ts').then(m => console.log('OK', m.name)).catch(e => console.error(e.code))"
+> node --input-type=module -e "import('file:///<profile-dir>/node_modules/@zhidal/dsh-llm-fallback/src/index.ts').then(m => console.log('OK', m.name)).catch(e => console.error(e.code))"
 > # link 安装 → OK dsh-llm-fallback
 > ```
 
@@ -39,7 +39,31 @@ pnpm dsh plugin add link:<仓库绝对路径>/packages/dsh-llm-fallback   # link
 
 包内 `dsh.bundle.patch` 声明使其自动进入 profile 层,无需 overlay 注入。
 
-注意:`link:` 安装**不触发任何生命周期脚本**(pnpm 对 link: 不跑 prepare),dist 必须预先存在。根 `pnpm install` 已自动构建;单独重建用 `pnpm --filter @lzhida/dsh-llm-fallback build`(插件 e2e 手工流程见 skill §5)。
+注意:`link:` 安装**不触发任何生命周期脚本**(pnpm 对 link: 不跑 prepare),dist 必须预先存在。根 `pnpm install` 已自动构建;单独重建用 `pnpm --filter @zhidal/dsh-llm-fallback build`(插件 e2e 手工流程见 skill §5)。
+
+### npm 安装(registry,外部用户首选)
+
+```sh
+dsh plugin add @zhidal/dsh-llm-fallback          # 装最新版
+dsh plugin add @zhidal/dsh-llm-fallback@0.3.0    # 或锁定版本
+```
+
+裸包名走 npm registry 实体安装(`dsh plugin add` 底层 `pnpm add` 解析官方源)。tgz 自带构建好的 `dist`,**本包自身无需任何 allowBuilds 放行**;依赖里仅 `esbuild`(构建期依赖,registry 安装不触发本包构建)自身的 postinstall 会触发 pnpm 11 构建脚本闸门——**闸门是硬失败**(`[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: esbuild` → `dsh: plugin command failed`),首次 add 会在依赖落盘后中止。宿主会在消费 profile 的 `pnpm-workspace.yaml` 自动写入占位行 `esbuild: set this to true or false`,把它改成 `true` 后重跑 add 即可:
+
+```yaml
+allowBuilds:
+  esbuild: true
+```
+
+> **修复闸门后务必干净重装**:首次 add 中途失败会留下 dependencies 但丢失 bundles 注册(重跑 add 走「已安装」短路,不会补写),表现为包已装入但重启后插件不激活。补救:`dsh plugin --profile <name> remove @zhidal/dsh-llm-fallback` 后重新 add;或手动把包名加进 profile `package.json` 的 `dsh.profile.bundles` 数组。
+
+装好后的加载级验证(实测 2026-10-10,`dsh plugin add @zhidal/dsh-llm-fallback` → 启动即激活):
+
+1. 实例输出首行出现 `[dsh-llm-fallback] plugin loaded`;
+2. `dsh plugin --profile <name> list` 可见该包,且 profile `package.json` 的 `dsh.profile.bundles` 含 `@zhidal/dsh-llm-fallback`;
+3. 设置 → 插件 → 点开本插件显示「已启用」+ 内嵌「模型回退」配置卡。
+
+升级即重跑 add 解析 latest——但**刚发布的新版本建议用精确版本号**(`@zhidal/dsh-llm-fallback@<version>`):registry 元数据有分钟级边缘缓存,裸包名短期可能仍解析到旧版(实测 0.3.0→0.3.1 升级时发生)。回滚同理用 `@<version>` 锁定。已发布版本清单见 <https://www.npmjs.com/package/@zhidal/dsh-llm-fallback?activeTab=versions>。
 
 ### Git 安装(外部用户)
 
@@ -49,7 +73,7 @@ pnpm dsh plugin add link:<仓库绝对路径>/packages/dsh-llm-fallback   # link
 > allowBuilds:
 >   # ← 抄 pnpm 报错打印的那行;注意 pnpm 示例漏了 YAML 引号:
 >   #   `@` 开头的键不加引号是非法 YAML,务必形如 '<pkg>@<git-url>#<sha>': true
->   '@lzhida/dsh-llm-fallback@git+https://github.com/lzhida/dsh-plugins-workspace#<sha>': true
+>   '@zhidal/dsh-llm-fallback@git+https://github.com/lzhida/dsh-plugins-workspace#<sha>': true
 >   esbuild: true # esbuild 自身 postinstall(二进制校验),固定加这行
 > ```
 >
@@ -72,7 +96,7 @@ curl -L https://github.com/lzhida/dsh-plugins-workspace/archive/refs/heads/main.
 dsh plugin add /tmp/dsh-plugins-workspace-main/packages/dsh-llm-fallback
 ```
 
-> 形态 4 是目录直装:若安装后 profile 内缺 `dist/`(该形态不保证触发生命周期脚本),先在源码树仓库根跑一次 `pnpm install`(或 `pnpm --filter @lzhida/dsh-llm-fallback build`)再装。
+> 形态 4 是目录直装:若安装后 profile 内缺 `dist/`(该形态不保证触发生命周期脚本),先在源码树仓库根跑一次 `pnpm install`(或 `pnpm --filter @zhidal/dsh-llm-fallback build`)再装。
 >
 > **tarball(`pnpm pack` 产物)是最省事的实体形态**:tgz 自带新鲜 dist(prepack 在打包前执行),消费 profile 只需 `allowBuilds: { esbuild: true }` 一行(esbuild 自身 postinstall),无 sha 键、无更新漂移。
 
@@ -95,7 +119,7 @@ dsh plugin add /tmp/dsh-plugins-workspace-main/packages/dsh-llm-fallback
 
 ### 设置界面(内嵌配置卡)
 
-dsh 0.2.0-rc.2 没有 schema→表单的通用自动渲染;配置 UI 由本插件**自带的 client bundle**(`client/index.js`,零构建)注册进插件管理页的 `plugins.bundle.config` 插槽,直接**内嵌在本插件的详情页里**(设置 → 插件 → 点开 `@lzhida/dsh-llm-fallback`):
+dsh 0.2.0-rc.2 没有 schema→表单的通用自动渲染;配置 UI 由本插件**自带的 client bundle**(`client/index.js`,零构建)注册进插件管理页的 `plugins.bundle.config` 插槽,直接**内嵌在本插件的详情页里**(设置 → 插件 → 点开 `@zhidal/dsh-llm-fallback`):
 
 - **模型勾选**:候选池来自 `remote.session.modelCatalog()`(宿主已配置 provider 的模型目录,按 provider 分组),勾选即加入队列;
 - **排序**:已选队列支持上移/下移/移除,顺序即回退优先级(首项 = 主模型);
@@ -136,9 +160,9 @@ dsh 0.2.0-rc.2 没有 schema→表单的通用自动渲染;配置 UI 由本插�
 
 ```sh
 # 1. 确认子包已装入 profile node_modules
-ls "$(dsh config profile-dir 2>/dev/null || echo $HOME/.dsh/profiles/<name>)/node_modules/@lzhida/dsh-llm-fallback"
+ls "$(dsh config profile-dir 2>/dev/null || echo $HOME/.dsh/profiles/<name>)/node_modules/@zhidal/dsh-llm-fallback"
 
-# 2. 重启 dsh,在 设置 → 插件 → @lzhida/dsh-llm-fallback 详情页确认
+# 2. 重启 dsh,在 设置 → 插件 → @zhidal/dsh-llm-fallback 详情页确认
 #    内嵌「模型回退」配置卡(勾选模型 / 排序 / 最大次数 / 保存)
 
 # 3. 启动日志应有 [dsh-llm-fallback] plugin loaded 一行(e2e 契约)

@@ -2,7 +2,7 @@
 
 [English](./README.en.md) | 简体中文
 
-[dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)(DeepSeek Harness)插件集合——TypeScript + cordis 插件 monorepo。插件默认以 TS 源码形态被 dsh loader 直接加载,无构建步骤(例外:`@lzhida/dsh-llm-fallback` 构建式发行,入口为 esbuild 打包的 dist)。
+[dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)(DeepSeek Harness)插件集合——TypeScript + cordis 插件 monorepo。插件默认以 TS 源码形态被 dsh loader 直接加载,无构建步骤(例外:`@zhidal/dsh-llm-fallback` 构建式发行,入口为 esbuild 打包的 dist,已发布 [npm](https://www.npmjs.com/package/@zhidal/dsh-llm-fallback))。
 
 > **纯 AI 开发**:本仓库的全部代码均由 AI 编码代理生成。
 

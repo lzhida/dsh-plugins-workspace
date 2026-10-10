@@ -3,4 +3,4 @@
 
 - insert:
     - id: dsh-llm-fallback
-      name: '@lzhida/dsh-llm-fallback'
+      name: '@zhidal/dsh-llm-fallback'

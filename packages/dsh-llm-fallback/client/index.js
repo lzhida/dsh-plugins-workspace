@@ -24,7 +24,7 @@
 globalThis.__ModuleLoader__.load({
   // id 必须与 package.json 包名一致,否则 boot graph arrive() 抛
   // "loaded without registering"。
-  id: '@lzhida/dsh-llm-fallback',
+  id: '@zhidal/dsh-llm-fallback',
   factory: (require) => {
     var module = { exports: {} };
     var React = require('react');
@@ -647,14 +647,14 @@ globalThis.__ModuleLoader__.load({
       }
 
       // 注册进 `plugins.bundle.config` 插槽(keyed,key = **包名**)——这是
-      // plugin-manager 的 PackageDetail 页(设置 → 插件 → @lzhida/dsh-llm-fallback)
+      // plugin-manager 的 PackageDetail 页(设置 → 插件 → @zhidal/dsh-llm-fallback)
       // 内部 "the configuration the bundle registered for itself" 的官方渲染位:
       //   renderSlot("plugins.bundle.config", { view: "page" }, { entryKey: pkg.name })
       // 且仅当 ledger 里存在 key === pkg.name 的注册时才显示该 data-plugin-config 区块。
       // (曾试过 plugins.item——那是 ItemCard 独立配置页的插槽,与官方
       //   settings-subagent/shell/web-search 一样会渲染成独立区块,不符合
       //   "嵌在本插件页内"的诉求,已改用 bundle.config。)
-      var PKG_NAME = '@lzhida/dsh-llm-fallback';
+      var PKG_NAME = '@zhidal/dsh-llm-fallback';
       ctx.effect(function () {
         return ctx.configForms.whileServed([ENTRY_NS], function () {
           return ctx.slots.inject('plugins.bundle.config', function () {
