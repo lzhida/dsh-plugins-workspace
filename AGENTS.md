@@ -2,11 +2,11 @@
 
 ## Project Overview
 
-dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/cordis`）插件集合，pnpm workspaces 单层结构。插件以 TS 源码形态被宿主 dsh loader 直接加载——**没有构建步骤、不产出 dist**。当前包含 `packages/dsh-guided-goal`、`packages/dsh-obsidian`、`packages/dsh-taskboard`、`packages/dsh-test-runner`。
+dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/cordis`）插件集合，pnpm workspaces 单层结构。插件默认以 TS 源码形态被宿主 dsh loader 直接加载——**没有构建步骤、不产出 dist**；唯一例外是 `packages/dsh-llm-fallback`（构建式发行，见下）。当前包含 `packages/dsh-guided-goal`、`packages/dsh-llm-fallback`、`packages/dsh-obsidian`、`packages/dsh-taskboard`、`packages/dsh-test-runner`。
 
 ## Architecture & Data Flow
 
-- **加载链**：宿主 dsh loader 按插件包 `main` 字段 import TS 源码（如 `packages/dsh-guided-goal/package.json` → `main: "src/index.ts"`）→ 调用 `apply(ctx)`。
+- **加载链**：宿主 dsh loader 按插件包 `main` 字段 import 插件入口 → 调用 `apply(ctx)`。TS 源码入口（`main: "src/index.ts"`，如 `packages/dsh-guided-goal`）依赖 Node 原生 type-stripping，**只在 `link:` 安装下可用**——实体安装（git/npm/tarball，落盘于 profile 的 node_modules）会被 Node 以 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING` 拒绝，宿主只报静默的 `failed to import`。需要支持实体安装的插件必须以 JS 为入口（见 `packages/dsh-llm-fallback` 的 dist 方案）。
 - **插件契约三符号**（见 `packages/dsh-guided-goal/src/index.ts`）：
   - `export const name`——loader 依赖的字符串标识，必须与插件语义一致；
   - `export function apply(ctx: Context)`——cordis 安装钩子，在此注册能力/副作用；
@@ -24,7 +24,8 @@ dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/c
 ## Development Commands
 
 ```sh
-pnpm install        # 安装依赖并自动执行 lefthook install（prepare 脚本）
+pnpm install        # 安装依赖并自动执行 lefthook install（根 prepare）；
+                    # 同时会执行 workspace 成员的 prepare（构建式插件自动产出 dist）
 pnpm lint           # ESLint 检查（lint:fix 自动修）
 pnpm format         # Prettier 写入（format:check 只校验）
 pnpm typecheck      # 递归各包 tsc --noEmit
@@ -54,7 +55,7 @@ pnpm test           # vitest run（集中在根，子包无 test 脚本）
 - Node ≥22（`engines`），包管理器锁定 pnpm 11（`packageManager` 字段），勿用 npm/yarn。
 - **纯 TypeScript**：源码与工具链配置均为 `.ts`（`scripts/*.ts` 由 tsx 运行，`eslint.config.ts` 由 ESLint 加载）；仓库内无 `.js`/`.mjs` 源文件。
 - TypeScript 锁 5.x 稳定线——typescript-eslint 8 的 peer 范围是 `<6.1.0`，勿升级 TS 7。
-- 插件禁止引入构建步骤；`dist`、`coverage` 等产物目录已入 `.gitignore`。
+- 插件默认禁止引入构建步骤；`dist`、`coverage` 等产物目录已入 `.gitignore`。**例外**：`dsh-llm-fallback` 为构建式发行（esbuild 打包 `dist/index.js`，`main` 指 dist，`prepare`/`prepack` 自动构建）——因为 Node 拒绝对 realpath 位于 node_modules 之下的 `.ts` 文件做 type-stripping（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`），TS 源码入口在 git/npm/tarball 实体安装下必然加载失败；其他 TS 插件如需支持实体安装，照此模式改造（构建依赖 esbuild、运行时依赖放 `dependencies`——pnpm 对 git 依赖不保证安装 devDeps；git 安装的消费方还需在 allowBuilds 放行且 pnpm 要求 sha 全形态键，详见 dsh-llm-fallback README）。
 - remote origin：`github:lzhida/dsh-plugins-workspace`（push 操作留给用户）。
 - 编辑器（如 Zed）的 ESLint 行内提示若不识别 `eslint.config.ts`，属编辑器集成限制；CLI 门禁 `pnpm lint` 始终权威。
 
@@ -70,7 +71,7 @@ pnpm test           # vitest run（集中在根，子包无 test 脚本）
 
 ### E2E（Web UI 加载级验证）
 
-- 命令：`npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts`（默认验证 dsh-guided-goal）；验证任意插件：追加 `-- packages/<name>/src/index.ts`（可传多个）
+- 命令：`npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts`（默认验证 dsh-guided-goal）；验证任意插件：追加 `-- packages/<name>/src/index.ts`（可传多个）。构建式插件（`package.json` 有 `scripts.build`）安装前运行器自动 `pnpm run build`
 - 机制：运行器走真实 dsh——全局 `~/.dsh` + 独立 profile（默认 `e2e`，**缺失时自动从官方 web 模板引导**；profile 隔离插件列表，模型凭证全局共享）以 `dsh plugin add link:<包目录>` 装入 profile——包内 `dsh.bundle.patch`（cordis.patch.yml 的 `- insert` 行）使其自动激活为 profile 层，无需 overlay 注入
 - 三项断言：① 进程输出出现插件加载日志——**契约：插件 `apply` 时须打印 `[name] ` 前缀格式的日志行**（如 `[guided-goal] plugin loaded`），e2e 按该结构化格式匹配，路径中出现裸包名不算 ② Web 服务端口可访问 ③ 若捕获到带 token 的 UI URL 则页面须返回 <400；结束卸载被测插件、taskkill 进程树并恢复 profile 干净态
 - 与本机已运行的 dsh 实例互不干扰：profile 隔离插件列表（不触碰默认 profile），默认端口 3865——**3080 是上游默认，3865 只是本机现状产物**（本机 3080 被已运行实例占用）；新机器 3080 空闲时可回归 `E2E_PORT=3080` 或改回默认值
