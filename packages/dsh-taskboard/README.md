@@ -144,8 +144,8 @@ pnpm test
 e2e(走真实 dsh Web UI 验证,手工 CLI 流程见 skill §5):
 
 ```sh
-pnpm dsh plugin --profile e2e add link:<仓库绝对路径>/packages/dsh-taskboard   # link: 必须绝对路径
-pnpm dsh --profile e2e --no-open --port 3865
+pnpm dsh plugin --profile test add link:<仓库绝对路径>/packages/dsh-taskboard   # link: 必须绝对路径
+pnpm dsh --profile test --no-open --port 3865
 ```
 
 ## 教学版 vs 原版对比

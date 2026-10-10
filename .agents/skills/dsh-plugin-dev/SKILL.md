@@ -98,28 +98,30 @@ export function apply(ctx: Context): void {
 
 要点：注册 disposer 自动附着到插件（卸载即注销）；`parameters` 规约转 JSON Schema 并在 execute 前校验；组合中需有 `@deepseek-ai/dsh-system-prompt` / `@deepseek-ai/dsh-tools` 提供方，否则 PENDING。
 
-## 5. e2e 自验（真实 dsh 实例，手工 CLI 编排）
+## 5. e2e 自验（真实 dsh 实例，手工 CLI 编排，统一 `test` profile）
 
-e2e **无专用脚本**：直接用 `pnpm dsh` 原生命令，在独立 profile 中编排一个真实 dsh Web 实例做「加载级」验证；真实效果由浏览器工具在同一实例上无缝接管（§5.3）。全程以仓库根为工作目录。
+e2e **无专用脚本**：直接用 `pnpm dsh` 原生命令，在独立的 **`test` profile** 中编排一个真实 dsh Web 实例做「加载级」验证；真实效果由浏览器工具在同一实例上无缝接管（§5.3）。全程以仓库根为工作目录，**所有涉及测试执行的地方一律使用 `test` profile**。
 
 ### 5.1 编排流程（照抄即可）
 
 ```sh
 # 0) 预检：默认端口 3865 空闲（3080 是上游默认，本机被占）；全局 ~/.dsh 已存在
-# 1) profile 引导（仅首次；约 30-60s；命令非零退出但 profile 目录已生成 = 成功）
-pnpm dsh --profile e2e --from-default-profile web
+# 0.1) 复用已有 test profile 前核查无残留：profile 的 package.json（dependencies 与
+#      dsh.profile.bundles）及 cordis.patch.yml 不应有上次被测插件，有则先执行步骤 5 清理
+# 1) profile 引导（仅首次；约 30-60s；命令非零退出但 profile 目录已生成 = 成功；test profile 已存在则跳过）
+pnpm dsh --profile test --from-default-profile web
 # 2) 构建式插件预构建（package.json 有 scripts.build 的包，如 dsh-llm-fallback）：
 #    link: 安装不触发任何生命周期脚本（pnpm 对 link: 不跑 prepare），
 #    dist 缺失时宿主只报静默的 failed to import
 pnpm --filter <pkg-name> build
 # 3) 安装被测插件（--profile 必须置于 plugin 子命令之后，否则 too many arguments；
 #    link: 后必须是绝对路径——相对路径按 pnpm 语义解析到 profile 目录而非 CWD）
-pnpm dsh plugin --profile e2e add link:<仓库绝对路径>/packages/<name>
-#    临时插件同理：pnpm dsh plugin --profile e2e add link:<仓库绝对路径>/.agents/tmp/<kebab>
+pnpm dsh plugin --profile test add link:<仓库绝对路径>/packages/<name>
+#    临时插件同理：pnpm dsh plugin --profile test add link:<仓库绝对路径>/.agents/tmp/<kebab>
 # 4) 启动 Web UI（进程前台长跑即保活；带 token 的 UI 地址 banner 可能 40s+ 才打印）
-pnpm dsh --profile e2e --no-open --port 3865
+pnpm dsh --profile test --no-open --port 3865
 # 5) 断言通过、浏览器验证完成后，结束进程（Ctrl/C 或杀进程树）并清理
-pnpm dsh plugin --profile e2e remove <pkg-name>
+pnpm dsh plugin --profile test remove <pkg-name>
 ```
 
 ### 5.2 三项断言（加载级）
@@ -136,12 +138,12 @@ pnpm dsh plugin --profile e2e remove <pkg-name>
 2. **插件面板**：设置 → 插件 →「已安装」分组中目标插件显示「已启用」；
 3. **真实调用**：新会话发自然任务（需要专测某工具时在任务里点名该工具），发送后等响应，展开「N 次工具调用」核查参数；
 4. **轨迹核查（比 UI 可靠）**：从 `~/.dsh/sessions/--<cwd-dir>--/session-*/session.v3.jsonl.zstd` 流式解压（Node `zstandard` 多帧流式读，`decompress()` 只出首帧），提取 `tool/call` 的 arguments 逐项核查；
-5. **纯净 profile 对比法**（排除 hindsight 记忆污染）：记忆会把过往成功经验注入新会话——验证「默认行为」必须用无记忆环境。建独立 profile（`pnpm dsh --profile <name> --from-default-profile web` 引导 + add 被测包），跑零工具暗示的任务，从该 profile 轨迹核实工具选择；
+5. **纯净 profile 对比法**（排除 hindsight 记忆污染）：记忆会把过往成功经验注入新会话——验证「默认行为」必须用无记忆环境。建独立 profile（`pnpm dsh --profile <name> --from-default-profile web` 引导 + add 被测包；`<name>` 须另起名，勿复用主测试 profile `test`），跑零工具暗示的任务，从该 profile 轨迹核实工具选择；
 6. **提示词契约**：description/section 等引导文案是行为定义，测试里加「存在性断言」（如 `toContain('Do NOT shell out')`）防回归删除。
 
 ### 5.4 注意事项
 
-- **profile 隔离**：profile 只隔离**插件列表**，`DSH_HOME` 共享全局 `~/.dsh`（模型凭证不隔离）；不触碰默认 profile 与已运行实例。**不要在 default profile 上跑 e2e**。
+- **profile 隔离**：profile 只隔离**插件列表**，`DSH_HOME` 共享全局 `~/.dsh`（模型凭证不隔离）；不触碰默认 profile 与已运行实例。**e2e 一律在 `test` profile 上执行，不要在 default profile 上跑**。
 - **清理义务**：profile 只隔离插件列表——测完必须 `plugin remove` 被测插件并结束实例（§5.1 步骤 5），残留会进入后续会话。
 - **agent 自驱**：dsh agent 会话内可用后台 job 方式执行同一流程（步骤 4 后台长跑 + 浏览器/MCP 工具接管验证），步骤与 §5.1 完全一致；清理同样必须显式执行。
 - **permission presets 互斥**（仅非禁闭执行器类插件）：被测插件独占 `ctx.shell` 且非 confining 时，permission presets 构造期检查抛错（要求禁闭执行器）——在该 profile 的 `cordis.patch.yml` 顶层追加 `- id: permission` + `  disabled: true`（附注释行说明缘由），测完剥离恢复官方 permission 栈。
