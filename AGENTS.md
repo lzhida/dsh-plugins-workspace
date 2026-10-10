@@ -71,8 +71,8 @@ pnpm test           # vitest run（集中在根，子包无 test 脚本）
 
 ### E2E（Web UI 加载级验证）
 
-- **无专用脚本**：按 `.agents/skills/dsh-plugin-dev/SKILL.md` §5 的手工 CLI 流程编排——`pnpm dsh --profile e2e --from-default-profile web` 引导（仅首次）→ 构建式插件先 `pnpm --filter <pkg> build` → `pnpm dsh plugin --profile e2e add link:<仓库绝对路径>/packages/<name>`（**`--profile` 必须置于 `plugin` 子命令之后；`link:` 后必须是绝对路径——相对路径按 pnpm 语义解析到 profile 目录**）→ `pnpm dsh --profile e2e --no-open --port 3865` 启动 → 断言 → `plugin remove` 清理
-- 机制：全局 `~/.dsh` + 独立 profile（默认 `e2e`）启动真实 dsh；profile 隔离插件列表（不触碰默认 profile 与已运行实例），模型凭证全局共享；包内 `dsh.bundle.patch`（cordis.patch.yml 的 `- insert` 行）使 `link:` 安装的插件自动激活为 profile 层
+- **无专用脚本**：按 `.agents/skills/dsh-plugin-dev/SKILL.md` §5 的手工 CLI 流程编排——`pnpm dsh --profile test --from-default-profile web` 引导（仅首次）→ 构建式插件先 `pnpm --filter <pkg> build` → `pnpm dsh plugin --profile test add link:<仓库绝对路径>/packages/<name>`（**`--profile` 必须置于 `plugin` 子命令之后；`link:` 后必须是绝对路径——相对路径按 pnpm 语义解析到 profile 目录**）→ `pnpm dsh --profile test --no-open --port 3865` 启动 → 断言 → `plugin remove` 清理
+- 机制：全局 `~/.dsh` + 独立 profile（统一 `test`）启动真实 dsh；profile 隔离插件列表（不触碰默认 profile 与已运行实例），模型凭证全局共享；包内 `dsh.bundle.patch`（cordis.patch.yml 的 `- insert` 行）使 `link:` 安装的插件自动激活为 profile 层
 - 三项断言：① 实例输出出现插件加载日志——**契约：插件 `apply` 时须打印 `[name] ` 前缀格式的日志行**（如 `[guided-goal] plugin loaded`），按该结构化格式匹配，路径中出现裸包名不算 ② Web 服务端口可访问 ③ 带 token 的 UI URL 页面返回 <400；结束后结束进程并 `plugin remove` 被测插件，恢复 profile 干净态
 - 默认端口 3865——**3080 是上游默认，3865 只是本机现状产物**（本机 3080 被已运行实例占用）；新机器 3080 空闲时可改用 `--port 3080`
 - **浏览器级验证（Web 效果）**：保持实例存活，用 chrome-devtool MCP（或任意浏览器工具）打开 banner 打印的 tokened URL，验证：① 页面健康（标题 DeepSeek Harness、console 无错误）② 设置 → 插件 → 插件列表中目标插件显示「已启用」③ 工具实际调用：凭证全局共享，同 profile 发会话任务即可验证到这一层
