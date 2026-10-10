@@ -22,7 +22,9 @@ interface RecordedCommand {
   name: string;
   description?: string;
   input?: { hint?: string };
-  handler(input: CommandHandlerInput): { kind: string; text?: string };
+  handler(
+    input: CommandHandlerInput,
+  ): { kind: string; text?: string } | Promise<{ kind: string; text?: string }>;
 }
 
 type RecordedGuard = (execution: {
@@ -35,27 +37,40 @@ interface SettingsStub {
   describe(): Array<{ value?: unknown }>;
 }
 
-/** planMode 服务的最小假体:get 可编程,set 记录调用序。 */
-interface PlanModeStub {
-  get(agent: unknown): { active: boolean; pending?: boolean };
-  set(agent: unknown, active: boolean): string;
+interface CommandResultStub {
+  kind: string;
+  text?: string;
+}
+
+/** plan-mode /plan 命令的最小假体配置。 */
+interface PlanCommandStub {
+  handler: (
+    invocation: Record<string, unknown>,
+  ) => CommandResultStub | Promise<CommandResultStub>;
 }
 
 /** 最小 cordis Context 假体:effect 立即执行,register/guard 记录并返回 disposer。 */
 function stubCtx(
   options: {
     settings?: SettingsStub;
-    planMode?: PlanModeStub;
+    /** 'plan' 投影视图;缺省 = 投影键不存在(plan-mode 未挂载) */
+    planProjection?: { active: boolean; pending?: boolean };
+    /** snapshot 读取抛错(注册表不可用) */
+    projectionThrows?: boolean;
+    /** plan-mode 注册的 /plan 命令;缺省 = 未注册 */
+    planCommand?: PlanCommandStub;
   } = {},
 ): {
   ctx: Context;
   registered: RecordedCommand[];
   guards: RecordedGuard[];
   cleanups: Array<() => void>;
+  planInvocations: Array<Record<string, unknown>>;
 } {
   const registered: RecordedCommand[] = [];
   const guards: RecordedGuard[] = [];
   const cleanups: Array<() => void> = [];
+  const planInvocations: Array<Record<string, unknown>> = [];
   const ctx = {
     effect(fn: () => (() => void) | void): void {
       const cleanup = fn();
@@ -66,6 +81,18 @@ function stubCtx(
         registered.push(def);
         return () => {};
       },
+      // plan-goal 转调 plan-mode 的 /plan 命令:find 的 agent 参数仅用于
+      // 解析 agent 级命令影子,假体按名字匹配并记录转调。
+      find(_agent: unknown, cmdName: string) {
+        const planCommand = options.planCommand;
+        if (cmdName !== 'plan' || !planCommand) return undefined;
+        return {
+          handler: (invocation: Record<string, unknown>) => {
+            planInvocations.push(invocation);
+            return planCommand.handler(invocation);
+          },
+        };
+      },
     },
     tools: {
       guard(guard: RecordedGuard): () => void {
@@ -73,10 +100,22 @@ function stubCtx(
         return () => {};
       },
     },
+    sessionProjections: {
+      snapshot() {
+        if (options.projectionThrows) {
+          throw new Error('registry unavailable');
+        }
+        return {
+          asOfSeq: 0,
+          values: options.planProjection
+            ? { plan: options.planProjection }
+            : {},
+        };
+      },
+    },
     ...(options.settings === undefined ? {} : { settings: options.settings }),
-    ...(options.planMode === undefined ? {} : { planMode: options.planMode }),
   } as unknown as Context;
-  return { ctx, registered, guards, cleanups };
+  return { ctx, registered, guards, cleanups, planInvocations };
 }
 
 describe('dsh-plan-goal 契约', () => {
@@ -84,8 +123,8 @@ describe('dsh-plan-goal 契约', () => {
     expect(name).toBe('dsh-plan-goal');
   });
 
-  it('inject 声明依赖 commands 与 tools(planMode 不注入,使用时探测)', () => {
-    expect(inject).toEqual(['commands', 'tools']);
+  it('inject 声明依赖 commands、tools 与 sessionProjections(guard 的状态源)', () => {
+    expect(inject).toEqual(['commands', 'tools', 'sessionProjections']);
   });
 
   it('装载时输出 [dsh-plan-goal] plugin loaded(e2e 契约)', () => {
@@ -153,33 +192,27 @@ describe('dsh-plan-goal 契约', () => {
 });
 
 describe('dsh-plan-goal 命令 handler', () => {
-  it('空草稿返回 error 用法提示且不 set/不 steer', () => {
-    const calls: string[] = [];
-    const { ctx, registered } = stubCtx({
-      planMode: {
-        get: () => ({ active: false }),
-        set: () => {
-          calls.push('set');
-          return 'queued';
-        },
-      },
+  it('空草稿返回 error 用法提示且不转调 /plan、不 steer', async () => {
+    const { ctx, registered, planInvocations } = stubCtx({
+      planCommand: { handler: () => ({ kind: 'success', text: 'on' }) },
     });
     apply(ctx);
-    const steer = vi.fn((message: unknown) => {
-      calls.push('steer');
-      return message;
+    const steer = vi.fn();
+    const result = await registered[0].handler({
+      agent: { steer },
+      rawInput: '   ',
     });
-    const result = registered[0].handler({ agent: { steer }, rawInput: '   ' });
     expect(result.kind).toBe('error');
     expect(result.text).toContain('用法');
-    expect(calls).toEqual([]);
+    expect(planInvocations).toHaveLength(0);
+    expect(steer).not.toHaveBeenCalled();
   });
 
-  it('planMode 缺失返回 error 提示且不 set/不 steer(不绑架宿主)', () => {
+  it('/plan 命令不存在(plan-mode 未挂载)返回 error 提示且不 steer', async () => {
     const { ctx, registered } = stubCtx();
     apply(ctx);
     const steer = vi.fn();
-    const result = registered[0].handler({
+    const result = await registered[0].handler({
       agent: { steer },
       rawInput: '重构鉴权模块',
     });
@@ -188,14 +221,13 @@ describe('dsh-plan-goal 命令 handler', () => {
     expect(steer).not.toHaveBeenCalled();
   });
 
-  it('非空草稿先 set(true) 再 steer 协议消息并返回 success', () => {
+  it('非空草稿先转调 /plan 开模式再 steer 协议消息并返回 success', async () => {
     const calls: string[] = [];
-    const { ctx, registered } = stubCtx({
-      planMode: {
-        get: () => ({ active: false }),
-        set: () => {
-          calls.push('set');
-          return 'queued';
+    const { ctx, registered, planInvocations } = stubCtx({
+      planCommand: {
+        handler: () => {
+          calls.push('plan');
+          return { kind: 'success', text: 'Plan mode on.' };
         },
       },
     });
@@ -204,13 +236,16 @@ describe('dsh-plan-goal 命令 handler', () => {
       calls.push('steer');
       return message;
     });
-    const result = registered[0].handler({
+    const result = await registered[0].handler({
       agent: { steer },
       rawInput: ' 重构鉴权模块 ',
     });
     expect(result.kind).toBe('success');
     expect(result.text).toContain('exit_plan_mode');
-    expect(calls).toEqual(['set', 'steer']);
+    expect(calls).toEqual(['plan', 'steer']);
+    expect(planInvocations).toHaveLength(1);
+    // 转调携带空消息:/plan 只负责开模式,协议消息由 plan-goal 自己 steer
+    expect(planInvocations[0].rawInput).toBe('');
     expect(steer).toHaveBeenCalledTimes(1);
     const message = steer.mock.calls[0][0] as {
       role: string;
@@ -228,6 +263,22 @@ describe('dsh-plan-goal 命令 handler', () => {
     expect(message.content[0]?.text).toContain('Keep planning');
     expect(message.content[0]?.text).toContain('重构鉴权模块');
   });
+
+  it('/plan 转调返回非 success 时透传且不 steer', async () => {
+    const { ctx, registered } = stubCtx({
+      planCommand: {
+        handler: () => ({ kind: 'error', text: 'plan unavailable' }),
+      },
+    });
+    apply(ctx);
+    const steer = vi.fn();
+    const result = await registered[0].handler({
+      agent: { steer },
+      rawInput: '重构鉴权模块',
+    });
+    expect(result).toEqual({ kind: 'error', text: 'plan unavailable' });
+    expect(steer).not.toHaveBeenCalled();
+  });
 });
 
 describe('dsh-plan-goal create_goal 守卫', () => {
@@ -236,84 +287,65 @@ describe('dsh-plan-goal create_goal 守卫', () => {
     return { name, agent } as unknown as ToolExecution;
   }
 
+  const agentOf = () => ({ session: {} });
+
   it('非 create_goal 调用一律放行(含 plan-active 下的 update_goal)', () => {
-    const { ctx } = stubCtx();
+    const { ctx } = stubCtx({ planProjection: { active: true } });
     apply(ctx);
     const guard = createPlanGoalGuard(ctx, '拒绝');
-    expect(guard(execOf('update_goal', { session: {} }))).toBeUndefined();
-    expect(guard(execOf('exit_plan_mode', { session: {} }))).toBeUndefined();
+    expect(guard(execOf('update_goal', agentOf()))).toBeUndefined();
+    expect(guard(execOf('exit_plan_mode', agentOf()))).toBeUndefined();
   });
 
   it('无调用 agent 时放行(无会话上下文可读)', () => {
-    const { ctx } = stubCtx();
+    const { ctx } = stubCtx({ planProjection: { active: true } });
     apply(ctx);
     const guard = createPlanGoalGuard(ctx, '拒绝');
     expect(guard(execOf('create_goal'))).toBeUndefined();
   });
 
-  it('planMode 服务缺失时放行(fail-open,不绑架宿主)', () => {
+  it('plan 投影键缺席(plan-mode 未挂载)时放行(fail-open)', () => {
     const { ctx } = stubCtx();
     apply(ctx);
     const guard = createPlanGoalGuard(ctx, '拒绝');
-    expect(guard(execOf('create_goal', { session: {} }))).toBeUndefined();
+    expect(guard(execOf('create_goal', agentOf()))).toBeUndefined();
   });
 
   it('plan-active 期间拒绝 create_goal 并返回可执行理由', () => {
-    const { ctx } = stubCtx({
-      planMode: {
-        get: () => ({ active: true }),
-        set: () => 'noop',
-      },
-    });
+    const { ctx } = stubCtx({ planProjection: { active: true } });
+    apply(ctx);
     const guard = createPlanGoalGuard(ctx, '拒绝');
-    expect(guard(execOf('create_goal', { session: {} }))).toBe('拒绝');
+    expect(guard(execOf('create_goal', agentOf()))).toBe('拒绝');
   });
 
   it('切换 pending(未落盘)期间同样拒绝 create_goal', () => {
     const { ctx } = stubCtx({
-      planMode: {
-        get: () => ({ active: false, pending: true }),
-        set: () => 'queued',
-      },
+      planProjection: { active: false, pending: true },
     });
+    apply(ctx);
     const guard = createPlanGoalGuard(ctx, '拒绝');
-    expect(guard(execOf('create_goal', { session: {} }))).toBe('拒绝');
+    expect(guard(execOf('create_goal', agentOf()))).toBe('拒绝');
   });
 
   it('计划非激活且无 pending 时放行(批准后同轮 create_goal 可通过)', () => {
-    const { ctx } = stubCtx({
-      planMode: {
-        get: () => ({ active: false }),
-        set: () => 'noop',
-      },
-    });
+    const { ctx } = stubCtx({ planProjection: { active: false } });
+    apply(ctx);
     const guard = createPlanGoalGuard(ctx, '拒绝');
-    expect(guard(execOf('create_goal', { session: {} }))).toBeUndefined();
+    expect(guard(execOf('create_goal', agentOf()))).toBeUndefined();
   });
 
-  it('planMode.get 抛错时放行(fail-open,guard 是保险丝非主防御)', () => {
-    const { ctx } = stubCtx({
-      planMode: {
-        get: () => {
-          throw new Error('projection not ready');
-        },
-        set: () => 'noop',
-      },
-    });
+  it('投影读取抛错时放行(fail-open,guard 是保险丝非主防御)', () => {
+    const { ctx } = stubCtx({ projectionThrows: true });
+    apply(ctx);
     const guard = createPlanGoalGuard(ctx, '拒绝');
-    expect(guard(execOf('create_goal', { session: {} }))).toBeUndefined();
+    expect(guard(execOf('create_goal', agentOf()))).toBeUndefined();
   });
 
   it('apply 注册的守卫拦截 plan-active 下的 create_goal', () => {
-    const { ctx, guards } = stubCtx({
-      planMode: {
-        get: () => ({ active: true }),
-        set: () => 'queued',
-      },
-    });
+    const { ctx, guards } = stubCtx({ planProjection: { active: true } });
     apply(ctx);
     expect(guards).toHaveLength(1);
-    expect(guards[0](execOf('create_goal', { session: {} }))).toContain(
+    expect(guards[0](execOf('create_goal', agentOf()))).toContain(
       'create_goal',
     );
   });

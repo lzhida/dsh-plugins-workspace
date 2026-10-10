@@ -1,16 +1,15 @@
 import type { Context } from '@deepseek-ai/cordis';
 // 引入包内类型即激活其 cordis Context declaration merging(ctx.commands /
-// ctx.tools / ctx.planMode 的类型投影);运行时由宿主提供,仅 import type
+// ctx.tools 的类型投影);运行时由宿主提供,仅 import type
 import type {} from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-commands';
-import type {} from '@deepseek-ai/dsh-plan-mode';
 import type {} from '@deepseek-ai/dsh-tools';
 import Schema from '@deepseek-ai/schemastery';
-import { createPlanGoalGuard, probePlanMode } from './guard.ts';
+import { createPlanGoalGuard } from './guard.ts';
 import { buildPlanGoalMessage } from './protocol.ts';
 
 export const name = 'dsh-plan-goal';
-export const inject = ['commands', 'tools'];
+export const inject = ['commands', 'tools', 'sessionProjections'];
 
 /**
  * dsh-plan-goal:plan mode × goal 的缝合(stitch-in)插件,不融合两侧:
@@ -21,10 +20,14 @@ export const inject = ['commands', 'tools'];
  *   Boundaries / Stop conditions),批准前 create_goal 被 guard 拒绝。
  * - create_goal 防抢跑闸:plan-active / pending 期间拒绝 create_goal,把
  *   「跳过 plan review 直接进入 goal 轮」的路径封死(唯一放行路径是批准后
- *   同轮创建);fail-open——plan-mode 缺失或探测异常时放行,不绑架宿主。
+ *   同轮创建);状态经顶层非隔离的 session projection('plan' 键)读取,
+ *   键缺席(plan-mode 未挂载)或读失败时放行,不绑架宿主。
  *
- * planMode 不进 inject(PTC 惯例,避免 hostage plugins):使用时结构化探测,
- * 缺失时命令返回可操作错误、guard 退化为 no-op,插件照常加载。
+ * planMode 服务本身被 agent preset 的 planning isolate 组隔离,profile 层
+ * 插件无法直接触达;因此开计划模式走 ctx.commands.find(agent, 'plan') 转调
+ * plan-mode 自身注册的 /plan 命令(其 handler 闭包持有服务),读状态走
+ * session projection——两条路径都是宿主公开 API。sessionProjections 声明
+ * 进 inject(dsh 读取方的官方要求;该服务在 dsh-base bundle 恒在)。
  *
  * 配置(dsh 静态 Config 声明):`Config` 导出名声明 schema,cordis/loader
  * 投影成设置表单;apply 第二参收到已校验普通值。三项均非 volatile,变更时
@@ -152,18 +155,35 @@ export function apply(
         name: 'plan-goal',
         description: t.planGoalDescription,
         input: { hint: t.planGoalHint },
-        handler: ({ agent, rawInput }) => {
+        handler: async ({ agent, rawInput }) => {
           const input = rawInput.trim();
           if (input.length === 0) {
             return { kind: 'error', text: t.planGoalUsage };
           }
-          const planMode = probePlanMode(ctx);
-          if (!planMode) {
+          // 开计划模式必须经 plan-mode 自身注册的 /plan 命令:planMode 服务
+          // 在 agent preset 的 isolate 组内,profile 层直接调用会抛
+          // cannot get property ... without inject。转调其 handler 等价于
+          // 用户运行 /plan——由它完成 set(agent, true)(无消息则不 steer)。
+          // find 的 agent 参数用于解析 agent 级命令影子;找不到即 plan-mode
+          // 未挂载(如 minimal preset),给出可操作错误。
+          const planCommand = ctx.commands.find(agent, 'plan');
+          if (!planCommand) {
             return { kind: 'error', text: t.planModeMissing };
           }
-          // set 必须先于 steer:计划模式选择先进入 pending,保证下一个请求
-          // 的组装携带 plan:policy 引导段,协议消息才能与之一并生效。
-          planMode.set(agent, true);
+          // CommandId 等字段 plan-mode 的 handler 不读取,以最小形状转调;
+          // dispatcher 契约允许 handler 返回 Promise,这里 await 兜住两种形态。
+          const outcome = await planCommand.handler({
+            commandId: 'plan-goal:/plan',
+            agent,
+            rawInput: '',
+            attachments: [],
+            signal: new AbortController().signal,
+          } as unknown as Parameters<typeof planCommand.handler>[0]);
+          if (outcome.kind !== 'success') {
+            return outcome;
+          }
+          // set 先于 steer:计划模式选择先进入 pending,保证下一个请求的组装
+          // 携带 plan:policy 引导段,协议消息才能与之一并生效。
           agent.steer(buildPlanGoalMessage(input, language));
           return { kind: 'success', text: t.planGoalSuccess };
         },
