@@ -6,8 +6,10 @@
  * （包内 `dsh.bundle.patch` 声明使其自动进入 profile 层栈）→ 在全局 ~/.dsh
  * 下以独立 profile 启动 `dsh web`（profile 隔离插件列表，模型凭证共享）→
  * 三断言（插件加载日志 / 端口可达 / UI 页面）→
- * 打印 tokened URL 并按 E2E_KEEP_MS 保活（浏览器级检查由会话内 MCP 执行）。
+ * 打印 tokened URL 并按 E2E_KEEP_MS 保活（浏览器级检查由会话内 MCP 执行）→
  * 结束时卸载被测插件，profile 恢复干净态。
+ * 构建式插件（package.json 有 scripts.build，如 main 指向 dist）安装前自动
+ * `pnpm run build`——link: 安装不触发生命周期脚本，dist 需预先产出。
  *
  * 用法（仓库根目录执行）：
  *   npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts                                     # 默认验证 packages/dsh-guided-goal
@@ -120,15 +122,39 @@ for (const p of plugins) {
 }
 
 // 安装目标 = 插件包目录(入口文件上两级),包名取自其 package.json
-const pluginPkgs: { dir: string; name: string }[] = [];
+const pluginPkgs: { dir: string; name: string; hasBuild: boolean }[] = [];
 for (const p of plugins) {
   const dir = path.dirname(path.dirname(p));
   const manifest = JSON.parse(
     await readFile(path.join(dir, 'package.json'), 'utf8'),
   ) as {
     name?: string;
+    scripts?: Record<string, string>;
   };
-  pluginPkgs.push({ dir, name: manifest.name ?? path.basename(dir) });
+  pluginPkgs.push({
+    dir,
+    name: manifest.name ?? path.basename(dir),
+    hasBuild: typeof manifest.scripts?.build === 'string',
+  });
+}
+
+// 构建式插件预构建:main 指向 dist 的插件,`link:` 安装不触发任何生命周期
+// 脚本(pnpm 对 link: 不跑 prepare),dist 缺失会导致宿主 import 失败。
+// 包内有 scripts.build 就先构建,幂等可重复。
+for (const pkg of pluginPkgs) {
+  if (!pkg.hasBuild) continue;
+  console.log(`[e2e] 构建插件: ${pkg.name} (pnpm run build)`);
+  const build = spawnPnpmSync(['run', 'build'], {
+    cwd: pkg.dir,
+    stdio: 'inherit',
+  });
+  if (build.status !== 0) {
+    console.error(
+      `[e2e] 插件构建失败: ${pkg.name}(exit=${build.status ?? build.signal})`,
+    );
+    process.exit(1);
+  }
+  console.log(`[e2e] ✓ 已构建: ${pkg.name}`);
 }
 
 // 端口占用预检：目标端口已有监听会造成断言假阳性
