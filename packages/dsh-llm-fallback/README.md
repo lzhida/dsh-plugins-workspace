@@ -39,7 +39,7 @@ dsh plugin add link:packages/dsh-llm-fallback
 
 包内 `dsh.bundle.patch` 声明使其自动进入 profile 层,无需 overlay 注入。
 
-注意:`link:` 安装**不触发任何生命周期脚本**(pnpm 对 link: 不跑 prepare),dist 必须预先存在。根 `pnpm install` 已自动构建;单独重建用 `pnpm --filter @lzhida/dsh-llm-fallback build`。e2e 运行器(`.agents/skills/dsh-plugin-dev/scripts/test-e2e.ts`)检测到 `scripts.build` 也会自动构建。
+注意:`link:` 安装**不触发任何生命周期脚本**(pnpm 对 link: 不跑 prepare),dist 必须预先存在。根 `pnpm install` 已自动构建;单独重建用 `pnpm --filter @lzhida/dsh-llm-fallback build`(插件 e2e 手工流程见 skill §5)。
 
 ### Git 安装(外部用户)
 

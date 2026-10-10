@@ -2,7 +2,7 @@
 
 [English](./README.en.md) | 简体中文
 
-[dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)(DeepSeek Harness)插件集合——TypeScript + cordis 插件 monorepo。插件以 TS 源码形态被 dsh loader 直接加载,无构建步骤。
+[dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)(DeepSeek Harness)插件集合——TypeScript + cordis 插件 monorepo。插件默认以 TS 源码形态被 dsh loader 直接加载,无构建步骤(例外:`@lzhida/dsh-llm-fallback` 构建式发行,入口为 esbuild 打包的 dist)。
 
 > **纯 AI 开发**:本仓库的全部代码均由 AI 编码代理生成。
 
@@ -61,29 +61,6 @@
 
 **主动排除的能力**(教学复刻范围,非完整 1:1 移植):Web UI 看板、cron 调度器、worktree 隔离执行、外部会话自动同步、多仓库镜像、任务模板、图片附件。详见[包 README](./packages/dsh-taskboard/README.md)。
 
-### @lzhida/dsh-test-runner
-
-把 `.agents/skills/dsh-plugin-dev/scripts/test-e2e.ts` 的 e2e 编排能力拆为 5 个 `test_runner_*` agent 工具,供任意 dsh agent 在会话内调用(而非开发者手跑 shell 脚本)。基于真实 dsh `~/.dsh/profiles/<name>` 隔离 profile 启动 Web,跑三项断言(插件加载日志 / 端口可达 / tokened URL 页面),不污染当前 default profile 与已运行实例。
-
-**5 步法**:
-
-| 步骤 | 工具                          | 用途                                                                                        |
-| ---- | ----------------------------- | ------------------------------------------------------------------------------------------- |
-| 1    | `test_runner_review_profiles` | 审查 `~/.dsh/profiles/`,标记 test 用途 profile;`createIfMissing=true` 时按官方 web 模板新建 |
-| 2    | `test_runner_install`         | 把被测插件装入 test profile(自动维护 cordis.patch.yml 兼容 local executor)                  |
-| 3    | `test_runner_boot`            | 后台启动 `dsh web`,返回 `sessionId` + tokened URL;`ctx.effect` 卸载时强 kill                |
-| 4    | `test_runner_run_assertions`  | 轮询收集三项断言,**可重复调用直到就绪**                                                     |
-| 5    | `test_runner_cleanup`         | 显式 kill 进程 + 卸载被测插件,恢复 profile 干净态                                           |
-
-**核心特性**
-
-- **三种调用路径**:开发者 shell 直跑(`npx tsx .../test-e2e.ts`)/ 后台 job + 浏览器接管 / dsh agent 会话内 5 步法 — 选最贴合上下文的;
-- **可分步 / 可并发**:每个工具独立可调,agent 决定串行或并发的节奏,失败时按上下文灵活重试;
-- **profile 隔离 + 自动清理**:`test_runner_cleanup` 显式杀进程与卸载插件;不调用 cleanup 时,`ctx.effect` 卸载兜底;
-- **local executor 兼容**:自动按需给 profile 的 cordis.patch.yml 追加"禁用 permission presets"段(与 test-e2e.ts 行为一致);
-- **system-prompt section**:`tool:test-runner` order=2850,模型在调用工具前能看到 5 步法协议;
-- **审计清单(DoD 风格)**:加载日志契约 `[<name>]`、默认 port=3865、profile 隔离、cleanup 显式 — 全部 hard-coded 进工具 description。
-
 ## 安装
 
 前置:Node ≥ 22、pnpm 11、已安装 dsh。
@@ -97,12 +74,9 @@ pnpm dsh plugin --profile default add link:packages/dsh-obsidian
 
 # 任务看板(独立,10 个 taskboard_* 工具 + 代码级协议闸)
 pnpm dsh plugin --profile default add link:packages/dsh-taskboard
-
-# 插件 e2e 测试 agent 工具(独立,把 test-e2e 编排拆为 5 个 test_runner_* 工具)
-pnpm dsh plugin --profile default add link:packages/dsh-test-runner
 ```
 
-安装后在 dsh Web UI 的设置 → 插件中确认目标插件已启用:guided-goal 在会话输入框使用 `/guided-goal`;taskboard 在任意会话中由模型用 `taskboard_*` 工具集协作;test-runner 在任意会话中由模型用 `test_runner_*` 工具集驱动插件 e2e 测试,默认 profile 名 `e2e`、默认端口 3865。
+安装后在 dsh Web UI 的设置 → 插件中确认目标插件已启用:guided-goal 在会话输入框使用 `/guided-goal`;taskboard 在任意会话中由模型用 `taskboard_*` 工具集协作。
 
 ## 开发
 
@@ -115,7 +89,7 @@ pnpm test           # Vitest,全仓 src/**/*.test.ts
 ```
 
 - **纯 TypeScript**:插件无构建步骤,`package.json` 的 `main` 直接指向 `src/index.ts`,由宿主 dsh loader 加载;
-- **E2E**:运行器以独立 profile(默认 `e2e`,缺失时自动从官方 web 模板引导)启动真实 dsh 实例——插件列表按 profile 隔离,`DSH_HOME` 共享全局 `~/.dsh`(模型凭证不隔离);断言插件加载日志、Web 端口可达与认证链健康;可用 `E2E_PORT` / `E2E_TIMEOUT_MS` / `E2E_DSH_PROFILE` / `E2E_KEEP_MS` 调整行为(运行器见 `.agents/skills/dsh-plugin-dev/scripts/test-e2e.ts`,经 `npx tsx` 执行);
+- **E2E**:无专用脚本——按 [.agents/skills/dsh-plugin-dev/SKILL.md](./.agents/skills/dsh-plugin-dev/SKILL.md) §5 的手工 CLI 流程,以独立 profile(默认 `e2e`,缺失时从官方 web 模板引导)启动真实 dsh 实例;插件列表按 profile 隔离,`DSH_HOME` 共享全局 `~/.dsh`(模型凭证不隔离);断言 `[<name>]` 加载日志、端口可达与 tokened URL 页面健康,测完 `plugin remove` 清理;
 - **新增插件**:仿照 `packages/dsh-guided-goal/package.json` 建 `packages/<name>/` 即可,`pnpm-workspace.yaml` 自动收录;
 - **提交规范**:中文 Conventional Commits;开发走 `feat/*`、`fix/*` 分支合入 `dev`,验证后合入 `main`。
 

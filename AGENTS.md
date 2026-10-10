@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/cordis`）插件集合，pnpm workspaces 单层结构。插件默认以 TS 源码形态被宿主 dsh loader 直接加载——**没有构建步骤、不产出 dist**；唯一例外是 `packages/dsh-llm-fallback`（构建式发行，见下）。当前包含 `packages/dsh-guided-goal`、`packages/dsh-llm-fallback`、`packages/dsh-obsidian`、`packages/dsh-taskboard`、`packages/dsh-test-runner`。
+dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/cordis`）插件集合，pnpm workspaces 单层结构。插件默认以 TS 源码形态被宿主 dsh loader 直接加载——**没有构建步骤、不产出 dist**；唯一例外是 `packages/dsh-llm-fallback`（构建式发行，见下）。当前包含 `packages/dsh-guided-goal`、`packages/dsh-llm-fallback`、`packages/dsh-obsidian`、`packages/dsh-taskboard`。
 
 ## Architecture & Data Flow
 
@@ -45,7 +45,7 @@ pnpm test           # vitest run（集中在根，子包无 test 脚本）
 
 ## Important Files
 
-- `.agents/skills/dsh-plugin-dev/scripts/test-e2e.ts`——e2e 运行器（随 dsh-plugin-dev skill 分发）：真实 dsh Web UI 加载验证，支持任意插件路径参数
+- `.agents/skills/dsh-plugin-dev/SKILL.md`——插件开发/测试唯一 skill：脚手架、cordis 契约、defineTool、e2e 手工 CLI 流程（profile 引导 → 构建 → 安装 → 三断言 → 清理）与提交门禁
 - `lefthook.yml` + 根 `package.json` 的 `lint-staged` 块——钩子与暂存区门禁行为
 - `tsconfig.base.json` / `eslint.config.ts` / `.prettierrc.json`——质量门禁，改动需谨慎
 - `pnpm-workspace.yaml`——包收录 + `allowBuilds`；新依赖需要构建脚本时必须在此追加白名单（pnpm 11 默认拦截构建脚本）
@@ -71,10 +71,9 @@ pnpm test           # vitest run（集中在根，子包无 test 脚本）
 
 ### E2E（Web UI 加载级验证）
 
-- 命令：`npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts`（默认验证 dsh-guided-goal）；验证任意插件：追加 `-- packages/<name>/src/index.ts`（可传多个）。构建式插件（`package.json` 有 `scripts.build`）安装前运行器自动 `pnpm run build`
-- 机制：运行器走真实 dsh——全局 `~/.dsh` + 独立 profile（默认 `e2e`，**缺失时自动从官方 web 模板引导**；profile 隔离插件列表，模型凭证全局共享）以 `dsh plugin add link:<包目录>` 装入 profile——包内 `dsh.bundle.patch`（cordis.patch.yml 的 `- insert` 行）使其自动激活为 profile 层，无需 overlay 注入
-- 三项断言：① 进程输出出现插件加载日志——**契约：插件 `apply` 时须打印 `[name] ` 前缀格式的日志行**（如 `[guided-goal] plugin loaded`），e2e 按该结构化格式匹配，路径中出现裸包名不算 ② Web 服务端口可访问 ③ 若捕获到带 token 的 UI URL 则页面须返回 <400；结束卸载被测插件、taskkill 进程树并恢复 profile 干净态
-- 与本机已运行的 dsh 实例互不干扰：profile 隔离插件列表（不触碰默认 profile），默认端口 3865——**3080 是上游默认，3865 只是本机现状产物**（本机 3080 被已运行实例占用）；新机器 3080 空闲时可回归 `E2E_PORT=3080` 或改回默认值
-- 环境变量：`E2E_PORT`（3865）、`E2E_TIMEOUT_MS`（180000）、`E2E_DSH_PROFILE`（e2e）、`E2E_KEEP_MS`（0=断言后立即清理；>0 时保持实例存活 N ms 供浏览器验证，并自动等待/打印带 token 的 UI 地址——dsh 的 banner 可能耗 40s+ 才输出）
-- **浏览器级验证（Web 效果）**：`E2E_KEEP_MS=180000 npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts` → 用 chrome-devtool MCP（或任意浏览器工具）打开运行器打印的 tokened URL，验证：① 页面健康（标题 DeepSeek Harness、console 无错误）② 设置 → 插件 → 插件列表 → 「全局插件」分组中目标插件显示「已启用」③ 工具实际调用：凭证全局共享，同 profile 发会话任务即可验证到这一层
+- **无专用脚本**：按 `.agents/skills/dsh-plugin-dev/SKILL.md` §5 的手工 CLI 流程编排——`pnpm dsh --profile e2e --from-default-profile web` 引导（仅首次）→ 构建式插件先 `pnpm --filter <pkg> build` → `pnpm dsh plugin --profile e2e add link:<仓库绝对路径>/packages/<name>`（**`--profile` 必须置于 `plugin` 子命令之后；`link:` 后必须是绝对路径——相对路径按 pnpm 语义解析到 profile 目录**）→ `pnpm dsh --profile e2e --no-open --port 3865` 启动 → 断言 → `plugin remove` 清理
+- 机制：全局 `~/.dsh` + 独立 profile（默认 `e2e`）启动真实 dsh；profile 隔离插件列表（不触碰默认 profile 与已运行实例），模型凭证全局共享；包内 `dsh.bundle.patch`（cordis.patch.yml 的 `- insert` 行）使 `link:` 安装的插件自动激活为 profile 层
+- 三项断言：① 实例输出出现插件加载日志——**契约：插件 `apply` 时须打印 `[name] ` 前缀格式的日志行**（如 `[guided-goal] plugin loaded`），按该结构化格式匹配，路径中出现裸包名不算 ② Web 服务端口可访问 ③ 带 token 的 UI URL 页面返回 <400；结束后结束进程并 `plugin remove` 被测插件，恢复 profile 干净态
+- 默认端口 3865——**3080 是上游默认，3865 只是本机现状产物**（本机 3080 被已运行实例占用）；新机器 3080 空闲时可改用 `--port 3080`
+- **浏览器级验证（Web 效果）**：保持实例存活，用 chrome-devtool MCP（或任意浏览器工具）打开 banner 打印的 tokened URL，验证：① 页面健康（标题 DeepSeek Harness、console 无错误）② 设置 → 插件 → 插件列表中目标插件显示「已启用」③ 工具实际调用：凭证全局共享，同 profile 发会话任务即可验证到这一层
 - 前提：`@deepseek-ai/dsh` 在根 devDependencies；`pnpm-workspace.yaml` 的 `allowBuilds` 已批准其原生依赖（node-pty/koffi/protobufjs/@google/genai/dsh-subprocess-local），新增依赖需构建脚本时照此追加
