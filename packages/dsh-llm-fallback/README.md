@@ -34,7 +34,7 @@ dsh 0.2.0-rc.2 宿主加载 TS 插件走 Node 原生 type-stripping(cordis-plugi
 
 ```sh
 pnpm install                     # 仓库根;根 install 会执行包内 prepare 自动产出 dist
-dsh plugin add link:packages/dsh-llm-fallback
+pnpm dsh plugin add link:<仓库绝对路径>/packages/dsh-llm-fallback   # link: 必须绝对路径(相对路径解析到 profile 目录)
 ```
 
 包内 `dsh.bundle.patch` 声明使其自动进入 profile 层,无需 overlay 注入。
