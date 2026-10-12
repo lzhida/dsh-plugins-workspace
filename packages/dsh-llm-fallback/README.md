@@ -1,211 +1,159 @@
 # @zhidal/dsh-llm-fallback
 
-dsh-llm-fallback 插件:拦截 dsh 全局 LLM 调用,按 `fallbackChains` 在主模型失败时自动切换到下一个候选 `provider/model`,**对话不中断**。默认在官方 `@deepseek-ai/dsh-llm-retry` 重试预算耗尽(原本会直接把错误抛给 loop、结束轮次的位置)后才切换,作为同 provider 重试之后的第二道防线;也可配置为一次失败立即切换。
+[![npm version](https://img.shields.io/npm/v/@zhidal/dsh-llm-fallback)](https://www.npmjs.com/package/@zhidal/dsh-llm-fallback)
+[![license](https://img.shields.io/npm/l/@zhidal/dsh-llm-fallback)](./LICENSE)
 
-> 历史说明:本插件曾短期提取为独立仓库 `lzhida/dsh-llm-fallback`,现已回归 monorepo 并带上该仓库期间的 `fallbackWhen` 增强;独立仓库不再维护。
+dsh 的模型回退插件：拦截全局 LLM 调用，主模型失败时按候选链自动切换到下一个 `provider/model`，**对话不中断**。默认在官方 `@deepseek-ai/dsh-llm-retry` 同 provider 重试预算耗尽后才切换（第二道防线），也可配置为一次失败立即切换。
 
-## 适配版本
+## 目录
 
-| 组件     | 版本           | 说明                                                                                                                                                     |
-| -------- | -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 宿主 dsh | **0.2.0-rc.2** | `agent/request` 与 `agent/request-error` waterfall 在 rc.2 提供;`pnpm-workspace.yaml` 的 `minimumReleaseAgeExclude` 已放行                               |
-| 插件包   | 0.3.1          | 0.3.0 起 `fallbackChains` schema 升级为对象数组(带 `displayName` / `description`)+ 内嵌配置卡 + 构建式 dist;0.3.1 起 `@zhidal` scope 并发布 npm registry |
-| 发行形态 | 构建式 dist    | 入口为 esbuild 打包的 `dist/index.js`(内联运行时依赖);`prepare`/`prepack` 自动构建,详见下节                                                              |
+- [特性](#特性)
+- [工作原理](#工作原理)
+- [安装](#安装)
+- [配置](#配置)
+- [回退时机（fallbackWhen）](#回退时机fallbackwhen)
+- [失败码白名单](#失败码白名单)
+- [行为](#行为)
+- [已知限制](#已知限制)
+- [故障排查](#故障排查)
+- [开发](#开发)
+- [许可证](#许可证)
 
-## 版本历史
+## 特性
 
-| 版本  | 主要变化                                                                                                       |
-| ----- | -------------------------------------------------------------------------------------------------------------- |
-| 0.2.0 | 插件更名 `dsh-llm-fallback`(与官方 `dsh-llm-retry` 语义对仗);并入独立仓库期间的 `fallbackWhen` 增强            |
-| 0.3.0 | `fallbackChains` schema 升级为对象数组;设置面板内嵌配置卡(client bundle);入口切 esbuild 打包的 `dist/index.js` |
-| 0.3.1 | 包名改用 `@zhidal` scope 并发布 npm registry(registry 安装成为外部用户首选形态)                                |
+- 🔄 **自动回退**——失败码命中白名单且还有下一候选时，指数退避后切换并让 loop 重发请求，对 agent 完全透明
+- 🤝 **与官方重试正交**——默认先同 provider 重试（官方 `dsh-llm-retry`），预算耗尽再跨 provider 回退（本插件），两者可叠加
+- 🎛️ **可视化配置卡**——内嵌设置面板：勾选候选模型、排序队列、设置回退次数与时机，保存即生效，无需重载插件
+- 🧩 **失败码路由**——只按宿主稳定失败码（`RATE_LIMIT` / `QUOTA` / `SERVER` / `TIMEOUT` / `TRANSPORT` …）决策，从不解析错误消息；鉴权类错误直接上抛、不做无谓切换
+- 🔙 **零成本升级**——旧 0.2.x `string[]` 链配置自动归一为对象数组，存量自定义白名单里的旧失败码自动别名兼容
+
+## 工作原理
+
+1. 插件监听 dsh agent-loop 的两个 loop 级 waterfall：`agent/request`（发请求前）与 `agent/request-error`（请求失败后）；
+2. 失败时，若失败码在白名单、按 `fallbackWhen` 判定可切、且链上还有下一候选 → 指数退避后推进到下一候选，返回 `{kind: 'retry'}`；
+3. loop 收到 retry 后重走 `agent/request`，插件把 `provider/model` 改写为新候选，请求无感续发——对话不中断；
+4. 失败码不在白名单或链耗尽 → 透传上游（官方 retry / loop 默认行为），错误正常上抛。
 
 ## 安装
 
-`dsh plugin add` 底层是 `pnpm add`,支持本地目录、`github:` / `git+https` / `git+ssh` / tarball 等多种源。
+### 环境要求
 
-### 为什么入口是 dist(构建式发行)
+- dsh 宿主 **0.2.0-rc.2+**（`agent/request` / `agent/request-error` waterfall 自 rc.2 起提供）
 
-dsh 0.2.0-rc.2 宿主加载 TS 插件走 Node 原生 type-stripping(cordis-plugin-loader → `ctx.loader.internal.import`),而 Node 硬性拒绝转译 **realpath 位于任何 node_modules 目录之下**的 `.ts` 文件(`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`)。因此纯 TS 源码入口在 git/npm/tarball 等**实体安装**方式下必然加载失败(宿主 `inactiveEntries()` 只报静默的 `failed to import`,真实错误被吞),只有 `link:` 安装(junction 解析回工作区,realpath 不含 node_modules)可用。
-
-本插件入口因此改为 esbuild 打包的 **`dist/index.js`** 单文件(内联 schemastery 等运行时依赖,安装后无需再解析依赖树)。源码仍是 `src/*.ts`(类型检查/测试用),`main`/`exports` 指 dist,`types` 仍指 `src/cordis.d.ts`。
-
-> **宿主上游问题**(理想修法在宿主侧):宿主改用自带转译器(amaro / esbuild register)加载插件 TS,即可根治所有纯 TS 插件的实体安装。一键复现:
->
-> ```sh
-> # 实体目录安装 → 必报 ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING
-> node --input-type=module -e "import('file:///<profile-dir>/node_modules/@zhidal/dsh-llm-fallback/src/index.ts').then(m => console.log('OK', m.name)).catch(e => console.error(e.code))"
-> # link 安装 → OK dsh-llm-fallback
-> ```
-
-### 仓库内开发(本地 link)
+### npm 安装（推荐）
 
 ```sh
-pnpm install                     # 仓库根;根 install 会执行包内 prepare 自动产出 dist
-pnpm dsh plugin add link:<仓库绝对路径>/packages/dsh-llm-fallback   # link: 必须绝对路径(相对路径解析到 profile 目录)
+dsh plugin add @zhidal/dsh-llm-fallback          # 最新版
+dsh plugin add @zhidal/dsh-llm-fallback@0.3.2    # 或锁定版本
 ```
 
-包内 `dsh.bundle.patch` 声明使其自动进入 profile 层,无需 overlay 注入。
+刚发布的新版本建议用精确版本号：registry 元数据有分钟级边缘缓存，裸包名短期可能仍解析到旧版；回滚同理用 `@<version>` 锁定。已发布版本见 [npm versions](https://www.npmjs.com/package/@zhidal/dsh-llm-fallback?activeTab=versions)。
 
-注意:`link:` 安装**不触发任何生命周期脚本**(pnpm 对 link: 不跑 prepare),dist 必须预先存在。根 `pnpm install` 已自动构建;单独重建用 `pnpm --filter @zhidal/dsh-llm-fallback build`(插件 e2e 手工流程见 skill §5)。
+> 首次安装可能被 pnpm 11 构建脚本闸门拦截，见[故障排查](#故障排查)。
 
-### npm 安装(registry,外部用户首选)
+### 仓库内开发（link）
 
 ```sh
-dsh plugin add @zhidal/dsh-llm-fallback          # 装最新版
-dsh plugin add @zhidal/dsh-llm-fallback@0.3.0    # 或锁定版本
+pnpm install                                                    # 仓库根，包内 prepare 自动产出 dist
+dsh plugin add link:<仓库绝对路径>/packages/dsh-llm-fallback    # link: 必须是绝对路径
 ```
 
-裸包名走 npm registry 实体安装(`dsh plugin add` 底层 `pnpm add` 解析官方源)。tgz 自带构建好的 `dist`,**本包自身无需任何 allowBuilds 放行**;依赖里仅 `esbuild`(构建期依赖,registry 安装不触发本包构建)自身的 postinstall 会触发 pnpm 11 构建脚本闸门——**闸门是硬失败**(`[ERR_PNPM_IGNORED_BUILDS] Ignored build scripts: esbuild` → `dsh: plugin command failed`),首次 add 会在依赖落盘后中止。宿主会在消费 profile 的 `pnpm-workspace.yaml` 自动写入占位行 `esbuild: set this to true or false`,把它改成 `true` 后重跑 add 即可:
+包内 `dsh.bundle.patch` 声明使其自动进入 profile 层，无需 overlay 注入。注意 pnpm 对 `link:` 安装不触发生命周期脚本，dist 必须预先存在（根 `pnpm install` 已自动构建；单独重建用 `pnpm --filter @zhidal/dsh-llm-fallback build`）。
+
+### Git / tarball 安装
+
+```sh
+# github: 简写；<ref> 可替换为分支 / tag / 提交
+dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-fallback
+```
+
+也支持 `git+https` / `git+ssh`（把 URL 换成对应形式即可）；`&path:<subdir>` 是 pnpm 安装 git monorepo 子目录的标准语法。git 安装时 pnpm 会执行包内 `prepare` 现场构建 dist，首次安装会报 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` 并原样打印需要追加的 `allowBuilds` 键（注意 pnpm 示例漏了 YAML 引号，`@` 开头的键务必加引号），抄进消费 profile 的 `pnpm-workspace.yaml` 后重跑，同时固定加 `esbuild: true` 一行。
+
+### 安装验证
+
+1. 启动日志首行出现 `[dsh-llm-fallback] plugin loaded`；
+2. 设置 → 插件 → 点开本插件，显示「已启用」+「模型回退」配置卡。
+
+## 配置
+
+启用插件后，在 设置 → 插件 → `@zhidal/dsh-llm-fallback` 详情页的「模型回退」配置卡中配置：
+
+| 字段             | 类型                                                   | 默认                            | 说明                                                          |
+| ---------------- | ------------------------------------------------------ | ------------------------------- | ------------------------------------------------------------- |
+| `enabled`        | `boolean`                                              | `true`                          | 总开关，关闭后不再拦截模型失败                                |
+| `fallbackChains` | `Array<{provider, model, displayName?, description?}>` | `[]`                            | 候选列表，首项 = 主模型，逐个回退；旧 `string[]` 形态自动归一 |
+| `fallbackWhen`   | `'afterRetry' \| 'immediately'`                        | `'afterRetry'`                  | 回退时机，见[回退时机](#回退时机fallbackwhen)                 |
+| `maxRetries`     | `number`                                               | `0`（= 链长）                   | 单次请求最多**切换**次数，不含官方重试的同 provider 重试      |
+| `baseDelayMs`    | `number`                                               | `500`                           | 指数退避初值                                                  |
+| `maxDelayMs`     | `number`                                               | `30000`                         | 指数退避上限                                                  |
+| `retryableCodes` | `string[]`                                             | 见[失败码白名单](#失败码白名单) | 可触发切换的失败码白名单                                      |
+| `perTurn`        | `boolean`                                              | `true`                          | 预留字段，尚未参与回退判定，见[已知限制](#已知限制)           |
+
+配置卡功能：启用开关；从宿主模型目录（按 provider 分组）勾选候选模型；上移 / 下移 / 移除调整回退优先级（顺序即回退顺序，首项 = 主模型）；设置最大回退次数与回退时机；保存 / 放弃，带 revision 冲突检测。所有改动保存后即时生效，无需重载插件。
+
+## 回退时机（fallbackWhen）
+
+- **`afterRetry`（默认）**：失败发生时先观察官方 `dsh-llm-retry` 的决策——它决定同 provider 重试则透传不动；只有它放弃（预算耗尽 / 委派下游 / 未装载）且失败码在白名单内，才退避后切下一候选。推荐与官方插件叠加使用，语义为「先同 provider 重试，再跨 provider 回退」。
+- **`immediately`**：白名单命中即切，不等官方重试跑完。恢复最快，但请求数可能更多——适合没装官方 retry 插件、或希望立刻换家的场景。
+
+## 失败码白名单
+
+插件只按 `LlmFailure.code` 路由（宿主约定：route on code, never parse message）。默认白名单是宿主官方重试码（`EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT`）的超集——多出配额与上下文类，切模型正是这些失败的本职出路。
+
+| 失败场景                                         | 宿主 `code`                                       | 默认可切换              |
+| ------------------------------------------------ | ------------------------------------------------- | ----------------------- |
+| 连接类传输失败（"Connection error." / 网络中断） | `TRANSPORT`                                       | ✅                      |
+| 5xx 服务器错误                                   | `SERVER`                                          | ✅                      |
+| 429 限流                                         | `RATE_LIMIT`                                      | ✅                      |
+| 配额 / 余额耗尽                                  | `QUOTA`、`ACCOUNT_QUOTA`                          | ✅                      |
+| 上下文超限                                       | `CONTEXT_WINDOW_EXCEEDED`                         | ✅                      |
+| 空响应（正常结束但零内容块）                     | `EMPTY_RESPONSE`                                  | ✅                      |
+| 流空闲 / 请求超时                                | `TIMEOUT`                                         | ✅                      |
+| 鉴权 / 请求构造 / 凭据错误                       | `AUTH` / `INVALID_REQUEST` / `INVALID_CREDENTIAL` | ❌ 换模型无解，立即上抛 |
+| 其他 HTTP 状态                                   | `HTTP_<status>`（如 `HTTP_502`）                  | ❌ 可自行加入白名单     |
+
+存量配置兼容：0.3.1 及之前版本的默认白名单误含宿主不产出的 `NETWORK` / `SERVER_ERROR`，导致连接类与 5xx 失败不触发切换；升级到 0.3.2+ 后，运行时会对你已保存的自定义白名单按并集自动补入 `TRANSPORT` / `SERVER`（旧码保留无害），无需手动改配置。
+
+## 行为
+
+- 失败码在白名单 + 按时机判定可切 + 还有下一候选 → 退避 + 切下一候选 + 返回 `{kind: 'retry'}`，loop 重发请求（`agent/request` 监听器改写 `provider/model`）
+- 失败码不在白名单或链耗尽 → 透传上游决策（官方 retry 的 retry 也到此为止），错误正常上抛
+- 同时注册 system-prompt section，告知 agent 回退协议存在、无需自行"手加重试"
+- 配置非法时不阻塞宿主：报错并跳过装载；设置面板存入非法值时保留上一次成功配置
+
+## 已知限制
+
+- `afterRetry` 时机依赖 waterfall 链位：需能在 `agent/request-error` 中通过 `next()` 观察到官方 retry 的决策；自定义装载顺序导致观察不到时，回退退化为 `immediately` 语义
+- `perTurn` 尚未实装：schema 有声明、配置会解析，但回退状态机未读取该字段，设 `false` 无效果
+- 每 step 的回退状态以 `turn:step` 为 key 存内存且不清理：超长会话下按 step 数缓增（每项是小对象，量级可忽略，严格意义上无上界）
+- 不实现 provider/* 通配条目、role/specificity 多链分派、跨回合切回主模型
+
+## 故障排查
+
+**npm 安装报 `ERR_PNPM_IGNORED_BUILDS: esbuild`**
+依赖里的 esbuild 自身 postinstall 被 pnpm 11 构建脚本闸门拦截（硬失败）。宿主会在消费 profile 的 `pnpm-workspace.yaml` 自动写入占位行，把它改成 `true` 后重跑 add：
 
 ```yaml
 allowBuilds:
   esbuild: true
 ```
 
-> **修复闸门后务必干净重装**:首次 add 中途失败会留下 dependencies 但丢失 bundles 注册(重跑 add 走「已安装」短路,不会补写),表现为包已装入但重启后插件不激活。补救:`dsh plugin --profile <name> remove @zhidal/dsh-llm-fallback` 后重新 add;或手动把包名加进 profile `package.json` 的 `dsh.profile.bundles` 数组。
+**重跑 add 后插件不激活**
+首次 add 中途失败会留下依赖但丢失 bundles 注册（重跑走「已安装」短路，不会补写）。先 `dsh plugin --profile <name> remove @zhidal/dsh-llm-fallback` 再重新 add；或手动把包名加进 profile `package.json` 的 `dsh.profile.bundles` 数组。
 
-装好后的加载级验证(实测 2026-10-10,`dsh plugin add @zhidal/dsh-llm-fallback` → 启动即激活):
+**add 解析到旧版本**
+registry 元数据分钟级边缘缓存。安装 / 升级 / 回滚都用精确版本号 `@zhidal/dsh-llm-fallback@<version>`。
 
-1. 实例输出首行出现 `[dsh-llm-fallback] plugin loaded`;
-2. `dsh plugin --profile <name> list` 可见该包,且 profile `package.json` 的 `dsh.profile.bundles` 含 `@zhidal/dsh-llm-fallback`;
-3. 设置 → 插件 → 点开本插件显示「已启用」+ 内嵌「模型回退」配置卡。
-
-升级即重跑 add 解析 latest——但**刚发布的新版本建议用精确版本号**(`@zhidal/dsh-llm-fallback@<version>`):registry 元数据有分钟级边缘缓存,裸包名短期可能仍解析到旧版(实测 0.3.0→0.3.1 升级时发生)。回滚同理用 `@<version>` 锁定。已发布版本清单见 <https://www.npmjs.com/package/@zhidal/dsh-llm-fallback?activeTab=versions>。
-
-### Git 安装(外部用户)
-
-> **前置条件**:git 安装时 pnpm 会执行包内 `prepare` 现场构建 dist;pnpm 11 默认拦截依赖生命周期脚本,且对 **git 托管依赖**要求「精确包 id + 锁定 sha」形态的放行键。首次安装会报 `ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED` 并**原样打印需要追加的键**——把该行抄进**消费 profile** 的 `pnpm-workspace.yaml`(桌面版在 `~/.dsh/profiles/desktop/pnpm-workspace.yaml`)后重跑 add:
->
-> ```yaml
-> allowBuilds:
->   # ← 抄 pnpm 报错打印的那行;注意 pnpm 示例漏了 YAML 引号:
->   #   `@` 开头的键不加引号是非法 YAML,务必形如 '<pkg>@<git-url>#<sha>': true
->   '@zhidal/dsh-llm-fallback@git+https://github.com/lzhida/dsh-plugins-workspace#<sha>': true
->   esbuild: true # esbuild 自身 postinstall(二进制校验),固定加这行
-> ```
->
-> 插件更新(git ref 解析到新 sha)后,闸门会再次报错并打印新键,同步替换旧键即可。
-
-四种形式等价,都只装 `packages/dsh-llm-fallback` 子目录。`<ref>` 替换为想锁定的分支 / tag / 提交:
+## 开发
 
 ```sh
-# 1. github: 简写(pnpm 8+ 解析为 https://github.com/<user>/<repo>/tarball/<ref>)
-dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-fallback
-
-# 2. git+https(显式完整 URL,需 git 客户端)
-dsh plugin add git+https://github.com/lzhida/dsh-plugins-workspace.git#main\&path:packages/dsh-llm-fallback
-
-# 3. git+ssh(需本机配过 SSH key)
-dsh plugin add git+ssh://git@github.com/lzhida/dsh-plugins-workspace.git#main\&path:packages/dsh-llm-fallback
-
-# 4. tarball 快照
-curl -L https://github.com/lzhida/dsh-plugins-workspace/archive/refs/heads/main.tar.gz | tar -xz -C /tmp
-dsh plugin add /tmp/dsh-plugins-workspace-main/packages/dsh-llm-fallback
+pnpm install                                 # 仓库根，包内 prepare 自动产出 dist
+pnpm test                                    # vitest 全仓测试
+pnpm typecheck                               # 递归 tsc --noEmit
+pnpm --filter @zhidal/dsh-llm-fallback build # 单独重建 dist
 ```
 
-> 形态 4 是目录直装:若安装后 profile 内缺 `dist/`(该形态不保证触发生命周期脚本),先在源码树仓库根跑一次 `pnpm install`(或 `pnpm --filter @zhidal/dsh-llm-fallback build`)再装。
->
-> **tarball(`pnpm pack` 产物)是最省事的实体形态**:tgz 自带新鲜 dist(prepack 在打包前执行),消费 profile 只需 `allowBuilds: { esbuild: true }` 一行(esbuild 自身 postinstall),无 sha 键、无更新漂移。
-
-> `&path:<subdir>` 是 pnpm 安装 git monorepo 子目录的标准语法(`#<ref>&path:<dir>`,把 ref 与 subdir 用 `&` 分隔)。
-
-## 配置
-
-启用插件后,在 设置 → 插件 → `@zhidal/dsh-llm-fallback` 详情页中配置以下字段(服务端由 schemastery schema 投影,界面由插件自带的 client 配置卡渲染,见下节):
-
-| 字段             | 类型                                                   | 默认                                                                                                           | 说明                                                                                              |
-| ---------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
-| `enabled`        | `boolean`                                              | `true`                                                                                                         | 总开关                                                                                            |
-| `fallbackChains` | `Array<{provider, model, displayName?, description?}>` | `[]`                                                                                                           | 候选列表;首项 = 主模型,逐个回退。旧 `string[]` 形态自动归一                                       |
-| `fallbackWhen`   | `'afterRetry' \| 'immediately'`                        | `'afterRetry'`                                                                                                 | 回退时机,见下节                                                                                   |
-| `maxRetries`     | `number`                                               | `0`(= 链长,即全跑完才报错)                                                                                     | 单次请求最多**切换**次数                                                                          |
-| `baseDelayMs`    | `number`                                               | `500`                                                                                                          | 指数退避初值                                                                                      |
-| `maxDelayMs`     | `number`                                               | `30000`                                                                                                        | 指数退避上限                                                                                      |
-| `retryableCodes` | `string[]`                                             | `RATE_LIMIT / QUOTA / ACCOUNT_QUOTA / CONTEXT_WINDOW_EXCEEDED / EMPTY_RESPONSE / SERVER / TIMEOUT / TRANSPORT` | 视为可重试的稳定失败码白名单(对照表见下节)                                                        |
-| `perTurn`        | `boolean`                                              | `true`                                                                                                         | **预留字段**:当前版本会解析但未参与回退判定(设 `false` 无效果,行为始终等同 `true`),见「已知限制」 |
-
-### 设置界面(内嵌配置卡)
-
-dsh 0.2.0-rc.2 没有 schema→表单的通用自动渲染;配置 UI 由本插件**自带的 client bundle**(`client/index.js`,零构建)注册进插件管理页的 `plugins.bundle.config` 插槽,直接**内嵌在本插件的详情页里**(设置 → 插件 → 点开 `@zhidal/dsh-llm-fallback`):
-
-- **启用开关**(`enabled`,关闭后不再拦截模型失败);
-- **模型勾选**:候选池来自 `remote.session.modelCatalog()`(宿主已配置 provider 的模型目录,按 provider 分组),勾选即加入队列;
-- **排序**:已选队列支持上移/下移/移除,顺序即回退优先级(首项 = 主模型);
-- **最大回退次数**(`maxRetries`,0 = 链长)与**回退时机**(`fallbackWhen`);
-- 保存 / 放弃,带 revision 冲突检测(`SETTINGS_CONFLICT` 时提示重试)。
-
-读写走 `ctx.configForms.get('<条目id>')` → `mutate(...)`,持久化到 profile 的 cordis patch 层。所有可编辑字段在服务端 schema 上标记 `.volatile()`——宿主 `dsh-settings.describe()` 只投影 volatile 字段,没有 volatile 字段的插件不会出现在设置面板。
-
-`fallbackChains` schema 同时挂 `role('modelList', { source: 'dsh-llm-runtime' })`,`maxRetries` 挂 `role('modelChainMeta', { kind: 'retries' })`——均保留给未来可能出现的通用渲染器;当前 UI 不依赖它们。
-
-### Schema 迁移(0.2.x → 0.3.0)
-
-旧版本 `fallbackChains` 形态是 `string[]`,每项为 `"provider/model"`。0.3.0 起改为 `Object[]`,但 `resolveConfig` **自动归一**:
-
-- 旧 `['deepseek/deepseek-chat', 'openai/gpt-4o']` → 自动转为 `[{provider:'deepseek', model:'deepseek-chat', displayName:'deepseek/deepseek-chat', description:''}, ...]`
-- 新 `[{provider:'openai', model:'gpt-4o', displayName:'GPT-4o'}]` → 原样保留
-- 混形态(`['a/x', {provider:'b', model:'y'}]`)→ 逐项归一
-- 持久化形态(写到 `cordis.yml` / settings)是 `Object[]`;旧 `string[]` 配置被运行时归一为对象后,首次写回也是对象
-
-**无 breaking change**:旧 `string[]` 配置继续可用,无需手动改。
-
-## 回退时机(`fallbackWhen`)
-
-- **`afterRetry`(默认)**:失败发生时先观察官方 `dsh-llm-retry` 的决策——它仍在预算内(或配置为 always mode)决定同 provider 重试 → 透传其决策,本插件不动;只有它放弃(预算耗尽 / 委派下游 / 未装载该插件)且失败码在白名单内 → backoff + 切下一候选。推荐与官方插件叠加使用,语义为"先同 provider 重试,再跨 provider 回退"。
-- **`immediately`**:白名单命中即切,不等官方重试跑完。恢复最快,但请求数可能更多(适合没装官方 retry 插件、或希望立刻换家的场景)。
-
-注意:`maxRetries` 约束的是**链上切换次数**,不含官方插件的同 provider 重试次数。
-
-### 失败码白名单(与宿主失败码对照)
-
-插件只按 `LlmFailure.code` 路由(宿主约定:route on code, never parse message),默认白名单对齐宿主 0.2.0-rc.2 的实际失败分类:
-
-| 失败场景                                                                                                        | 宿主实际 `code`(产出方)                           | 默认可切换                |
-| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------------- |
-| 连接类传输失败(openai / Anthropic SDK 的 `APIConnectionError`,即 "Connection error.";socket / fetch / 网络中断) | `TRANSPORT`(pi-ai 与 deepseek 适配器)             | ✅                        |
-| 5xx 服务器错误                                                                                                  | `SERVER`(两套适配器)                              | ✅                        |
-| 429 限流                                                                                                        | `RATE_LIMIT`                                      | ✅                        |
-| 配额 / 余额耗尽                                                                                                 | `QUOTA`;官方账号路由另有 `ACCOUNT_QUOTA`          | ✅                        |
-| 上下文超限                                                                                                      | `CONTEXT_WINDOW_EXCEEDED`                         | ✅                        |
-| 空响应(正常结束但零内容块)                                                                                      | `EMPTY_RESPONSE`                                  | ✅                        |
-| 流空闲 / 请求超时                                                                                               | `TIMEOUT`                                         | ✅                        |
-| 401/403 鉴权、请求构造非法、凭据格式错误                                                                        | `AUTH` / `INVALID_REQUEST` / `INVALID_CREDENTIAL` | ❌(换模型也无解,立即上抛) |
-| 其他 HTTP 状态                                                                                                  | `HTTP_<status>`(如 `HTTP_502`)                    | ❌(可自行加入白名单)      |
-
-- 宿主官方 `dsh-llm-retry` 的默认重试码为 `EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT`(`dsh-llm/lib/types/retry-policy.js`);本插件默认白名单是它的超集(多出配额与上下文类,切模型正是这些失败的本职出路)。
-- **0.3.1 及之前版本的缺陷**:默认白名单误用 omp 系码 `NETWORK` / `SERVER_ERROR`——宿主两套适配器均不产出这两个码,导致 "Connection error."(`TRANSPORT`)与 5xx(`SERVER`)不会触发切换。0.3.2 起修正。
-- **存量配置兼容**:升级前保存过自定义 `retryableCodes` 的用户,配置里的 `NETWORK` / `SERVER_ERROR` 会被运行时按并集自动补入 `TRANSPORT` / `SERVER`(旧码保留无害),无需手动改配置。
-- `afterRetry`(默认)时机下,Connection error 会先经历官方 retry 的同 provider 重试(默认 5 次,指数退避合计约 15s)再切换候选;希望首次失败立即换家,把 `fallbackWhen` 设为 `immediately`。
-
-## 行为
-
-- 监听 `agent/request` 与 `agent/request-error`(dsh-agent-loop 提供的 loop-level waterfall),与 `@deepseek-ai/dsh-llm-retry` 正交可叠加
-- 失败码在白名单 + 按时机判定可切 + 还有下一候选 → backoff + 切下一候选 + 返回 `{kind: 'retry'}`,loop 重新发起请求(`agent/request` 监听器改写 `provider/model`)
-- 失败码不在白名单 → 透传给宿主(官方 retry / loop 走默认行为)
-- 链耗尽 → 透传上游决策(官方 retry 的 retry 也到此为止,错误正常上抛)
-- 同时注册 system-prompt section,告知 agent 回退协议存在、不要自行"手加重试"
-
-## 装好后的手工验证
-
-```sh
-# 1. 确认子包已装入 profile node_modules
-ls "$(dsh config profile-dir 2>/dev/null || echo $HOME/.dsh/profiles/<name>)/node_modules/@zhidal/dsh-llm-fallback"
-
-# 2. 重启 dsh,在 设置 → 插件 → @zhidal/dsh-llm-fallback 详情页确认
-#    内嵌「模型回退」配置卡(勾选模型 / 排序 / 最大次数 / 保存)
-
-# 3. 启动日志应有 [dsh-llm-fallback] plugin loaded 一行(e2e 契约)
-```
-
-## 已知限制
-
-- **TS 源码插件的宿主级限制**:见「为什么入口是 dist」——在宿主改用自带转译器加载 TS 之前,任何纯 TS 源码插件(guided-goal / obsidian / taskboard 等)以实体方式安装都会 `failed to import`,与本项目无关的宿主问题
-- `afterRetry` 时机依赖 waterfall 链位:本插件需能在 `agent/request-error` 中通过 `next()` 观察到官方 retry 的决策(正常装载顺序下两者天然正交;若自定义装载顺序导致观察不到,回退行为退化为 `immediately` 语义)
-- `perTurn` 尚未实装:schema 有声明、`resolveConfig` 会解析,但回退状态机与两个 waterfall 监听器都未读取该字段,`false` 不产生 one-shot 效果(实装属后续代码改动)
-- 每 step 的回退状态以 `turn:step` 为 key 存入内存 Map 且**从不清理**:超长会话下按 step 数缓增(每项是小对象,量级可忽略,但严格意义上无上界)
-- 不实现 provider/* 通配条目、role/specificity 分派链
-- 不实现"跨回合切回主 model"(本期仅在请求内回退)
+**为什么入口是 dist**：dsh 宿主经 Node 原生 type-stripping 加载 TS 插件，而 Node 硬性拒绝转译 realpath 位于任何 node_modules 之下的 `.ts` 文件（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`），纯 TS 源码入口在 git/npm/tarball 实体安装下必然加载失败。本插件因此以 esbuild 打包 `dist/index.js` 单文件发行（内联运行时依赖），源码仍是 `src/*.ts`；git 安装依赖包内 `prepare` 现场构建，消费方需按 pnpm 要求放行构建脚本（见上文）。其他 TS 插件如需支持实体安装，照此模式改造。
 
 ## 许可证
 
