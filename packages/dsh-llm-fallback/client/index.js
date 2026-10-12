@@ -4,7 +4,9 @@
  * 设置 → 插件 → dsh-llm-fallback 的配置卡片:
  * - 启用开关;
  * - **模型勾选**:候选池来自 `ctx.remote.session.modelCatalog()`(宿主已配置
- *   provider 的模型目录,按 provider 分组),勾选即加入回退队列;
+ *   provider 的模型目录,按 provider 分组),勾选即加入回退队列;列表限高
+ *   滚动(280px 内部滚动,不再撑长设置页外层滚动条),并提供搜索框
+ *   (provider 分组名 / 模型 id / 显示名,大小写不敏感子串过滤,无命中给空态);
  * - **排序**:已选队列可上移/下移/移除,顺序即回退优先级(首项=主模型);
  * - **最大回退次数**(maxRetries,0 = 链长);
  * - 回退时机(fallbackWhen)。
@@ -12,14 +14,16 @@
  * 为什么需要客户端包:宿主 `@deepseek-ai/dsh-settings` 的 `describe()` 只投影
  * `.volatile()` 字段给"自带页面的客户端",而 dsh 0.2.0-rc.2 **没有**通用的
  * schema→页面自动生成客户端(`autoGenerate` 在已发布客户端中无实现),因此
- * 配置 UI 必须由插件自带 client 注册进 Plugins 页的 `plugins.item` 插槽。
+ * 配置 UI 必须由插件自带 client 注册进 Plugins 页的 `plugins.bundle.config` 插槽。
  *
  * 读写走 `ctx.configForms.get(entryId)`(namespace = profile 条目 id),
  * 与一方插件 dsh-client-ui-settings-subagent 同路径:
  *   scope.getSnapshot() -> { status, value, writable, revision }
  *   scope.mutate([{op:'set', path, value}], revision)
  *
- * 样式用内联样式,不依赖 dsh 的 CSS modules 哈希类名(版本升级不失效)。
+ * 样式用内联样式,不依赖 dsh 的 CSS modules 哈希类名(版本升级不失效);
+ * 颜色全部引用 dsh web 主题 token `--dsw-alias-*`(明/暗双模式各有定义,
+ * 由客户端 Theme inspect 提供方列出),暗色模式下不再出现文字与背景混色。
  */
 globalThis.__ModuleLoader__.load({
   // id 必须与 package.json 包名一致,否则 boot graph arrive() 抛
@@ -61,6 +65,9 @@ globalThis.__ModuleLoader__.load({
         catalogRetry: '重试',
         catalogEmpty: '宿主尚未配置任何 provider 模型。',
         catalogHint: '勾选加入队列(追加到末尾)',
+        catalogSearch: '搜索模型(provider / 模型 id / 名称)…',
+        searchAria: '搜索模型',
+        catalogNoMatch: '没有匹配的模型',
         maxRetries: '最大回退次数',
         maxRetriesHint: '0 = 按队列长度(跑完全部候选才报错)',
         fallbackWhen: '回退时机',
@@ -96,6 +103,9 @@ globalThis.__ModuleLoader__.load({
         catalogRetry: 'Retry',
         catalogEmpty: 'No provider model is configured on this host yet.',
         catalogHint: 'Check to append to the queue',
+        catalogSearch: 'Search models (provider / id / name)…',
+        searchAria: 'Search models',
+        catalogNoMatch: 'No matching models',
         maxRetries: 'Max fallbacks',
         maxRetriesHint: '0 = queue length (try every candidate before failing)',
         fallbackWhen: 'Fallback timing',
@@ -130,17 +140,73 @@ globalThis.__ModuleLoader__.load({
       return true;
     }
 
+    /**
+     * 搜索过滤谓词:provider 分组名 / 模型 id / 显示名,大小写不敏感子串匹配。
+     * 空搜索词(或纯空白)视为不过滤,返回 true。
+     */
+    function modelMatches(group, model, query) {
+      var q = String(query || '')
+        .trim()
+        .toLowerCase();
+      if (!q) return true;
+      return (
+        String(group.id || '')
+          .toLowerCase()
+          .indexOf(q) !== -1 ||
+        String(model.id || '')
+          .toLowerCase()
+          .indexOf(q) !== -1 ||
+        String(model.name || '')
+          .toLowerCase()
+          .indexOf(q) !== -1
+      );
+    }
+
+    /** 目录分组 × 搜索词 → 仍有命中的分组(组内模型已过滤;全部无命中返回 [])。 */
+    function filteredCatalogGroups(groups, query) {
+      return (groups || [])
+        .map(function (group) {
+          return {
+            id: group.id,
+            models: (group.models || []).filter(function (m) {
+              return modelMatches(group, m, query);
+            }),
+          };
+        })
+        .filter(function (group) {
+          return group.models.length > 0;
+        });
+    }
+
     // ── 内联样式(不依赖哈希类名)──────────────────────────────────
+    // 颜色一律走 dsh web 主题 token `--dsw-alias-*`(明/暗双模式各有定义,
+    // 由客户端 Theme inspect 提供方列出):文本用 label-primary/secondary,
+    // 边框用 border-l1/l2,抬升表面用 bg-layer-1,强调色用 brand-primary。
+    // 不再硬编码半透明灰阶(旧边框/徽标的配色)——那是暗色模式下文字与
+    // 背景混色的根因;token 缺失时按 CSS var 规则退回继承色/初始值,不会
+    // 渲染崩溃。
+    var T = {
+      text: 'var(--dsw-alias-label-primary)',
+      textSecondary: 'var(--dsw-alias-label-secondary)',
+      border: 'var(--dsw-alias-border-l1)',
+      borderStrong: 'var(--dsw-alias-border-l2)',
+      surface: 'var(--dsw-alias-bg-layer-1)',
+      brand: 'var(--dsw-alias-brand-primary)',
+    };
+
     var S = {
       card: {
         display: 'flex',
         flexDirection: 'column',
         gap: 16,
         padding: '4px 0',
+        // 卡片根节点显式设置文本色:不依赖宿主容器的继承链,暗色模式
+        // 下也不会退回 UA 默认的近黑前景。
+        color: T.text,
       },
       section: { display: 'flex', flexDirection: 'column', gap: 8 },
-      label: { fontWeight: 600, fontSize: 13 },
-      hint: { fontSize: 12, opacity: 0.65 },
+      label: { fontWeight: 600, fontSize: 13, color: T.text },
+      hint: { fontSize: 12, color: T.textSecondary },
       row: {
         display: 'flex',
         alignItems: 'center',
@@ -152,24 +218,24 @@ globalThis.__ModuleLoader__.load({
         alignItems: 'center',
         gap: 8,
         padding: '6px 8px',
-        border: '1px solid rgba(128,128,128,0.28)',
+        border: '1px solid ' + T.border,
         borderRadius: 6,
       },
       badge: {
         fontSize: 11,
         padding: '1px 6px',
         borderRadius: 999,
-        border: '1px solid rgba(128,128,128,0.35)',
-        opacity: 0.9,
+        border: '1px solid ' + T.border,
+        color: T.textSecondary,
         whiteSpace: 'nowrap',
       },
       btn: {
         cursor: 'pointer',
         padding: '3px 8px',
         borderRadius: 6,
-        border: '1px solid rgba(128,128,128,0.35)',
+        border: '1px solid ' + T.borderStrong,
         background: 'transparent',
-        color: 'inherit',
+        color: T.text,
         fontSize: 12,
       },
       primaryBtn: {
@@ -177,28 +243,54 @@ globalThis.__ModuleLoader__.load({
         padding: '5px 14px',
         borderRadius: 6,
         border: '1px solid transparent',
-        background: 'rgba(96,140,255,0.9)',
+        background: T.brand,
         color: '#fff',
         fontSize: 13,
       },
       group: { display: 'flex', flexDirection: 'column', gap: 4 },
-      groupTitle: { fontSize: 12, opacity: 0.7, marginTop: 4 },
+      groupTitle: { fontSize: 12, color: T.textSecondary, marginTop: 4 },
+      // accent-color 会被勾选框继承,明暗模式下勾选态都用品牌色渲染。
       check: {
         display: 'flex',
         alignItems: 'center',
         gap: 8,
         fontSize: 13,
         cursor: 'pointer',
+        accentColor: T.brand,
       },
       input: {
         width: 90,
         padding: '3px 6px',
         borderRadius: 6,
-        border: '1px solid rgba(128,128,128,0.35)',
-        background: 'transparent',
-        color: 'inherit',
+        border: '1px solid ' + T.borderStrong,
+        background: T.surface,
+        color: T.text,
       },
-      notice: { fontSize: 13, opacity: 0.75 },
+      searchInput: {
+        width: '100%',
+        boxSizing: 'border-box',
+        padding: '6px 10px',
+        borderRadius: 8,
+        border: '1px solid ' + T.borderStrong,
+        background: T.surface,
+        color: T.text,
+        fontSize: 13,
+      },
+      // 可用模型列表容器:限高 + 内部滚动,模型再多也不撑长外层滚动条。
+      catalogScroll: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 4,
+        maxHeight: 280,
+        overflowY: 'auto',
+        padding: 8,
+        border: '1px solid ' + T.border,
+        borderRadius: 8,
+        background: T.surface,
+      },
+      noMatch: { fontSize: 12, color: T.textSecondary, padding: '8px 2px' },
+      notice: { fontSize: 13, color: T.textSecondary },
+      option: { background: T.surface, color: T.text },
     };
 
     function apply(ctx) {
@@ -251,6 +343,11 @@ globalThis.__ModuleLoader__.load({
         var cat = catState[0];
         var setCat = catState[1];
 
+        // 模型搜索词(纯视图过滤:不影响草稿、队列与保存逻辑)
+        var searchState = useState('');
+        var search = searchState[0];
+        var setSearch = searchState[1];
+
         useEffect(function () {
           return scope.subscribe(function () {
             setSnap(scope.getSnapshot());
@@ -289,7 +386,7 @@ globalThis.__ModuleLoader__.load({
           [cat.status],
         );
 
-        var value = (snap.value || {});
+        var value = snap.value || {};
         var currentQueue = useMemo(
           function () {
             return (value.fallbackChains || []).map(function (entry) {
@@ -499,7 +596,7 @@ globalThis.__ModuleLoader__.load({
           ),
         );
 
-        // 模型目录(勾选)
+        // 模型目录(搜索 + 限高滚动 + 勾选)
         var catalogBody;
         if (cat.status === 'loading') {
           catalogBody = h('div', { style: S.hint }, t('catalogLoading'));
@@ -517,31 +614,48 @@ globalThis.__ModuleLoader__.load({
         } else if (cat.groups.length === 0) {
           catalogBody = h('div', { style: S.hint }, t('catalogEmpty'));
         } else {
+          var visibleGroups = filteredCatalogGroups(cat.groups, search);
           catalogBody = h(
             'div',
             { style: S.section },
-            cat.groups.map(function (group) {
-              return h(
-                'div',
-                { key: group.id, style: S.group },
-                h('div', { style: S.groupTitle }, group.id),
-                (group.models || []).map(function (m) {
-                  var key = group.id + '/' + m.id;
-                  return h(
-                    'label',
-                    { key: key, style: S.check },
-                    h('input', {
-                      type: 'checkbox',
-                      checked: selected[key] === true,
-                      disabled: !writable || busy,
-                      onChange: function () { toggleModel(group.id, m.id); },
-                    }),
-                    h('span', null, m.name || m.id),
-                    h('span', { style: S.hint }, m.id),
-                  );
-                }),
-              );
+            h('input', {
+              type: 'search',
+              style: S.searchInput,
+              placeholder: t('catalogSearch'),
+              'aria-label': t('searchAria'),
+              value: search,
+              onChange: function (event) {
+                setSearch(event.target.value);
+              },
             }),
+            visibleGroups.length === 0
+              ? h('div', { style: S.noMatch }, t('catalogNoMatch'))
+              : h(
+                  'div',
+                  { style: S.catalogScroll },
+                  visibleGroups.map(function (group) {
+                    return h(
+                      'div',
+                      { key: group.id, style: S.group },
+                      h('div', { style: S.groupTitle }, group.id),
+                      group.models.map(function (m) {
+                        var key = group.id + '/' + m.id;
+                        return h(
+                          'label',
+                          { key: key, style: S.check },
+                          h('input', {
+                            type: 'checkbox',
+                            checked: selected[key] === true,
+                            disabled: !writable || busy,
+                            onChange: function () { toggleModel(group.id, m.id); },
+                          }),
+                          h('span', null, m.name || m.id),
+                          h('span', { style: S.hint }, m.id),
+                        );
+                      }),
+                    );
+                  }),
+                ),
           );
         }
         children.push(
@@ -597,8 +711,8 @@ globalThis.__ModuleLoader__.load({
                   setDraftWhen(event.target.value);
                 },
               },
-              h('option', { value: 'afterRetry' }, t('afterRetry')),
-              h('option', { value: 'immediately' }, t('immediately')),
+              h('option', { value: 'afterRetry', style: S.option }, t('afterRetry')),
+              h('option', { value: 'immediately', style: S.option }, t('immediately')),
             ),
           ),
         );
@@ -678,6 +792,11 @@ globalThis.__ModuleLoader__.load({
     exports.name = name;
     exports.inject = inject;
     exports.apply = apply;
+    // 纯函数一并导出:client-bundle.test.ts 在 vm 沙箱里执行 factory 后
+    // 直接对搜索过滤行为做单元断言(loader 只读 name/inject/apply,多余
+    // 导出对宿主无影响)。
+    exports.modelMatches = modelMatches;
+    exports.filteredCatalogGroups = filteredCatalogGroups;
     module.exports = exports;
     return module.exports;
   },
