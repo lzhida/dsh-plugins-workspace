@@ -24,7 +24,7 @@ const MODEL_FALLBACK_PROTOCOL_TEXT = `A host-level plugin (\`dsh-llm-fallback\`)
 
 ## What this means for you
 
-- **You do not need to handle transient model failures.** RATE_LIMIT, QUOTA, ACCOUNT_QUOTA, CONTEXT_WINDOW_EXCEEDED, EMPTY_RESPONSE, SERVER_ERROR, TIMEOUT, NETWORK — all of these are recovered within the same turn by switching to the next configured model. Treat them as if they did not happen.
+- **You do not need to handle transient model failures.** RATE_LIMIT, QUOTA, ACCOUNT_QUOTA, CONTEXT_WINDOW_EXCEEDED, EMPTY_RESPONSE, SERVER, TIMEOUT, TRANSPORT (connection failures such as "Connection error.") — all of these are recovered within the same turn by switching to the next configured model. Treat them as if they did not happen.
 - **You do not pick the model.** The user configures the chain (one primary, then N fallbacks). You do not call any tool to switch models, and there is no tool exposed by this plugin.
 - **By default the chain engages only after the host's built-in retry executor (\`dsh-llm-retry\`) has exhausted its budget on the current provider.** Same-provider retries happen first; cross-provider fallback is the second line of defense.
 - **If every model in the chain fails**, the error reaches the loop normally. Report it to the user as you would any other terminal error — the chain has been exhausted; there is nothing more to retry.

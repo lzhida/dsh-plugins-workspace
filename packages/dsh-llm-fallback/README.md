@@ -114,16 +114,16 @@ dsh plugin add /tmp/dsh-plugins-workspace-main/packages/dsh-llm-fallback
 
 启用插件后,在 设置 → 插件 → `@zhidal/dsh-llm-fallback` 详情页中配置以下字段(服务端由 schemastery schema 投影,界面由插件自带的 client 配置卡渲染,见下节):
 
-| 字段             | 类型                                                   | 默认                                                                                                               | 说明                                                                                              |
-| ---------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
-| `enabled`        | `boolean`                                              | `true`                                                                                                             | 总开关                                                                                            |
-| `fallbackChains` | `Array<{provider, model, displayName?, description?}>` | `[]`                                                                                                               | 候选列表;首项 = 主模型,逐个回退。旧 `string[]` 形态自动归一                                       |
-| `fallbackWhen`   | `'afterRetry' \| 'immediately'`                        | `'afterRetry'`                                                                                                     | 回退时机,见下节                                                                                   |
-| `maxRetries`     | `number`                                               | `0`(= 链长,即全跑完才报错)                                                                                         | 单次请求最多**切换**次数                                                                          |
-| `baseDelayMs`    | `number`                                               | `500`                                                                                                              | 指数退避初值                                                                                      |
-| `maxDelayMs`     | `number`                                               | `30000`                                                                                                            | 指数退避上限                                                                                      |
-| `retryableCodes` | `string[]`                                             | `RATE_LIMIT / QUOTA / ACCOUNT_QUOTA / CONTEXT_WINDOW_EXCEEDED / EMPTY_RESPONSE / SERVER_ERROR / TIMEOUT / NETWORK` | 视为可重试的稳定失败码白名单                                                                      |
-| `perTurn`        | `boolean`                                              | `true`                                                                                                             | **预留字段**:当前版本会解析但未参与回退判定(设 `false` 无效果,行为始终等同 `true`),见「已知限制」 |
+| 字段             | 类型                                                   | 默认                                                                                                           | 说明                                                                                              |
+| ---------------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `enabled`        | `boolean`                                              | `true`                                                                                                         | 总开关                                                                                            |
+| `fallbackChains` | `Array<{provider, model, displayName?, description?}>` | `[]`                                                                                                           | 候选列表;首项 = 主模型,逐个回退。旧 `string[]` 形态自动归一                                       |
+| `fallbackWhen`   | `'afterRetry' \| 'immediately'`                        | `'afterRetry'`                                                                                                 | 回退时机,见下节                                                                                   |
+| `maxRetries`     | `number`                                               | `0`(= 链长,即全跑完才报错)                                                                                     | 单次请求最多**切换**次数                                                                          |
+| `baseDelayMs`    | `number`                                               | `500`                                                                                                          | 指数退避初值                                                                                      |
+| `maxDelayMs`     | `number`                                               | `30000`                                                                                                        | 指数退避上限                                                                                      |
+| `retryableCodes` | `string[]`                                             | `RATE_LIMIT / QUOTA / ACCOUNT_QUOTA / CONTEXT_WINDOW_EXCEEDED / EMPTY_RESPONSE / SERVER / TIMEOUT / TRANSPORT` | 视为可重试的稳定失败码白名单(对照表见下节)                                                        |
+| `perTurn`        | `boolean`                                              | `true`                                                                                                         | **预留字段**:当前版本会解析但未参与回退判定(设 `false` 无效果,行为始终等同 `true`),见「已知限制」 |
 
 ### 设置界面(内嵌配置卡)
 
@@ -156,6 +156,27 @@ dsh 0.2.0-rc.2 没有 schema→表单的通用自动渲染;配置 UI 由本插�
 - **`immediately`**:白名单命中即切,不等官方重试跑完。恢复最快,但请求数可能更多(适合没装官方 retry 插件、或希望立刻换家的场景)。
 
 注意:`maxRetries` 约束的是**链上切换次数**,不含官方插件的同 provider 重试次数。
+
+### 失败码白名单(与宿主失败码对照)
+
+插件只按 `LlmFailure.code` 路由(宿主约定:route on code, never parse message),默认白名单对齐宿主 0.2.0-rc.2 的实际失败分类:
+
+| 失败场景                                                                                                        | 宿主实际 `code`(产出方)                           | 默认可切换                |
+| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------- | ------------------------- |
+| 连接类传输失败(openai / Anthropic SDK 的 `APIConnectionError`,即 "Connection error.";socket / fetch / 网络中断) | `TRANSPORT`(pi-ai 与 deepseek 适配器)             | ✅                        |
+| 5xx 服务器错误                                                                                                  | `SERVER`(两套适配器)                              | ✅                        |
+| 429 限流                                                                                                        | `RATE_LIMIT`                                      | ✅                        |
+| 配额 / 余额耗尽                                                                                                 | `QUOTA`;官方账号路由另有 `ACCOUNT_QUOTA`          | ✅                        |
+| 上下文超限                                                                                                      | `CONTEXT_WINDOW_EXCEEDED`                         | ✅                        |
+| 空响应(正常结束但零内容块)                                                                                      | `EMPTY_RESPONSE`                                  | ✅                        |
+| 流空闲 / 请求超时                                                                                               | `TIMEOUT`                                         | ✅                        |
+| 401/403 鉴权、请求构造非法、凭据格式错误                                                                        | `AUTH` / `INVALID_REQUEST` / `INVALID_CREDENTIAL` | ❌(换模型也无解,立即上抛) |
+| 其他 HTTP 状态                                                                                                  | `HTTP_<status>`(如 `HTTP_502`)                    | ❌(可自行加入白名单)      |
+
+- 宿主官方 `dsh-llm-retry` 的默认重试码为 `EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT`(`dsh-llm/lib/types/retry-policy.js`);本插件默认白名单是它的超集(多出配额与上下文类,切模型正是这些失败的本职出路)。
+- **0.3.1 及之前版本的缺陷**:默认白名单误用 omp 系码 `NETWORK` / `SERVER_ERROR`——宿主两套适配器均不产出这两个码,导致 "Connection error."(`TRANSPORT`)与 5xx(`SERVER`)不会触发切换。0.3.2 起修正。
+- **存量配置兼容**:升级前保存过自定义 `retryableCodes` 的用户,配置里的 `NETWORK` / `SERVER_ERROR` 会被运行时按并集自动补入 `TRANSPORT` / `SERVER`(旧码保留无害),无需手动改配置。
+- `afterRetry`(默认)时机下,Connection error 会先经历官方 retry 的同 provider 重试(默认 5 次,指数退避合计约 15s)再切换候选;希望首次失败立即换家,把 `fallbackWhen` 设为 `immediately`。
 
 ## 行为
 

@@ -3,7 +3,8 @@
  *
  * 覆盖:
  * - 插件契约(name / inject / 装载日志);
- * - resolveConfig:默认值 / 链项解析 / fallbackWhen / 错误码识别 / maxRetries=0(链长上限);
+ * - resolveConfig:默认值 / 链项解析 / fallbackWhen / 错误码识别(含宿主失败码
+ *   对齐与旧码别名)/ maxRetries=0(链长上限);
  * - state 模块:nextCandidate 推进与边界 / backoffDelayMs 退避曲线;
  * - protocol section:无 {{var}} + 命令名一致 + order;
  * - apply 路径:
@@ -419,6 +420,50 @@ describe('resolveConfig', () => {
     });
     expect(c.retryableCodes).toEqual(new Set(['RATE_LIMIT', 'CUSTOM_CODE']));
   });
+
+  it('默认白名单对齐宿主失败码:含 SERVER / TRANSPORT,不含 omp 系旧码', () => {
+    // 回归:0.3.1 及之前默认含 omp 系码 NETWORK / SERVER_ERROR——宿主两套
+    // 适配器(deepseek / pi-ai)均不产出这两个码,导致 "Connection error."
+    // (宿主归类为 TRANSPORT)与 5xx(SERVER)不触发切换。
+    const c = resolveConfig({});
+    // 宿主实际产出且官方 dsh-llm-retry 默认重试的码
+    expect(c.retryableCodes.has('SERVER')).toBe(true);
+    expect(c.retryableCodes.has('TRANSPORT')).toBe(true);
+    expect(c.retryableCodes.has('RATE_LIMIT')).toBe(true);
+    expect(c.retryableCodes.has('TIMEOUT')).toBe(true);
+    expect(c.retryableCodes.has('EMPTY_RESPONSE')).toBe(true);
+    // 本插件有意超集:配额 / 上下文类(切模型是这些失败的本职出路)
+    expect(c.retryableCodes.has('QUOTA')).toBe(true);
+    expect(c.retryableCodes.has('ACCOUNT_QUOTA')).toBe(true);
+    expect(c.retryableCodes.has('CONTEXT_WINDOW_EXCEEDED')).toBe(true);
+    // 旧错码不应再出现在默认白名单
+    expect(c.retryableCodes.has('NETWORK')).toBe(false);
+    expect(c.retryableCodes.has('SERVER_ERROR')).toBe(false);
+    // 防过切:换模型也无解的失败码保持白名单外
+    expect(c.retryableCodes.has('AUTH')).toBe(false);
+    expect(c.retryableCodes.has('INVALID_REQUEST')).toBe(false);
+    expect(c.retryableCodes.has('INVALID_CREDENTIAL')).toBe(false);
+  });
+
+  it('旧码别名:自定义白名单含 NETWORK / SERVER_ERROR 时并集补入 TRANSPORT / SERVER', () => {
+    // 存量配置兼容:升级前保存过的自定义白名单里可能是旧码,
+    // resolveConfig 按并集补入宿主实际码,旧码保留无害(宿主不产出)。
+    const c = resolveConfig({
+      fallbackChains: ['a/x'],
+      retryableCodes: ['RATE_LIMIT', 'NETWORK', 'SERVER_ERROR'],
+    });
+    expect(c.retryableCodes).toEqual(
+      new Set(['RATE_LIMIT', 'NETWORK', 'SERVER_ERROR', 'TRANSPORT', 'SERVER']),
+    );
+  });
+
+  it('新码自定义白名单原样保留,不做别名变换', () => {
+    const c = resolveConfig({
+      fallbackChains: ['a/x'],
+      retryableCodes: ['TRANSPORT', 'SERVER'],
+    });
+    expect(c.retryableCodes).toEqual(new Set(['TRANSPORT', 'SERVER']));
+  });
 });
 
 // ── 3. state 模块 ────────────────────────────────────────────────────
@@ -701,6 +746,72 @@ describe('agent/request-error listener', () => {
     expect(nextSeed).toEqual(seed);
   });
 
+  it('afterRetry + TRANSPORT("Connection error.")官方重试耗尽 → 切下一候选', async () => {
+    // 核心回归:宿主把连接类失败(openai / Anthropic SDK 的
+    // APIConnectionError,消息 "Connection error.")归类为 TRANSPORT,
+    // 官方 dsh-llm-retry 默认重试它;本插件默认白名单须同样命中,
+    // 否则官方重试耗尽后不切换,对话以 "Connection error." 终态中断。
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['deepseek/deepseek-chat', 'openai/gpt-4o'],
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const errListener = findListener(listeners, 'agent/request-error');
+    // upstream=undefined:官方 retry 预算耗尽,决策权落到本插件
+    const result = await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure: stubFailure('TRANSPORT', 'Connection error.'),
+        signal: new AbortController().signal,
+      },
+      async () => undefined,
+    );
+    expect(result).toEqual({ kind: 'retry' });
+
+    // 状态已推进:下一请求的 seed 被改写为 openai/gpt-4o
+    const reqListener = findListener(listeners, 'agent/request');
+    const nextSeed = await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    expect(nextSeed).toEqual({ provider: 'openai', model: 'gpt-4o' });
+  });
+
+  it('afterRetry + SERVER(5xx)官方重试耗尽 → 切下一候选', async () => {
+    // 与 TRANSPORT 同源的回归:宿主把 5xx 归类为 SERVER(非 omp 系 SERVER_ERROR)
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['deepseek/deepseek-chat', 'openai/gpt-4o'],
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const errListener = findListener(listeners, 'agent/request-error');
+    const result = await callListener(
+      errListener,
+      {
+        turn: 2,
+        step: 3,
+        provider: 'deepseek',
+        failure: stubFailure('SERVER', 'Internal Server Error'),
+        signal: new AbortController().signal,
+      },
+      async () => undefined,
+    );
+    expect(result).toEqual({ kind: 'retry' });
+    const reqListener = findListener(listeners, 'agent/request');
+    const nextSeed = await callListener(
+      reqListener,
+      { turn: 2, step: 3, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    expect(nextSeed).toEqual({ provider: 'openai', model: 'gpt-4o' });
+  });
+
   it('immediately + upstream={retry} → 仍立即切换并返回 {kind: "retry"}', async () => {
     const { ctx, listeners } = stubCtx();
     apply(ctx, {
@@ -812,7 +923,7 @@ describe('agent/request-error listener', () => {
         turn: 1,
         step: 1,
         provider: 'anthropic',
-        failure: stubFailure('SERVER_ERROR'),
+        failure: stubFailure('SERVER'), // 宿主 5xx 实际码;此处链已耗尽 → 透传
         signal: new AbortController().signal,
       },
       async () => undefined,
