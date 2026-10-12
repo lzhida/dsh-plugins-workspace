@@ -24,12 +24,14 @@
 `packages/dsh-taskboard` 已在 pnpm workspaces 收录。仓库根执行一次 `pnpm install` 后:
 
 ```sh
-dsh plugin add link:packages/dsh-taskboard
+pnpm dsh plugin add link:<仓库绝对路径>/packages/dsh-taskboard   # link: 必须绝对路径(相对路径解析到 profile 目录)
 ```
 
 包内 `dsh.bundle.patch` 声明使其自动进入 profile 层,无需 overlay 注入。
 
 ### Git 安装(外部用户 / CI 缓存场景)
+
+> **⚠️ 本插件当前不适用**:dsh-taskboard 是 TS 源码入口,`github:` / `git+https` / `git+ssh` / tarball 实体安装后,入口文件落在 profile 的 `node_modules` 之下,Node 会以 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING` 拒绝加载(宿主只报静默的 `failed to import`)。**实际可用的只有上节 `link:` 绝对路径安装**;以下内容仅当插件改造为 dist 入口后才有意义(改造模式参见 [dsh-llm-fallback README](../dsh-llm-fallback/README.md))。
 
 以下四种形式等价,都只装 `packages/dsh-taskboard` 这个子包(其它子包不会拉入)。`<ref>` 替换为想锁定的分支 / tag / 提交(默认 = 远端默认分支 `main`):
 
@@ -139,10 +141,11 @@ pnpm typecheck
 pnpm test
 ```
 
-e2e(走真实 dsh Web UI 验证):
+e2e(走真实 dsh Web UI 验证,手工 CLI 流程见 skill §5):
 
 ```sh
-npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts -- packages/dsh-taskboard/src/index.ts
+pnpm dsh plugin --profile test add link:<仓库绝对路径>/packages/dsh-taskboard   # link: 必须绝对路径
+pnpm dsh --profile test --no-open --port 3865
 ```
 
 ## 教学版 vs 原版对比

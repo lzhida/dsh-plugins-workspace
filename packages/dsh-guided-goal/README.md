@@ -23,7 +23,8 @@
 前置:Node ≥ 22、pnpm 11、已安装 dsh。
 
 ```sh
-pnpm dsh plugin --profile default add link:packages/dsh-guided-goal
+# link: 必须绝对路径(相对路径按 pnpm 语义解析到 profile 目录,安装必败)
+pnpm dsh plugin --profile default add link:<仓库绝对路径>/packages/dsh-guided-goal
 ```
 
 安装后在 dsh Web UI 的设置 → 插件中确认「dsh-guided-goal」已启用,即可在会话输入框使用 `/guided-goal`。
@@ -33,7 +34,8 @@ pnpm dsh plugin --profile default add link:packages/dsh-guided-goal
 ```sh
 pnpm install    # 仓库根执行
 pnpm test       # vitest(含本包 src/index.test.ts)
-npx tsx .agents/skills/dsh-plugin-dev/scripts/test-e2e.ts -- packages/dsh-guided-goal/src/index.ts   # 真实 dsh Web UI 加载验证
+pnpm dsh plugin --profile test add link:<仓库绝对路径>/packages/dsh-guided-goal   # 装入 test profile(link: 必须绝对路径)
+pnpm dsh --profile test --no-open --port 3865                                     # 启动真实 dsh Web UI(三断言与清理见 skill §5)
 ```
 
 插件契约(`src/index.ts`):`export const name = 'dsh-guided-goal'`、`inject = ['commands', 'settings']`、`apply(ctx)` 内经 `ctx.effect` 注册 settings 驱动的命令同步。

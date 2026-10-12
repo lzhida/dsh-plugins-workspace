@@ -2,7 +2,7 @@
 
 English | [简体中文](./README.md)
 
-A collection of plugins for [dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)(DeepSeek Harness) — a TypeScript + cordis plugin monorepo. Plugins are loaded directly as TypeScript source by the dsh loader, with no build step.
+A collection of plugins for [dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)(DeepSeek Harness) — a TypeScript + cordis plugin monorepo. Plugins are loaded directly as TypeScript source by the dsh loader, with no build step by default (exception: `@zhidal/dsh-llm-fallback` ships a built dist entry bundled by esbuild, published on [npm](https://www.npmjs.com/package/@zhidal/dsh-llm-fallback)).
 
 > **Pure AI development**: all code in this repository is written entirely by AI coding agents.
 
@@ -61,48 +61,20 @@ Task board plugin (an architectural/teaching re-implementation of [cloader/dsh-t
 
 **Deliberately out of scope** (an architectural re-implementation, not a 1:1 port): the Web kanban UI, cron scheduler, worktree-isolated execution, external-session autosync, multi-repo mirror, task templates, image attachments. See the [package README](./packages/dsh-taskboard/README.md).
 
-### @lzhida/dsh-test-runner
-
-Repackages the e2e orchestration logic of `.agents/skills/dsh-plugin-dev/scripts/test-e2e.ts` into five `test_runner_*` agent tools, callable from any dsh session (instead of a developer running the shell script by hand). Boots real dsh Web UI under an isolated `~/.dsh/profiles/<name>` profile and runs three assertions (plugin load log, port reachable, tokened URL page); it never touches the current `default` profile or any running dsh instance.
-
-**Five-step method**
-
-| Step | Tool                          | Purpose                                                                                                                   |
-| ---- | ----------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| 1    | `test_runner_review_profiles` | Audit `~/.dsh/profiles/`, mark test-purpose profiles; if `createIfMissing=true`, bootstrap from the official web template |
-| 2    | `test_runner_install`         | Install the plugin under test into the test profile (auto-maintains cordis.patch.yml for local executors)                 |
-| 3    | `test_runner_boot`            | Spawn `dsh web` in the background, return `sessionId` and tokened URL; `ctx.effect` on unload force-kills the child       |
-| 4    | `test_runner_run_assertions`  | Poll the three assertions — **callable repeatedly until ready**                                                           |
-| 5    | `test_runner_cleanup`         | Explicit kill + uninstall the tested plugin; restore the profile to a clean state                                         |
-
-**Highlights**
-
-- **Three invocation paths**: developer shell (`npx tsx .../test-e2e.ts`) / background job + browser takeover / dsh-agent in-session five-step — pick the one that fits the context;
-- **Composable / concurrent**: every tool is independently callable; the agent decides the cadence and may retry on partial failure;
-- **Profile isolation + auto cleanup**: `test_runner_cleanup` explicitly kills the process and uninstalls the plugin; `ctx.effect` on unload is the safety net;
-- **Local executor compatibility**: automatically appends the "disable permission presets" block to the profile's `cordis.patch.yml` when needed (matches `test-e2e.ts` behaviour);
-- **system-prompt section**: `tool:test-runner` at order 2850; the model sees the five-step protocol before its first call;
-- **Hard-coded DoD**: load-log contract `[<name>]`, default port 3865, profile isolation, explicit cleanup — all baked into the tool descriptions.
-
 ## Installation
 
 Prerequisites: Node ≥ 22, pnpm 11, dsh installed.
 
-```sh
-# The guided goal command (independent, no executor dependency)
-pnpm dsh plugin --profile default add link:packages/dsh-guided-goal
+> **⚠️ Install restriction**: the plugins below are TS-source entries. They only support a local `link:` install **with an absolute path** — a relative `link:` path is resolved by pnpm against the profile directory (`~/.dsh/profiles/<name>/packages/...`), so the install always fails; git/npm/tarball entity installs are rejected by Node with `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`. Entity installs are only supported by the dist-entry [dsh-llm-fallback](./packages/dsh-llm-fallback/README.md).
 
-# Obsidian operations (independent — 9 obsidian_* tools + a generic entry, wraps Obsidian's built-in CLI)
-pnpm dsh plugin --profile default add link:packages/dsh-obsidian
-
-# The task board plugin (independent — 10 taskboard_* tools + code-level protocol gates)
-pnpm dsh plugin --profile default add link:packages/dsh-taskboard
-
-# The plugin e2e test agent tool (independent — five test_runner_* tools)
-pnpm dsh plugin --profile default add link:packages/dsh-test-runner
+```powershell
+# Run from the repository root (PowerShell). Git Bash: swap the path expression for "$(pwd -W)"; POSIX: "$(pwd)"
+pnpm dsh plugin --profile default add "link:$($PWD.Path -replace '\\','/')/packages/dsh-guided-goal"   # the guided goal command (independent, no executor dependency)
+pnpm dsh plugin --profile default add "link:$($PWD.Path -replace '\\','/')/packages/dsh-obsidian"      # Obsidian operations (independent — 9 obsidian_* tools + a generic entry, wraps Obsidian's built-in CLI)
+pnpm dsh plugin --profile default add "link:$($PWD.Path -replace '\\','/')/packages/dsh-taskboard"     # the task board (independent — 10 taskboard_* tools + code-level protocol gates)
 ```
 
-After installation, confirm the target plugins are enabled under dsh Web UI Settings → Plugins: use `/guided-goal` from the chat input for guided-goal; the task-board agent uses the `taskboard_*` tool set collaboratively from any session; the test-runner agent uses the `test_runner_*` tool set to drive plugin e2e in any isolated profile.
+After installation, confirm the target plugins are enabled under dsh Web UI Settings → Plugins: use `/guided-goal` from the chat input for guided-goal; the task-board agent uses the `taskboard_*` tool set collaboratively from any session.
 
 ## Development
 
@@ -115,9 +87,10 @@ pnpm test           # Vitest across all src/**/*.test.ts
 ```
 
 - **Pure TypeScript**: plugins have no build step; `package.json` `main` points straight at `src/index.ts` and is loaded by the host dsh loader;
-- **E2E**: the runner boots a real dsh instance with a dedicated profile (default `e2e`, auto-bootstrapped from the official web template when missing) — the plugin list is isolated per profile while `DSH_HOME` stays the global `~/.dsh` (model credentials are shared); asserts the plugin load log, web port reachability, and auth-chain health; tune with `E2E_PORT` / `E2E_TIMEOUT_MS` / `E2E_DSH_PROFILE` / `E2E_KEEP_MS` (runner at `.agents/skills/dsh-plugin-dev/scripts/test-e2e.ts`, run via `npx tsx`);
+- **E2E**: no dedicated script — follow the manual CLI flow in [.agents/skills/dsh-plugin-dev/SKILL.md](./.agents/skills/dsh-plugin-dev/SKILL.md) §5: boot a real dsh instance under a dedicated profile (default `e2e`, auto-bootstrapped from the official web template when missing); the plugin list is isolated per profile while `DSH_HOME` stays the global `~/.dsh` (model credentials are shared); asserts the `[<name>]` load log, port reachability, and tokened URL page health; `plugin remove` afterwards;
 - **Adding a plugin**: create `packages/<name>/` modeled on `packages/dsh-guided-goal/package.json`; `pnpm-workspace.yaml` picks it up automatically;
 - **Commits**: Chinese Conventional Commits; develop on `feat/*` / `fix/*` branches merged into `dev`, then into `main` after verification.
+- **CI**: a GitHub Actions pipeline ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on push / PR targeting `main` and `dev`, executing the same `format:check → lint → typecheck → test` gate chain as local development on Ubuntu with Node 22 / 24; [tests/ci-workflow.test.ts](tests/ci-workflow.test.ts) is a regression test for the pipeline itself, guarding the scripts it invokes, the gate order, and pinned action versions. E2E and npm publishing are out of CI scope (the former needs a real dsh instance and credentials, the latter publish authorization).
 
 ## License
 

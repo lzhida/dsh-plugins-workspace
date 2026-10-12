@@ -16,13 +16,13 @@ dsh-obsidian 插件:把 Obsidian 内置 CLI(`obsidian <command> [key=value ...]`
 
 ## 安装
 
-`dsh plugin add` 底层是 `pnpm add`,支持本地目录、`github:` / `git+https` / `git+ssh` / tarball 等多种源。
+`dsh plugin add` 底层是 `pnpm add`,支持本地目录、`github:` / `git+https` / `git+ssh` / tarball 等多种源。**注意**:本插件为 TS 源码入口,仅 `link:` 绝对路径安装可正常加载;`github:` / `git+https` / `git+ssh` / tarball 实体安装会因 Node 的 type-stripping 限制加载失败(`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`),dist 改造方案见 [dsh-llm-fallback README](../dsh-llm-fallback/README.md)。
 
 ### 仓库内开发(本地 link)
 
 ```sh
 pnpm install                     # 仓库根
-dsh plugin add link:packages/dsh-obsidian
+pnpm dsh plugin add link:<仓库绝对路径>/packages/dsh-obsidian   # link: 必须绝对路径(相对路径解析到 profile 目录)
 ```
 
 包内 `dsh.bundle.patch` 声明使其自动进入 profile 层,无需 overlay 注入。

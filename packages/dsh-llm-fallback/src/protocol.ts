@@ -24,7 +24,7 @@ const MODEL_FALLBACK_PROTOCOL_TEXT = `A host-level plugin (\`dsh-llm-fallback\`)
 
 ## What this means for you
 
-- **You do not need to handle transient model failures.** RATE_LIMIT, QUOTA, ACCOUNT_QUOTA, CONTEXT_WINDOW_EXCEEDED, EMPTY_RESPONSE, SERVER_ERROR, TIMEOUT, NETWORK — all of these are recovered within the same turn by switching to the next configured model. Treat them as if they did not happen.
+- **You do not need to handle transient model failures.** RATE_LIMIT, QUOTA, ACCOUNT_QUOTA, CONTEXT_WINDOW_EXCEEDED, EMPTY_RESPONSE, SERVER, TIMEOUT, TRANSPORT (connection failures such as "Connection error.") — all of these are recovered within the same turn by switching to the next configured model. Treat them as if they did not happen.
 - **You do not pick the model.** The user configures the chain (one primary, then N fallbacks). You do not call any tool to switch models, and there is no tool exposed by this plugin.
 - **By default the chain engages only after the host's built-in retry executor (\`dsh-llm-retry\`) has exhausted its budget on the current provider.** Same-provider retries happen first; cross-provider fallback is the second line of defense.
 - **If every model in the chain fails**, the error reaches the loop normally. Report it to the user as you would any other terminal error — the chain has been exhausted; there is nothing more to retry.
@@ -41,6 +41,10 @@ const MODEL_FALLBACK_PROTOCOL_TEXT = `A host-level plugin (\`dsh-llm-fallback\`)
 - Within one step (turn+step), fallback is bounded by \`maxRetries\` (default = chain length; this bounds chain switches, not same-provider retries). Once the chain is exhausted, the error surfaces.
 - The plugin never modifies the request contents, only the \`provider\` and \`model\` fields. Token budgets, tools, and prompts are preserved across the fallback.
 - Backoff between attempts is exponential (base × 2^attempt, capped at \`maxDelayMs\`) with ±10% jitter.
+
+## Configuration
+
+The user configures the chain in the host's settings UI (Settings → Plugins → dsh-llm-fallback). The settings panel shows available models from the user's configured providers as a checkbox list; the user picks which ones to include and drags to reorder — that order is the fallback sequence. Leave that UI to the user; do not invent your own model list.
 `;
 
 /** 构造 PromptSection(供 ctx.systemPrompt.section() 注册)。 */

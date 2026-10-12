@@ -3,7 +3,8 @@
  *
  * 覆盖:
  * - 插件契约(name / inject / 装载日志);
- * - resolveConfig:默认值 / 链项解析 / fallbackWhen / 错误码识别 / maxRetries=0(链长上限);
+ * - resolveConfig:默认值 / 链项解析 / fallbackWhen / 错误码识别(含宿主失败码
+ *   对齐与旧码别名)/ maxRetries=0(链长上限);
  * - state 模块:nextCandidate 推进与边界 / backoffDelayMs 退避曲线;
  * - protocol section:无 {{var}} + 命令名一致 + order;
  * - apply 路径:
@@ -27,9 +28,14 @@ import { apply, inject, name } from './index.ts';
 import {
   resolveConfig,
   resolveFallbackWhen,
+  normalizeChainEntry,
+  isVolatileLike,
+  unwrapVolatile,
+  volatileField,
   DEFAULT_RETRYABLE_CODES,
   Config,
 } from './config.ts';
+import { Config as ConfigFromIndex } from './index.ts';
 import {
   type FallbackState,
   backoffDelayMs,
@@ -117,8 +123,14 @@ describe('dsh-llm-fallback plugin contract', () => {
     expect(name).toBe('dsh-llm-fallback');
   });
 
-  it('inject 是空数组(无依赖)', () => {
-    expect(inject).toEqual([]);
+  it('inject 声明 systemPrompt 依赖(register section 需 ctx.systemPrompt 就绪)', () => {
+    // agent/request 与 agent/request-error 走全局 waterfall,无需注入;
+    // 但 apply() 内调用 ctx.systemPrompt.section(...) 注册协议,需要让
+    // cordis 等到 systemPrompt service 就绪后再调 apply,否则触发
+    // "cannot get property \"systemPrompt\" without inject"。
+    // (设置面板的模型目录由自带 client 经 remote.session.modelCatalog 获取,
+    //  不经过宿主侧本插件,故无需注入 llm。)
+    expect(inject).toEqual(['systemPrompt']);
   });
 
   it('apply 打印 `[dsh-llm-fallback] plugin loaded` 装载日志(e2e 契约)', () => {
@@ -172,6 +184,18 @@ describe('dsh-llm-fallback plugin contract', () => {
     expect(listeners).toHaveLength(0);
   });
 
+  it('apply 无第二参数(undefined 配置)不抛,仍注册 section,不挂 listener', () => {
+    // 全新 profile + 用户尚未填任何配置 = loader 传 undefined;应走全 default 路径
+    // (enabled=true, chain=[]) 而非 console.error 路径——index.ts:101 的契约。
+    const { ctx, listeners, sections } = stubCtx();
+    expect(() => apply(ctx)).not.toThrow();
+    // section 仍注册(协议说明)
+    expect(sections.length).toBeGreaterThan(0);
+    expect(sections[0]?.name).toBe(PROTOCOL_SECTION_NAME);
+    // 空 chain → 短路,不挂监听器
+    expect(listeners).toHaveLength(0);
+  });
+
   it('effect 卸载时 dispose 被收集', () => {
     const { ctx, cleanups } = stubCtx();
     apply(ctx, {
@@ -195,6 +219,20 @@ describe('resolveConfig', () => {
     expect(c.baseDelayMs).toBe(500);
     expect(c.maxDelayMs).toBe(30000);
     expect(c.perTurn).toBe(true);
+  });
+
+  it('undefined / null 输入视为空对象,默认值与 resolveConfig({}) 一致', () => {
+    // 回归:loader 在全新 profile / 用户未填任何配置时传入 undefined,
+    // 不应让 raw.enabled 在 config.ts:103 处抛 TypeError。
+    const cEmpty = resolveConfig({});
+    const cUndef = resolveConfig(undefined);
+    const cNull = resolveConfig(null);
+    expect(cUndef).toEqual(cEmpty);
+    expect(cNull).toEqual(cEmpty);
+    expect(cUndef.enabled).toBe(true);
+    expect(cUndef.chain).toEqual([]);
+    expect(cUndef.fallbackWhen).toBe('afterRetry');
+    expect(cUndef.maxRetries).toBe(1);
   });
 
   it('链项解析为 {provider, model}', () => {
@@ -239,6 +277,126 @@ describe('resolveConfig', () => {
     expect(resolveFallbackWhen('immediately')).toBe('immediately');
   });
 
+  // ── 0.2.x → 0.3.0 schema 迁移(向后兼容) ─────────────────────────
+
+  it('旧 string[] 输入("provider/model")自动归一为 object entries', () => {
+    // 0.2.x 形态的旧配置不应破坏;displayName 回填 "provider/model",description 空。
+    const c = resolveConfig({
+      fallbackChains: ['deepseek/deepseek-chat', 'openai/gpt-4o'],
+    });
+    expect(c.entries).toEqual([
+      {
+        provider: 'deepseek',
+        model: 'deepseek-chat',
+        displayName: 'deepseek/deepseek-chat',
+        description: '',
+      },
+      {
+        provider: 'openai',
+        model: 'gpt-4o',
+        displayName: 'openai/gpt-4o',
+        description: '',
+      },
+    ]);
+    // chain 字段保持旧的 (provider, model) 形态(下游 state.ts / 监听器不变)
+    expect(c.chain).toEqual([
+      { provider: 'deepseek', model: 'deepseek-chat' },
+      { provider: 'openai', model: 'gpt-4o' },
+    ]);
+  });
+
+  it('新 object[] 输入保留 displayName / description(显式给值)', () => {
+    const c = resolveConfig({
+      fallbackChains: [
+        {
+          provider: 'deepseek',
+          model: 'deepseek-chat',
+          displayName: 'DeepSeek Chat (primary)',
+          description: 'cheapest default',
+        },
+      ],
+    });
+    expect(c.entries[0]).toEqual({
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+      displayName: 'DeepSeek Chat (primary)',
+      description: 'cheapest default',
+    });
+  });
+
+  it('混形态输入(部分 string、部分 object)逐项归一', () => {
+    const c = resolveConfig({
+      fallbackChains: [
+        'deepseek/deepseek-chat',
+        {
+          provider: 'openai',
+          model: 'gpt-4o',
+          displayName: 'GPT-4o',
+        },
+        'anthropic/claude-sonnet-4',
+      ],
+    });
+    expect(c.entries.map((e) => e.displayName)).toEqual([
+      'deepseek/deepseek-chat', // string → 回填 "provider/model"
+      'GPT-4o', // object → 显式保留
+      'anthropic/claude-sonnet-4',
+    ]);
+    expect(c.chain).toHaveLength(3);
+  });
+
+  it('object 形态缺省 displayName / description 时回填', () => {
+    const c = resolveConfig({
+      fallbackChains: [{ provider: 'openai', model: 'gpt-4o' }],
+    });
+    expect(c.entries[0]).toEqual({
+      provider: 'openai',
+      model: 'gpt-4o',
+      displayName: 'openai/gpt-4o',
+      description: '',
+    });
+  });
+
+  it('非法形态(null / number / object 缺字段)抛错', () => {
+    expect(() =>
+      resolveConfig({ fallbackChains: [null as unknown as string] }),
+    ).toThrow(/must be a string or object/);
+    expect(() =>
+      resolveConfig({
+        fallbackChains: [42 as unknown as string],
+      }),
+    ).toThrow(/must be a string or object/);
+    expect(() =>
+      resolveConfig({
+        fallbackChains: [{ provider: 'openai' } as unknown as string],
+      }),
+    ).toThrow(/non-empty "provider" and "model"/);
+    expect(() =>
+      resolveConfig({
+        fallbackChains: [
+          { provider: 'openai', model: '' } as unknown as string,
+        ],
+      }),
+    ).toThrow(/non-empty "provider" and "model"/);
+  });
+
+  it('normalizeChainEntry 独立导出对单条归一', () => {
+    expect(normalizeChainEntry('a/x', 0)).toEqual({
+      provider: 'a',
+      model: 'x',
+      displayName: 'a/x',
+      description: '',
+    });
+    expect(normalizeChainEntry({ provider: 'b', model: 'y' }, 0)).toEqual({
+      provider: 'b',
+      model: 'y',
+      displayName: 'b/y',
+      description: '',
+    });
+    expect(
+      'error' in normalizeChainEntry({ provider: '', model: 'x' }, 0),
+    ).toBe(true);
+  });
+
   it('maxRetries=0 时退化为链长', () => {
     const c = resolveConfig({
       fallbackChains: ['a/x', 'b/y', 'c/z'],
@@ -261,6 +419,50 @@ describe('resolveConfig', () => {
       retryableCodes: ['RATE_LIMIT', 'CUSTOM_CODE'],
     });
     expect(c.retryableCodes).toEqual(new Set(['RATE_LIMIT', 'CUSTOM_CODE']));
+  });
+
+  it('默认白名单对齐宿主失败码:含 SERVER / TRANSPORT,不含 omp 系旧码', () => {
+    // 回归:0.3.1 及之前默认含 omp 系码 NETWORK / SERVER_ERROR——宿主两套
+    // 适配器(deepseek / pi-ai)均不产出这两个码,导致 "Connection error."
+    // (宿主归类为 TRANSPORT)与 5xx(SERVER)不触发切换。
+    const c = resolveConfig({});
+    // 宿主实际产出且官方 dsh-llm-retry 默认重试的码
+    expect(c.retryableCodes.has('SERVER')).toBe(true);
+    expect(c.retryableCodes.has('TRANSPORT')).toBe(true);
+    expect(c.retryableCodes.has('RATE_LIMIT')).toBe(true);
+    expect(c.retryableCodes.has('TIMEOUT')).toBe(true);
+    expect(c.retryableCodes.has('EMPTY_RESPONSE')).toBe(true);
+    // 本插件有意超集:配额 / 上下文类(切模型是这些失败的本职出路)
+    expect(c.retryableCodes.has('QUOTA')).toBe(true);
+    expect(c.retryableCodes.has('ACCOUNT_QUOTA')).toBe(true);
+    expect(c.retryableCodes.has('CONTEXT_WINDOW_EXCEEDED')).toBe(true);
+    // 旧错码不应再出现在默认白名单
+    expect(c.retryableCodes.has('NETWORK')).toBe(false);
+    expect(c.retryableCodes.has('SERVER_ERROR')).toBe(false);
+    // 防过切:换模型也无解的失败码保持白名单外
+    expect(c.retryableCodes.has('AUTH')).toBe(false);
+    expect(c.retryableCodes.has('INVALID_REQUEST')).toBe(false);
+    expect(c.retryableCodes.has('INVALID_CREDENTIAL')).toBe(false);
+  });
+
+  it('旧码别名:自定义白名单含 NETWORK / SERVER_ERROR 时并集补入 TRANSPORT / SERVER', () => {
+    // 存量配置兼容:升级前保存过的自定义白名单里可能是旧码,
+    // resolveConfig 按并集补入宿主实际码,旧码保留无害(宿主不产出)。
+    const c = resolveConfig({
+      fallbackChains: ['a/x'],
+      retryableCodes: ['RATE_LIMIT', 'NETWORK', 'SERVER_ERROR'],
+    });
+    expect(c.retryableCodes).toEqual(
+      new Set(['RATE_LIMIT', 'NETWORK', 'SERVER_ERROR', 'TRANSPORT', 'SERVER']),
+    );
+  });
+
+  it('新码自定义白名单原样保留,不做别名变换', () => {
+    const c = resolveConfig({
+      fallbackChains: ['a/x'],
+      retryableCodes: ['TRANSPORT', 'SERVER'],
+    });
+    expect(c.retryableCodes).toEqual(new Set(['TRANSPORT', 'SERVER']));
   });
 });
 
@@ -544,6 +746,72 @@ describe('agent/request-error listener', () => {
     expect(nextSeed).toEqual(seed);
   });
 
+  it('afterRetry + TRANSPORT("Connection error.")官方重试耗尽 → 切下一候选', async () => {
+    // 核心回归:宿主把连接类失败(openai / Anthropic SDK 的
+    // APIConnectionError,消息 "Connection error.")归类为 TRANSPORT,
+    // 官方 dsh-llm-retry 默认重试它;本插件默认白名单须同样命中,
+    // 否则官方重试耗尽后不切换,对话以 "Connection error." 终态中断。
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['deepseek/deepseek-chat', 'openai/gpt-4o'],
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const errListener = findListener(listeners, 'agent/request-error');
+    // upstream=undefined:官方 retry 预算耗尽,决策权落到本插件
+    const result = await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure: stubFailure('TRANSPORT', 'Connection error.'),
+        signal: new AbortController().signal,
+      },
+      async () => undefined,
+    );
+    expect(result).toEqual({ kind: 'retry' });
+
+    // 状态已推进:下一请求的 seed 被改写为 openai/gpt-4o
+    const reqListener = findListener(listeners, 'agent/request');
+    const nextSeed = await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    expect(nextSeed).toEqual({ provider: 'openai', model: 'gpt-4o' });
+  });
+
+  it('afterRetry + SERVER(5xx)官方重试耗尽 → 切下一候选', async () => {
+    // 与 TRANSPORT 同源的回归:宿主把 5xx 归类为 SERVER(非 omp 系 SERVER_ERROR)
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['deepseek/deepseek-chat', 'openai/gpt-4o'],
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const errListener = findListener(listeners, 'agent/request-error');
+    const result = await callListener(
+      errListener,
+      {
+        turn: 2,
+        step: 3,
+        provider: 'deepseek',
+        failure: stubFailure('SERVER', 'Internal Server Error'),
+        signal: new AbortController().signal,
+      },
+      async () => undefined,
+    );
+    expect(result).toEqual({ kind: 'retry' });
+    const reqListener = findListener(listeners, 'agent/request');
+    const nextSeed = await callListener(
+      reqListener,
+      { turn: 2, step: 3, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    expect(nextSeed).toEqual({ provider: 'openai', model: 'gpt-4o' });
+  });
+
   it('immediately + upstream={retry} → 仍立即切换并返回 {kind: "retry"}', async () => {
     const { ctx, listeners } = stubCtx();
     apply(ctx, {
@@ -655,7 +923,7 @@ describe('agent/request-error listener', () => {
         turn: 1,
         step: 1,
         provider: 'anthropic',
-        failure: stubFailure('SERVER_ERROR'),
+        failure: stubFailure('SERVER'), // 宿主 5xx 实际码;此处链已耗尽 → 透传
         signal: new AbortController().signal,
       },
       async () => undefined,
@@ -699,5 +967,166 @@ describe('Config schema', () => {
     expect(
       typeof (Config as unknown as { description: unknown }).description,
     ).toBe('function');
+  });
+
+  it('fallbackChains 挂 role("modelList", { source: "dsh-llm-runtime" })', () => {
+    // role 字段给 dsh 前端 SettingsValueField 提示用 modelList 渲染器;
+    // 若前端不识别,降级为对象数组输入框(功能不受影响)。
+    const chains = (
+      Config as unknown as {
+        dict: Record<
+          string,
+          {
+            role?: string;
+            meta?: { role?: string; extra?: Record<string, unknown> };
+          }
+        >;
+      }
+    ).dict?.fallbackChains;
+    expect(chains).toBeDefined();
+    // schemastery 内部把 .role() 写到 meta.role;role 文本是 "modelList"。
+    // 我们不强求 meta.role 一定是字符串(不同 schemastery 版本可能存为 list),
+    // 但要确认 meta 中存在 role 字段,值含 "modelList"。
+    const meta = chains?.meta;
+    expect(meta).toBeDefined();
+    const roleValue = meta?.role;
+    // role 可能是字符串,也可能被包成 list(若用 .role() 链式调多次)—— 至少含 modelList
+    const roleStr = Array.isArray(roleValue)
+      ? roleValue.join(',')
+      : String(roleValue);
+    expect(roleStr).toContain('modelList');
+  });
+
+  it('fallbackChains meta.extra 包含 role 传来的 { source: "dsh-llm-runtime" }', () => {
+    // schemastery 的 .role(role, extra) 把 extra 直接挂在 meta.extra;
+    // 前端 modelList 渲染器读此字段决定候选模型来源(snapshot 由插件运行时填)。
+    const chains = (
+      Config as unknown as {
+        dict: Record<string, { meta?: { role?: unknown; extra?: unknown } }>;
+      }
+    ).dict?.fallbackChains;
+    const extra = chains?.meta?.extra;
+    expect(extra).toBeDefined();
+    expect((extra as { source?: string } | undefined)?.source).toBe(
+      'dsh-llm-runtime',
+    );
+  });
+
+  it('每个字段都标了 meta.volatile(否则设置面板整个不出现该插件)', () => {
+    // 宿主 `@deepseek-ai/dsh-settings` 的 describe() 用 volatileForm(schema) 过滤,
+    // 没有 volatile 字段的条目会被整个丢弃(describe 返回 [] + 写入抛
+    // "Plugin entry X has no volatile fields")。故这是设置 UI 的硬前提。
+    const dict = (
+      Config as unknown as {
+        dict: Record<string, { meta?: { volatile?: unknown } }>;
+      }
+    ).dict;
+    const fields = [
+      'enabled',
+      'fallbackChains',
+      'fallbackWhen',
+      'maxRetries',
+      'baseDelayMs',
+      'maxDelayMs',
+      'retryableCodes',
+      'perTurn',
+    ];
+    for (const field of fields) {
+      expect(dict[field], `missing field ${field}`).toBeDefined();
+      expect(dict[field]?.meta?.volatile, `${field} not volatile`).toBe(true);
+    }
+  });
+
+  it('maxRetries 挂 role("modelChainMeta", { kind: "retries" })', () => {
+    // 给 dsh 前端提示"这是 fallback 链的元数据",可与 fallbackChains
+    // 在同一 UI 区块里联排显示。
+    const maxRetries = (
+      Config as unknown as {
+        dict: Record<string, { meta?: { role?: unknown } }>;
+      }
+    ).dict?.maxRetries;
+    const roleValue = maxRetries?.meta?.role;
+    const roleStr = Array.isArray(roleValue)
+      ? roleValue.join(',')
+      : String(roleValue);
+    expect(roleStr).toContain('modelChainMeta');
+  });
+});
+
+describe('volatile 解包', () => {
+  it('isVolatileLike 按 cosmokit 协议识别(全局 Symbol)', () => {
+    const write = Symbol.for('cosmokit.volatile.write');
+    const ref = { get: () => 1, [write]: () => {} };
+    expect(isVolatileLike(ref)).toBe(true);
+    expect(isVolatileLike({ get: () => 1 })).toBe(false);
+    expect(isVolatileLike(null)).toBe(false);
+    expect(isVolatileLike(42)).toBe(false);
+  });
+
+  it('unwrapVolatile 深度解包对象/数组里的引用', () => {
+    const write = Symbol.for('cosmokit.volatile.write');
+    const wrap = (value: unknown): unknown => ({
+      get: () => value,
+      [write]: () => {},
+    });
+    const input = {
+      enabled: wrap(false),
+      fallbackChains: wrap([
+        wrap({ provider: 'a', model: 'x' }),
+        { provider: 'b', model: 'y' },
+      ]),
+      maxRetries: wrap(3),
+    };
+    expect(unwrapVolatile(input)).toEqual({
+      enabled: false,
+      fallbackChains: [
+        { provider: 'a', model: 'x' },
+        { provider: 'b', model: 'y' },
+      ],
+      maxRetries: 3,
+    });
+  });
+
+  it('resolveConfig 接受 volatile 引用形态的配置(设置面板写入路径)', () => {
+    const write = Symbol.for('cosmokit.volatile.write');
+    const wrap = (value: unknown): unknown => ({
+      get: () => value,
+      [write]: () => {},
+    });
+    // 模拟 loader 把 volatile 字段投影给 apply() 的形态
+    const resolved = resolveConfig({
+      enabled: wrap(true),
+      fallbackChains: wrap([
+        wrap({ provider: 'deepseek', model: 'deepseek-chat' }),
+        wrap('openai/gpt-4o'),
+      ]),
+      maxRetries: wrap(2),
+      fallbackWhen: wrap('immediately'),
+    });
+    expect(resolved.enabled).toBe(true);
+    expect(resolved.chain).toEqual([
+      { provider: 'deepseek', model: 'deepseek-chat' },
+      { provider: 'openai', model: 'gpt-4o' },
+    ]);
+    expect(resolved.maxRetries).toBe(2);
+    expect(resolved.fallbackWhen).toBe('immediately');
+  });
+
+  it('volatileField 无 volatile 方法时原样返回(守卫)', () => {
+    const plain = { tag: 'plain' } as { tag: string; volatile?: unknown };
+    expect(volatileField(plain)).toBe(plain);
+  });
+});
+
+// ── 8. index.ts re-exports Config(避免 dsh settings UI 不渲染字段)──
+
+describe('Config re-export from index.ts', () => {
+  it('index.ts 显式 re-export Config(否则 dsh loader 读不到 schema)', () => {
+    // 回归:`Config` 定义在 config.ts,但 dsh 加载器 import 的是
+    // package.json `main` 指向的 src/index.ts。若 index.ts 不 re-export,
+    // dsh-app-boot 的 collectConfigSchemas 拿不到 schema,configRef
+    // 会变成 "#/$defs/unknownConfig",settings 面板不渲染本插件字段。
+    expect(ConfigFromIndex).toBeDefined();
+    expect(ConfigFromIndex).toBe(Config); // 与 config.ts 同一对象引用
   });
 });
