@@ -34,6 +34,9 @@ export function createPlanGoalGuard(
   ctx: Context,
   denyReason: string,
 ): ToolGuard {
+  // 拒绝日志按会话对象去重:同会话只记首条,denyReason 照常返回给模型,
+  // 避免模型反复重试时刷屏。进程内 WeakMap,随会话对象回收。
+  const loggedSessions = new WeakMap<object, true>();
   return (execution) => {
     // 只拦 create_goal;update_goal 等其余工具不经过本闸门
     if (execution.name !== 'create_goal') return undefined;
@@ -43,7 +46,20 @@ export function createPlanGoalGuard(
     try {
       const view = ctx.sessionProjections.snapshot(agent.session, ['plan'])
         .values.plan;
-      if (view?.active === true || view?.pending === true) return denyReason;
+      if (view?.active === true || view?.pending === true) {
+        // 可观测性:拦截是闸门正常工作,info 级记录(每会话一次),既留下
+        // "拒绝路径确实发生过"的运行证据,也不干扰常规日志。
+        const session = agent.session as object;
+        if (!loggedSessions.has(session)) {
+          loggedSessions.set(session, true);
+          ctx.logger.info(
+            '[plan-goal] create_goal denied: plan projection {active: %s, pending: %s}',
+            String(view.active),
+            String(view.pending),
+          );
+        }
+        return denyReason;
+      }
       return undefined;
     } catch {
       // fail-open:投影注册表缺失/'plan' 键未注册(计划域未挂载)/读失败

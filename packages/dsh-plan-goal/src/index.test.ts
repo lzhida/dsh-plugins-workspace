@@ -3,6 +3,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { ToolExecution } from '@deepseek-ai/dsh-tools';
 import { apply, inject, name, resolveLanguage } from './index.ts';
 import { createPlanGoalGuard } from './guard.ts';
+import { checkConsistency, extractHeadings } from './consistency.ts';
 import { buildPlanGoalMessage, userText } from './protocol.ts';
 
 beforeEach(() => {
@@ -66,15 +67,28 @@ function stubCtx(
   guards: RecordedGuard[];
   cleanups: Array<() => void>;
   planInvocations: Array<Record<string, unknown>>;
+  loggerInfo: ReturnType<typeof vi.fn>;
+  loggerWarn: ReturnType<typeof vi.fn>;
+  listeners: Map<string, Array<(...args: unknown[]) => unknown>>;
 } {
   const registered: RecordedCommand[] = [];
   const guards: RecordedGuard[] = [];
   const cleanups: Array<() => void> = [];
   const planInvocations: Array<Record<string, unknown>> = [];
+  const loggerInfo = vi.fn();
+  const loggerWarn = vi.fn();
+  const listeners = new Map<string, Array<(...args: unknown[]) => unknown>>();
   const ctx = {
     effect(fn: () => (() => void) | void): void {
       const cleanup = fn();
       if (cleanup) cleanups.push(cleanup);
+    },
+    logger: { info: loggerInfo, warn: loggerWarn },
+    on(event: string, listener: (...args: unknown[]) => unknown): () => void {
+      const bucket = listeners.get(event) ?? [];
+      bucket.push(listener);
+      listeners.set(event, bucket);
+      return () => {};
     },
     commands: {
       register(def: RecordedCommand): () => void {
@@ -115,7 +129,16 @@ function stubCtx(
     },
     ...(options.settings === undefined ? {} : { settings: options.settings }),
   } as unknown as Context;
-  return { ctx, registered, guards, cleanups, planInvocations };
+  return {
+    ctx,
+    registered,
+    guards,
+    cleanups,
+    planInvocations,
+    loggerInfo,
+    loggerWarn,
+    listeners,
+  };
 }
 
 describe('dsh-plan-goal 契约', () => {
@@ -159,6 +182,22 @@ describe('dsh-plan-goal 契约', () => {
     const { ctx, registered } = stubCtx();
     apply(ctx, { language: 'zh' });
     expect(registered[0].input?.hint).toBe('[<draft>]');
+  });
+
+  it('description 写明适用前提与小任务分流(提示词契约防回归)', () => {
+    const { ctx, registered } = stubCtx();
+    apply(ctx);
+    const desc = registered[0].description ?? '';
+    expect(desc).toContain('/guided-goal');
+    expect(desc).toContain('/plan');
+    expect(desc).toContain('大型或含糊任务');
+    expect(desc).toContain('large or ambiguous tasks');
+  });
+
+  it('默认配置注册 tools/result 一致性监听', () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx);
+    expect(listeners.get('tools/result')).toHaveLength(1);
   });
 
   it('resolveLanguage 配置非 auto 时短路采用配置值', () => {
@@ -217,7 +256,7 @@ describe('dsh-plan-goal 命令 handler', () => {
       rawInput: '重构鉴权模块',
     });
     expect(result.kind).toBe('error');
-    expect(result.text).toContain('@deepseek-ai/dsh-plan-mode');
+    expect(result.text).toContain('agent preset');
     expect(steer).not.toHaveBeenCalled();
   });
 
@@ -385,5 +424,211 @@ describe('dsh-plan-goal 协议消息', () => {
     expect(text).toContain('User draft intent:');
     expect(text).not.toContain('请严格按以下协议执行');
     expect(text.endsWith('refactor auth')).toBe(true);
+  });
+});
+
+describe('dsh-plan-goal guard 拦截日志', () => {
+  /** 构造最小 ToolExecution 形状:守卫只读 name 与 agent。 */
+  function execOf(name: string, agent?: unknown): ToolExecution {
+    return { name, agent } as unknown as ToolExecution;
+  }
+
+  it('plan-active 拒绝时输出结构化日志且同会话只记首条', () => {
+    const { ctx, loggerInfo } = stubCtx({
+      planProjection: { active: true },
+    });
+    apply(ctx);
+    const guard = createPlanGoalGuard(ctx, '拒绝');
+    const session = {};
+    expect(guard(execOf('create_goal', { session }))).toBe('拒绝');
+    expect(guard(execOf('create_goal', { session }))).toBe('拒绝');
+    expect(loggerInfo).toHaveBeenCalledTimes(1);
+    expect(String(loggerInfo.mock.calls[0][0])).toContain(
+      '[plan-goal] create_goal denied',
+    );
+  });
+
+  it('放行路径不产生日志', () => {
+    const { ctx, loggerInfo } = stubCtx({ planProjection: { active: false } });
+    apply(ctx);
+    const guard = createPlanGoalGuard(ctx, '拒绝');
+    guard(execOf('create_goal', { session: {} }));
+    guard(execOf('update_goal', { session: {} }));
+    expect(loggerInfo).not.toHaveBeenCalled();
+  });
+
+  it('不同会话各自记首条日志', () => {
+    const { ctx, loggerInfo } = stubCtx({
+      planProjection: { active: true },
+    });
+    apply(ctx);
+    const guard = createPlanGoalGuard(ctx, '拒绝');
+    guard(execOf('create_goal', { session: {} }));
+    guard(execOf('create_goal', { session: {} }));
+    expect(loggerInfo).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('dsh-plan-goal objective–plan 一致性监听', () => {
+  function listenerOf(
+    listeners: Map<string, Array<(...args: unknown[]) => unknown>>,
+  ) {
+    const bucket = listeners.get('tools/result');
+    if (!bucket || bucket.length !== 1)
+      throw new Error('listener not registered');
+    return bucket[0] as (
+      exec: { name: string; arguments?: unknown; agent?: unknown },
+      result: { isError: boolean },
+    ) => void;
+  }
+
+  const PLAN = [
+    '# 计划',
+    '## Objective',
+    '目标正文',
+    '## Success criteria',
+    '标准正文',
+    '## Boundaries',
+    '边界正文',
+  ].join('\n');
+  const sessionOf = () => ({});
+  const ok = () => ({ isError: false });
+  const fail = () => ({ isError: true });
+
+  it('批准计划后 objective 缺失计划标题 → warn 列出缺失项', () => {
+    const { ctx, listeners, loggerWarn } = stubCtx();
+    apply(ctx);
+    const listener = listenerOf(listeners);
+    const session = sessionOf();
+    listener(
+      { name: 'exit_plan_mode', arguments: { plan: PLAN }, agent: { session } },
+      ok(),
+    );
+    listener(
+      {
+        name: 'create_goal',
+        arguments: { objective: '## Objective\n只有目标' },
+        agent: { session },
+      },
+      ok(),
+    );
+    expect(loggerWarn).toHaveBeenCalledTimes(1);
+    // 第二实参即缺失标题列表,按计划顺序、不含 ## 前缀
+    expect(loggerWarn.mock.calls[0][1]).toBe('Success criteria | Boundaries');
+  });
+
+  it('objective 完整覆盖计划标题时不告警', () => {
+    const { ctx, listeners, loggerWarn } = stubCtx();
+    apply(ctx);
+    const listener = listenerOf(listeners);
+    const session = sessionOf();
+    listener(
+      { name: 'exit_plan_mode', arguments: { plan: PLAN }, agent: { session } },
+      ok(),
+    );
+    listener(
+      {
+        name: 'create_goal',
+        arguments: {
+          objective:
+            '## Objective\nx\n## Success criteria\ny\n## Boundaries\nz',
+        },
+        agent: { session },
+      },
+      ok(),
+    );
+    expect(loggerWarn).not.toHaveBeenCalled();
+  });
+
+  it('缓存取后即删:同会话第二次 create_goal 不再比对', () => {
+    const { ctx, listeners, loggerWarn } = stubCtx();
+    apply(ctx);
+    const listener = listenerOf(listeners);
+    const session = sessionOf();
+    listener(
+      { name: 'exit_plan_mode', arguments: { plan: PLAN }, agent: { session } },
+      ok(),
+    );
+    listener(
+      {
+        name: 'create_goal',
+        arguments: { objective: '只有目标' },
+        agent: { session },
+      },
+      ok(),
+    );
+    listener(
+      {
+        name: 'create_goal',
+        arguments: { objective: '只有目标' },
+        agent: { session },
+      },
+      ok(),
+    );
+    expect(loggerWarn).toHaveBeenCalledTimes(1);
+  });
+
+  it('无缓存(guided-goal/手动流程)不误报', () => {
+    const { ctx, listeners, loggerWarn } = stubCtx();
+    apply(ctx);
+    const listener = listenerOf(listeners);
+    listener(
+      {
+        name: 'create_goal',
+        arguments: { objective: '只有目标' },
+        agent: { session: {} },
+      },
+      ok(),
+    );
+    expect(loggerWarn).not.toHaveBeenCalled();
+  });
+
+  it('失败结果与无关工具不进入比对', () => {
+    const { ctx, listeners, loggerWarn } = stubCtx();
+    apply(ctx);
+    const listener = listenerOf(listeners);
+    const session = sessionOf();
+    listener(
+      { name: 'exit_plan_mode', arguments: { plan: PLAN }, agent: { session } },
+      fail(),
+    );
+    listener(
+      {
+        name: 'create_goal',
+        arguments: { objective: '只有目标' },
+        agent: { session },
+      },
+      ok(),
+    );
+    expect(loggerWarn).not.toHaveBeenCalled();
+    listener(
+      {
+        name: 'update_goal',
+        arguments: { objective: 'x' },
+        agent: { session },
+      },
+      ok(),
+    );
+    expect(loggerWarn).not.toHaveBeenCalled();
+  });
+});
+
+describe('dsh-plan-goal consistency 纯函数', () => {
+  it('extractHeadings 提取 ## 级标题并容忍缩进与尾随空白', () => {
+    expect(
+      extractHeadings('# 顶级\n## A\n正文\n  ## B  \n### 三级\n##C 无空格不算'),
+    ).toEqual(['A', 'B']);
+  });
+
+  it('checkConsistency 全命中返回空缺失,缺失按计划顺序列出', () => {
+    const plan = '## A\nx\n## B\ny';
+    expect(checkConsistency(plan, '## A\n1\n## B\n2').missing).toEqual([]);
+    expect(checkConsistency(plan, '## B\n2').missing).toEqual(['A']);
+    expect(checkConsistency(plan, '## C\n3').missing).toEqual(['A', 'B']);
+  });
+
+  it('空文本或无标题按无约束处理', () => {
+    expect(checkConsistency('', '随便').missing).toEqual([]);
+    expect(checkConsistency('无标题计划', '随便').missing).toEqual([]);
   });
 });

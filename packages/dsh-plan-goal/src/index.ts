@@ -5,6 +5,7 @@ import type {} from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-commands';
 import type {} from '@deepseek-ai/dsh-tools';
 import Schema from '@deepseek-ai/schemastery';
+import { checkConsistency } from './consistency.ts';
 import { createPlanGoalGuard } from './guard.ts';
 import { buildPlanGoalMessage } from './protocol.ts';
 
@@ -28,6 +29,10 @@ export const inject = ['commands', 'tools', 'sessionProjections'];
  * plan-mode 自身注册的 /plan 命令(其 handler 闭包持有服务),读状态走
  * session projection——两条路径都是宿主公开 API。sessionProjections 声明
  * 进 inject(dsh 读取方的官方要求;该服务在 dsh-base bundle 恒在)。
+ *
+ * 内容闸(warn-only):guard 是时序闸,批准后 objective 若丢失了已审计划的
+ * ## 字段结构,由 tools/result 监听做标题级一致性比对并 logger.warn——
+ * 只报偏离不阻断,语义级忠实性仍由人审环节把关。
  *
  * 配置(dsh 静态 Config 声明):`Config` 导出名声明 schema,cordis/loader
  * 投影成设置表单;apply 第二参收到已校验普通值。三项均非 volatile,变更时
@@ -117,8 +122,8 @@ export function commandTexts(language: ConfigLanguage): CommandTexts {
   return {
     planGoalHint: '[<draft>]',
     planGoalDescription: both(
-      'Plan-first goal creation: research first, embed a five-field goal block (objective / success criteria / verification / boundaries / stop conditions) in the plan, and create_goal in the same turn after the plan is approved',
-      '计划式创建 goal:先调研,把五字段块(目标/成功标准/验证方式/边界/停止条件)内嵌进计划,经审阅批准后同轮 create_goal',
+      'Plan-first goal creation for large or ambiguous tasks: research first, embed a five-field goal block (objective / success criteria / verification / boundaries / stop conditions) in the plan, and create_goal in the same turn after the plan is approved. For small tasks use /guided-goal; for plain planning without a goal use /plan',
+      '计划式创建 goal,适用于大型或含糊任务:先调研,把五字段块(目标/成功标准/验证方式/边界/停止条件)内嵌进计划,经审阅批准后同轮 create_goal。小任务请用 /guided-goal;纯规划(不建 goal)直接用 /plan',
     ),
     planGoalUsage: both(
       'Usage: /plan-goal [<draft>]',
@@ -129,8 +134,8 @@ export function commandTexts(language: ConfigLanguage): CommandTexts {
       '已启动 plan-goal 流程:先调研,把五字段 goal 块内嵌进计划并经 exit_plan_mode 提交审阅;批准后同轮 create_goal 解锁。放弃可用 /plan off。',
     ),
     planModeMissing: both(
-      '@deepseek-ai/dsh-plan-mode is not mounted; plan-goal requires it',
-      '请先挂载 @deepseek-ai/dsh-plan-mode',
+      "This session's agent preset provides no /plan command (plan-mode is not mounted with the preset, e.g. minimal); switch to the standard preset and retry",
+      '当前会话的 agent preset 未提供 /plan 命令(plan-mode 未随 preset 挂载,如 minimal);请切换到 standard 等 preset 后重试',
     ),
     denyReason: both(
       'create_goal is denied while plan mode is active or pending: present or revise the plan via exit_plan_mode first; create_goal unlocks after approval',
@@ -193,7 +198,40 @@ export function apply(
       // 同上:guard disposer 自动附着,单调拒绝语义由宿主管线保证
       ctx.tools.guard(createPlanGoalGuard(ctx, t.denyReason));
     }
-    // effect 契约要求返回 disposer;注销已由 register/guard 自附着的 effect 负责。
+    // 一致性告警(warn-only 内容闸):guard 只管"何时能建",不管"建得对不
+    // 对"——这里补可发现的偏离。exit_plan_mode 成功(计划获人审批准)时缓存
+    // 计划文本;create_goal 成功后取缓存(取后即删)比对 objective 是否保留
+    // 计划的 ## 标题结构,缺失走 logger.warn。无缓存(guided-goal/手动流程)
+    // 静默跳过,不误报。监听注册在插件 effect 内,随 fiber 卸载注销;回调
+    // 每次工具调用都会进入,仅做名字与 isError 的 O(1) 过滤。
+    const reviewedPlans = new WeakMap<object, string>();
+    ctx.on('tools/result', (exec, result) => {
+      if (result.isError) return;
+      const agent = exec.agent;
+      if (agent === undefined) return;
+      const session = agent.session as object;
+      if (exec.name === 'exit_plan_mode') {
+        const plan = (exec.arguments as { plan?: unknown }).plan;
+        if (typeof plan === 'string' && plan.length > 0) {
+          reviewedPlans.set(session, plan);
+        }
+        return;
+      }
+      if (exec.name !== 'create_goal') return;
+      const plan = reviewedPlans.get(session);
+      if (plan === undefined) return;
+      reviewedPlans.delete(session);
+      const objective = (exec.arguments as { objective?: unknown }).objective;
+      if (typeof objective !== 'string') return;
+      const { missing } = checkConsistency(plan, objective);
+      if (missing.length > 0) {
+        ctx.logger.warn(
+          '[plan-goal] objective missing approved plan headings: %s',
+          missing.join(' | '),
+        );
+      }
+    });
+    // effect 契约要求返回 disposer;注销已由 register/guard/on 自附着的 effect 负责。
     return () => {};
   }, 'plan-goal: command and guard registration');
 }
