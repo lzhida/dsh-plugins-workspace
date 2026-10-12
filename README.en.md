@@ -90,6 +90,7 @@ pnpm test           # Vitest across all src/**/*.test.ts
 - **E2E**: no dedicated script — follow the manual CLI flow in [.agents/skills/dsh-plugin-dev/SKILL.md](./.agents/skills/dsh-plugin-dev/SKILL.md) §5: boot a real dsh instance under a dedicated profile (default `e2e`, auto-bootstrapped from the official web template when missing); the plugin list is isolated per profile while `DSH_HOME` stays the global `~/.dsh` (model credentials are shared); asserts the `[<name>]` load log, port reachability, and tokened URL page health; `plugin remove` afterwards;
 - **Adding a plugin**: create `packages/<name>/` modeled on `packages/dsh-guided-goal/package.json`; `pnpm-workspace.yaml` picks it up automatically;
 - **Commits**: Chinese Conventional Commits; develop on `feat/*` / `fix/*` branches merged into `dev`, then into `main` after verification.
+- **CI**: a GitHub Actions pipeline ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on push / PR targeting `main` and `dev`, executing the same `format:check → lint → typecheck → test` gate chain as local development on Ubuntu with Node 22 / 24; [tests/ci-workflow.test.ts](tests/ci-workflow.test.ts) is a regression test for the pipeline itself, guarding the scripts it invokes, the gate order, and pinned action versions. E2E and npm publishing are out of CI scope (the former needs a real dsh instance and credentials, the latter publish authorization).
 
 ## License
 

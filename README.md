@@ -90,6 +90,7 @@ pnpm test           # Vitest,全仓 src/**/*.test.ts
 - **E2E**:无专用脚本——按 [.agents/skills/dsh-plugin-dev/SKILL.md](./.agents/skills/dsh-plugin-dev/SKILL.md) §5 的手工 CLI 流程,以独立 profile(默认 `e2e`,缺失时从官方 web 模板引导)启动真实 dsh 实例;插件列表按 profile 隔离,`DSH_HOME` 共享全局 `~/.dsh`(模型凭证不隔离);断言 `[<name>]` 加载日志、端口可达与 tokened URL 页面健康,测完 `plugin remove` 清理;
 - **新增插件**:仿照 `packages/dsh-guided-goal/package.json` 建 `packages/<name>/` 即可,`pnpm-workspace.yaml` 自动收录;
 - **提交规范**:中文 Conventional Commits;开发走 `feat/*`、`fix/*` 分支合入 `dev`,验证后合入 `main`。
+- **CI**:GitHub Actions 流水线([.github/workflows/ci.yml](.github/workflows/ci.yml))在 push / PR 面向 `main`、`dev` 时运行,Ubuntu 上 Node 22 / 24 双版本执行与本地一致的 `format:check → lint → typecheck → test` 门禁链;[tests/ci-workflow.test.ts](tests/ci-workflow.test.ts) 作为配置回归测试,守护工作流引用的脚本、门禁顺序与 action 固定版本。e2e 与 npm 发布不在 CI 范围内(前者需真实 dsh 实例与凭证,后者需发布授权)。
 
 ## License
 
