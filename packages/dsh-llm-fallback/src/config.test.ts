@@ -35,6 +35,7 @@ import {
   isVolatileLike,
   unwrapVolatile,
   volatileField,
+  desc,
   DEFAULT_RETRYABLE_CODES,
   Config,
 } from './config.ts';
@@ -1279,6 +1280,127 @@ describe('Config schema', () => {
       ? roleValue.join(',')
       : String(roleValue);
     expect(roleStr).toContain('modelChainMeta');
+  });
+});
+
+// ── 7. Config schema 国际化(desc i18n 映射)─────────────────────────
+
+/**
+ * 设置表单国际化的契约:所有字段描述都是 schemastery i18n 映射
+ * `{ '': 英文默认, zh, en }`——宿主 settings.describe 以 form.toJSON() 原样
+ * 下发该映射,前端按 dsh 语言配置(Host 偏好 → 浏览器 → en)解析。
+ * `''` 键 = 默认文案:不识别映射的旧渲染端原样显示英文,行为零回归。
+ */
+describe('Config schema 国际化(desc i18n 映射)', () => {
+  /** schemastery 节点里测试关心的最小形状。 */
+  interface SchemaNode {
+    meta?: { description?: unknown };
+  }
+
+  /** Config 顶层字段节点。 */
+  function fieldOf(fieldName: string): SchemaNode | undefined {
+    return (Config as unknown as { dict: Record<string, SchemaNode> }).dict?.[
+      fieldName
+    ];
+  }
+
+  /** fallbackChains 内层 ChainEntrySchema 的子字段表。 */
+  function chainEntryFields(): Record<string, SchemaNode> {
+    const chains = fieldOf('fallbackChains') as unknown as
+      { inner?: { dict?: Record<string, SchemaNode> } } | undefined;
+    return chains?.inner?.dict ?? {};
+  }
+
+  /** 断言一个 description 是形态完整的三键映射,且默认文案 = 英文。 */
+  function expectDescMap(raw: unknown, label: string): void {
+    expect(raw, `${label} 应为对象`).toBeTypeOf('object');
+    const map = raw as Record<string, unknown>;
+    for (const key of ['', 'en', 'zh'] as const) {
+      expect(
+        typeof map[key],
+        `${label}.${key === '' ? '""' : key} 应为 string`,
+      ).toBe('string');
+      expect(
+        (map[key] as string).length,
+        `${label}.${key === '' ? '""' : key} 应非空`,
+      ).toBeGreaterThan(0);
+    }
+    // '' 默认文案 = 英文:旧渲染端(只认字符串描述)回退显示英文,零回归
+    expect(map[''], `${label}."" 默认文案应与 en 一致`).toBe(map.en);
+  }
+
+  it("desc() helper 产出 {'': en, en, zh} 映射(默认文案为英文)", () => {
+    const map = desc('Hello world', '你好世界');
+    expect(map).toEqual({
+      '': 'Hello world',
+      en: 'Hello world',
+      zh: '你好世界',
+    });
+  });
+
+  it("每个 volatile 字段的 description 都是 {'', zh, en} 映射", () => {
+    const fields = [
+      'enabled',
+      'fallbackChains',
+      'fallbackWhen',
+      'maxRetries',
+      'baseDelayMs',
+      'maxDelayMs',
+      'retryableCodes',
+      'perTurn',
+    ];
+    for (const fieldName of fields) {
+      const node = fieldOf(fieldName);
+      expect(node, `missing field ${fieldName}`).toBeDefined();
+      expectDescMap(node?.meta?.description, fieldName);
+    }
+  });
+
+  it('fallbackChains 内层 ChainEntry 字段(provider/model/displayName/description)同样携带映射', () => {
+    const inner = chainEntryFields();
+    for (const fieldName of [
+      'provider',
+      'model',
+      'displayName',
+      'description',
+    ]) {
+      expect(
+        inner[fieldName],
+        `missing chain entry field ${fieldName}`,
+      ).toBeDefined();
+      expectDescMap(
+        inner[fieldName]?.meta?.description,
+        `fallbackChains.${fieldName}`,
+      );
+    }
+  });
+
+  it('中文文案覆盖关键字段语义(可读性抽查)', () => {
+    const enabled = fieldOf('enabled')?.meta?.description as Record<
+      string,
+      string
+    >;
+    expect(enabled.zh).toContain('模型回退');
+    const chains = fieldOf('fallbackChains')?.meta?.description as Record<
+      string,
+      string
+    >;
+    expect(chains.zh).toContain('主模型');
+    const when = fieldOf('fallbackWhen')?.meta?.description as Record<
+      string,
+      string
+    >;
+    expect(when.zh).toContain('afterRetry');
+    expect(when.zh).toContain('immediately');
+  });
+
+  it('description 映射可 JSON 序列化(settings.describe 的 form.toJSON 下发路径不炸)', () => {
+    // 宿主 SettingsForms.describe 用 JSON.stringify(schema.toJSON()) 计算
+    // revision 并下发;描述若含函数/循环会让该路径抛错——此断言防回归。
+    const serialized = JSON.stringify(Config.toJSON());
+    expect(typeof serialized).toBe('string');
+    expect(serialized).toContain('模型回退');
+    expect(JSON.parse(serialized)).toBeTypeOf('object');
   });
 });
 
