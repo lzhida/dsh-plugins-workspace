@@ -54,6 +54,11 @@ function makeFixture(): string {
   const dir = mkdtempSync(join(tmpdir(), 'dsh-release-test-'));
   fixtures.push(dir);
   git(['init', '-b', 'main'], dir);
+  // 仓库级身份:annotated tag 的 committer 需要身份,而 CI runner 没有全局
+  // git 配置(本地复现:GIT_CONFIG_GLOBAL/SYSTEM 指向空文件即 5 个 tag 用例
+  // 全红),只靠初始 commit 的 -c 一次性身份覆盖不到后续 git tag -a。
+  git(['config', 'user.name', 'test'], dir);
+  git(['config', 'user.email', 'test@example.com'], dir);
   writeFileSync(
     join(dir, 'pnpm-workspace.yaml'),
     "packages:\n  - 'packages/*'\n",
