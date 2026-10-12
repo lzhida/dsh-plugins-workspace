@@ -30,9 +30,22 @@ pnpm lint           # ESLint 检查（lint:fix 自动修）
 pnpm format         # Prettier 写入（format:check 只校验）
 pnpm typecheck      # 递归各包 tsc --noEmit
 pnpm test           # vitest run（集中在根，子包无 test 脚本）
+pnpm changeset       # 声明一次子包变更（选包、semver 档位、摘要 → .changeset/*.md）
+pnpm changeset:version   # 消费 changeset：写回版本号 + 生成各包 CHANGELOG.md
+pnpm changeset:publish   # 发布公开包到 npm（目前仅 @zhidal/dsh-llm-fallback）
+pnpm release list    # 列出子包版本与 tag 预览
+                     # tag <包名|--all>：为当前已提交版本补 {短名}-v{X.Y.Z} tag（--all 幂等批量）
+                     # --dry-run 预览；永不自动 push
 ```
 
 新增插件的最小步骤：建 `packages/my-plugin/`，仿照 `packages/dsh-guided-goal/package.json`（`type: "module"`、`main: "src/index.ts"`、`devDependencies` 含 cordis、`scripts.typecheck`），tsconfig extends 根配置即可，无需其他注册动作。
+
+## Subpackage Versioning & Release
+
+- 子包版本管理走 **Changesets**（`.changeset/` + `@changesets/cli`，2026-10-12 由自研 CLI 切换而来）：`pnpm changeset` 声明变更 → `pnpm changeset:version` 写回版本号并生成各包 CHANGELOG.md（提交由人执行）→ `pnpm changeset:publish` 发布公开包到 npm（目前仅 `@zhidal/dsh-llm-fallback`）。`privatePackages: { version: true, tag: false }`——私有包同样参与版本递增与 CHANGELOG。
+- git tag 发布由 `scripts/pkg-release.ts`（jiti 直跑零构建）补足：tag 名固定 `{短包名}-v{X.Y.Z}`（如 `dsh-taskboard-v0.2.0`），与插件一一对应；`pnpm release tag --all` 幂等批量为当前版本补 tag。Changesets 原生 tag 硬编码 `pkg@version` 且格式不可配置，故全部关闭，tag 语义由本工具统一（该 `{pkg}-v{X.Y.Z}` 形态与 Tauri 官方插件 monorepo 实际 tag 约定一致）。
+- agent 只可跑 `--dry-run`、`list` 与 `changeset status`；实际 version 提交/tag/publish 属发布动作，须用户明确授意后由用户执行或经确认后代跑，push 一律留给用户。
+- 设计决策与语义边界见 `scripts/release/README.md` 与 `.changeset/README.md`。
 
 ## Code Conventions & Common Patterns
 
