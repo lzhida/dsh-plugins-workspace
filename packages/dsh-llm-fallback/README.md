@@ -89,7 +89,7 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 | `retryableCodes` | `string[]`                                             | 见[失败码白名单](#失败码白名单) | 可触发切换的失败码白名单                                      |
 | `perTurn`        | `boolean`                                              | `true`                          | 预留字段，尚未参与回退判定，见[已知限制](#已知限制)           |
 
-配置卡功能：启用开关；从宿主模型目录（按 provider 分组）勾选候选模型；上移 / 下移 / 移除调整回退优先级（顺序即回退顺序，首项 = 主模型）；设置最大回退次数与回退时机；保存 / 放弃，带 revision 冲突检测。所有改动保存后即时生效，无需重载插件。
+配置卡功能：启用开关；从宿主模型目录（按 provider 分组）勾选候选模型，列表限高滚动并支持按 provider 分组名 / 模型 id / 显示名搜索过滤（大小写不敏感，无命中给空态）；上移 / 下移 / 移除调整回退优先级（顺序即回退顺序，首项 = 主模型）；设置最大回退次数与回退时机；保存 / 放弃，带 revision 冲突检测。所有改动保存后即时生效，无需重载插件。配色接入 dsh web 主题变量（`--dsw-alias-*`），明暗模式均保持文字可读。
 
 ## 回退时机（fallbackWhen）
 
