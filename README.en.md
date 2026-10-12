@@ -46,7 +46,7 @@ Wraps the [Obsidian built-in CLI](https://obsidian.md/help/cli) (`obsidian <comm
 
 ### @lzhida/dsh-taskboard
 
-Task board plugin (an architectural/teaching re-implementation of [cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard#readme)): the core contract for **human creates card → agent claims and executes → human accepts**. Ten `taskboard_*` agent tools plus code-level protocol gates (agent can never move to `done`, a held task cannot be stolen, cross-project actions are forbidden, checklist check must carry an evidence note), ifVersion optimistic concurrency, DoD checklist (≤30 items), structured execution report, and a system-prompt section spelling out the claim discipline and the done-gate. Ledger persisted to `~/.dsh/dsh-taskboard.json` via atomic write.
+Task board plugin (source synced from [cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard#readme) **0.8.7**, Apache-2.0): the full-featured board for **human creates card → agent claims and executes → human accepts**. Ten `taskboard_*` agent tools plus code-level protocol gates, ifVersion optimistic concurrency, DoD checklist (≤30 items), structured execution report, a live SSE kanban UI, host-side cron / one-shot scheduling, per-task model & preset pinning, optional git worktree isolation (task branches + one-click merge + multi-repo mirror), external-session autosync, task templates and image attachments. Ledger persisted to `~/.dsh/dsh-taskboard.json` via atomic write.
 
 **Highlights**
 
@@ -57,9 +57,13 @@ Task board plugin (an architectural/teaching re-implementation of [cloader/dsh-t
 - **Structured execution report**: `taskboard_execution_report` submits (summary / changed files / checks / artifacts / risk), rendered column-wise in the in-review detail panel;
 - **Five-column flow + soft delete**: `backlog` / `todo` / `in_progress` / `in_review` / `done` plus `canceled` / `archived` / `trashed`; the state-machine whitelist forbids illegal transitions;
 - **system-prompt section**: `tool:taskboard` at order 2950 spells out the claim discipline, the done-gate, and retry rules — the model learns the contract before its first call;
+- **Live kanban UI**: SSE refresh + dual-track official slot mounting (a first-class sidebar panel on dsh ≥ 0.1.7, automatic DOM-injection fallback on older shells), a diff viewer, persisted filters/sorting, and JSON import/export;
+- **Execution orchestration**: manual / one-shot / cron recurring (host-side scheduling — runs even with the browser closed); scheduled tasks can reuse an existing session; recurring tasks can return to `todo` or spawn the next round on completion;
+- **Git worktree isolation**: each execution gets its own worktree + task branch with one-click merge at review; whole-area mirroring for multi-repo workspaces; automatic fallback to in-place execution for non-git projects;
+- **Task templates & image attachments**: built-in templates, content-addressed attachment storage;
 - **Zero configuration**: install and use; no token / API key needed; data stays local.
 
-**Deliberately out of scope** (an architectural re-implementation, not a 1:1 port): the Web kanban UI, cron scheduler, worktree-isolated execution, external-session autosync, multi-repo mirror, task templates, image attachments. See the [package README](./packages/dsh-taskboard/README.md).
+**Differences from upstream** (monorepo-conformance refactoring, functionality unchanged): package name `@lzhida/dsh-taskboard`, TS-source entry (`main: src/index.ts`, `link:` install only), the prebuilt client bundle committed at `client/index.js`, constructor parameter properties rewritten as explicit fields (Node type-stripping compatibility), and all `@deepseek-ai/*` kept as type-only devDependencies. See the [package README](./packages/dsh-taskboard/README.md).
 
 ## Installation
 
