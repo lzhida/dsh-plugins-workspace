@@ -14,6 +14,9 @@
  *     - afterRetry(默认):upstream={retry} → 透传不切换;upstream 无决策 → 切换;
  *     - immediately:白名单命中即切,忽略 upstream;
  *   - 链耗尽 / 失败码不在白名单 → 透传 upstream;
+ *   - 轨迹记录:切换时依次写官方 llm/retry + llm/retry-started(字段完整、
+ *     retryId 同链复用);agent 缺失不崩;append 抛错不阻断回退;abort 只写
+ *     scheduled;不切换时不写;
  *   - effect 卸载时 dispose 被收集。
  *
  * 风格沿用 dsh-obsidian 的 stubCtx + spyOn(console.log);用
@@ -951,6 +954,232 @@ describe('agent/request-error listener', () => {
       async () => undefined,
     );
     expect(result).toBeUndefined();
+  });
+});
+
+// ── 5b. 轨迹记录(官方 llm/retry / llm/retry-started 事件) ─────────────
+
+/** 轨迹写入的最小 agent 假体:append 收集调用供断言。 */
+function stubAgent(): {
+  agent: { session: { append: ReturnType<typeof vi.fn> } };
+  appends: Array<{ type: string; data: Record<string, unknown> }>;
+} {
+  const appends: Array<{ type: string; data: Record<string, unknown> }> = [];
+  const agent = {
+    session: {
+      append: vi.fn((type: string, data: Record<string, unknown>) => {
+        appends.push({ type, data });
+        return undefined;
+      }),
+    },
+  };
+  return { agent, appends };
+}
+
+describe('轨迹记录(llm/retry 事件)', () => {
+  it('切换候选时依次写入 llm/retry 与 llm/retry-started,字段完整', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['deepseek/x', 'openai/y', 'anthropic/z'],
+      maxRetries: 2,
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const errListener = findListener(listeners, 'agent/request-error');
+    const { agent, appends } = stubAgent();
+    const failure = stubFailure('RATE_LIMIT');
+    const result = await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure,
+        signal: new AbortController().signal,
+        agent,
+      },
+      async () => undefined,
+    );
+    expect(result).toEqual({ kind: 'retry' });
+    // 两个事件,类型与顺序正确
+    expect(appends.map((a) => a.type)).toEqual([
+      'llm/retry',
+      'llm/retry-started',
+    ]);
+    const scheduled = appends[0]?.data;
+    const started = appends[1]?.data;
+    // scheduled(normal 形态):官方 payload shape 全字段
+    expect(scheduled).toMatchObject({
+      turn: 1,
+      step: 1,
+      provider: 'deepseek', // 失败起点,非切换目标
+      mode: 'normal',
+      policyKey: 'llm-fallback',
+      retry: 1,
+      maxRetries: 2, // min(maxRetries=2, 链长-1=2)
+      delayMs: 0,
+      failure,
+    });
+    expect(typeof scheduled?.retryId).toBe('string');
+    expect((scheduled?.retryId as string).length).toBeGreaterThan(0);
+    // started:同链复用同一 retryId
+    expect(started).toEqual({
+      retryId: scheduled?.retryId,
+      turn: 1,
+      step: 1,
+      retry: 1,
+    });
+  });
+
+  it('同 step 二次切换:retryId 复用,retry 递增到 2', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['deepseek/x', 'openai/y', 'anthropic/z'],
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const errListener = findListener(listeners, 'agent/request-error');
+    const { agent, appends } = stubAgent();
+    await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure: stubFailure('RATE_LIMIT'),
+        signal: new AbortController().signal,
+        agent,
+      },
+      async () => undefined,
+    );
+    await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'openai',
+        failure: stubFailure('QUOTA'),
+        signal: new AbortController().signal,
+        agent,
+      },
+      async () => undefined,
+    );
+    const scheduledList = appends.filter((a) => a.type === 'llm/retry');
+    expect(scheduledList).toHaveLength(2);
+    const first = scheduledList[0]?.data;
+    const second = scheduledList[1]?.data;
+    expect(second?.retryId).toBe(first?.retryId);
+    expect(second?.retry).toBe(2);
+    expect(second?.provider).toBe('openai');
+    expect(second?.failure).toMatchObject({ code: 'QUOTA' });
+  });
+
+  it('payload 无 agent(旧宿主)→ 不写轨迹且回退不受影响', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['deepseek/x', 'openai/y'],
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const errListener = findListener(listeners, 'agent/request-error');
+    const result = await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure: stubFailure('RATE_LIMIT'),
+        signal: new AbortController().signal,
+      },
+      async () => undefined,
+    );
+    expect(result).toEqual({ kind: 'retry' });
+  });
+
+  it('session.append 抛错 → 轨迹写入被吞掉,回退照常返回 retry', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['deepseek/x', 'openai/y'],
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const errListener = findListener(listeners, 'agent/request-error');
+    const agent = {
+      session: {
+        append: vi.fn(() => {
+          throw new Error('session closed');
+        }),
+      },
+    };
+    const result = await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure: stubFailure('RATE_LIMIT'),
+        signal: new AbortController().signal,
+        agent,
+      },
+      async () => undefined,
+    );
+    expect(result).toEqual({ kind: 'retry' });
+    // scheduled 与 started 都尝试写、都被吞 → 共调用 2 次
+    expect(agent.session.append).toHaveBeenCalledTimes(2);
+  });
+
+  it('退避期间被 abort → 只写 llm/retry(已调度),不写 llm/retry-started', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['deepseek/x', 'openai/y'],
+      baseDelayMs: 60_000,
+      maxDelayMs: 60_000,
+    });
+    const errListener = findListener(listeners, 'agent/request-error');
+    const { agent, appends } = stubAgent();
+    const ctrl = new AbortController();
+    const result = await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure: stubFailure('RATE_LIMIT'),
+        signal: ctrl.signal,
+        agent,
+      },
+      async () => {
+        // 模拟退避等待期间 turn 被取消
+        ctrl.abort();
+        return undefined;
+      },
+    );
+    expect(result).toBeUndefined(); // 透传 upstream,不切换
+    expect(appends.map((a) => a.type)).toEqual(['llm/retry']);
+    expect(appends[0]?.data.delayMs).toBeGreaterThan(0);
+  });
+
+  it('白名单未命中(不切换)→ 不写任何轨迹事件', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['deepseek/x', 'openai/y'],
+    });
+    const errListener = findListener(listeners, 'agent/request-error');
+    const { agent, appends } = stubAgent();
+    const result = await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure: stubFailure('INVALID_CREDENTIAL'),
+        signal: new AbortController().signal,
+        agent,
+      },
+      async () => undefined,
+    );
+    expect(result).toBeUndefined();
+    expect(appends).toEqual([]);
   });
 });
 

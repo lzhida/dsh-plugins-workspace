@@ -14,6 +14,7 @@ dsh 的模型回退插件：拦截全局 LLM 调用，主模型失败时按候�
 - [回退时机（fallbackWhen）](#回退时机fallbackwhen)
 - [失败码白名单](#失败码白名单)
 - [行为](#行为)
+- [轨迹可见性](#轨迹可见性)
 - [已知限制](#已知限制)
 - [故障排查](#故障排查)
 - [开发](#开发)
@@ -84,7 +85,7 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 | `fallbackChains` | `Array<{provider, model, displayName?, description?}>` | `[]`                            | 候选列表，首项 = 主模型，逐个回退；旧 `string[]` 形态自动归一 |
 | `fallbackWhen`   | `'afterRetry' \| 'immediately'`                        | `'afterRetry'`                  | 回退时机，见[回退时机](#回退时机fallbackwhen)                 |
 | `maxRetries`     | `number`                                               | `0`（= 链长）                   | 单次请求最多**切换**次数，不含官方重试的同 provider 重试      |
-| `baseDelayMs`    | `number`                                               | `500`                           | 指数退避初值                                                  |
+| `baseDelayMs`    | `number`                                               | `500`                           | 指数退避初值；`0` = 禁用退避（失败后立即切换）                |
 | `maxDelayMs`     | `number`                                               | `30000`                         | 指数退避上限                                                  |
 | `retryableCodes` | `string[]`                                             | 见[失败码白名单](#失败码白名单) | 可触发切换的失败码白名单                                      |
 | `perTurn`        | `boolean`                                              | `true`                          | 预留字段，尚未参与回退判定，见[已知限制](#已知限制)           |
@@ -118,8 +119,23 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 
 - 失败码在白名单 + 按时机判定可切 + 还有下一候选 → 退避 + 切下一候选 + 返回 `{kind: 'retry'}`，loop 重发请求（`agent/request` 监听器改写 `provider/model`）
 - 失败码不在白名单或链耗尽 → 透传上游决策（官方 retry 的 retry 也到此为止），错误正常上抛
+- 每次切换向会话轨迹写入官方 `llm/retry` / `llm/retry-started` 事件（见[轨迹可见性](#轨迹可见性)）；写轨迹失败不影响回退本体
+- 退避等待期间 turn 被取消 → 立即中止等待并透传上游，不写 `llm/retry-started`
 - 同时注册 system-prompt section，告知 agent 回退协议存在、无需自行"手加重试"
 - 配置非法时不阻塞宿主：报错并跳过装载；设置面板存入非法值时保留上一次成功配置
+
+## 轨迹可见性
+
+跨 provider 回退**不再是黑盒**。切换候选时，插件通过官方轨迹接口（`agent/request-error` payload 携带的 `agent.session.append`，与官方 `dsh-llm-retry` 同一通道）向会话日志写入两条 durable 事件：
+
+| 事件                | 时机                     | 内容                                                                                |
+| ------------------- | ------------------------ | ----------------------------------------------------------------------------------- |
+| `llm/retry`         | 切换调度时（退避等待前） | 失败 provider、失败详情（code/message）、`retry` 序号、`maxRetries`、退避 `delayMs` |
+| `llm/retry-started` | 退避完成、切换生效前     | 同 `retryId`，标记重试真正开始                                                      |
+
+宿主轨迹 UI 对 `llm/retry` 有内置渲染：请求节点显示失败消息与错误码、重试进度（retry N/maxRetries）与退避时长。**切换到哪个模型**由宿主 loop 自动记录——切换生效后的下一次请求会写入 `request/header`（reason: `change`）与 `request/context`（provider/model），轨迹上该请求的配置随之显示新模型。同一步内多次切换复用同一 `retryId`，事件的 `policyKey` 固定为 `llm-fallback`，便于与官方同 provider 重试区分。
+
+两类事件都是 log-only（不进模型上下文、不消耗 token），且复用官方已知事件类型——`Session.append` 无法标注 `ignorable`，自创事件类型会导致会话日志在恢复时被格式校验拒绝，官方词汇表是插件写入轨迹的唯一安全通道。
 
 ## 已知限制
 

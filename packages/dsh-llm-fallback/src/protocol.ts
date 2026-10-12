@@ -41,6 +41,7 @@ const MODEL_FALLBACK_PROTOCOL_TEXT = `A host-level plugin (\`dsh-llm-fallback\`)
 - Within one step (turn+step), fallback is bounded by \`maxRetries\` (default = chain length; this bounds chain switches, not same-provider retries). Once the chain is exhausted, the error surfaces.
 - The plugin never modifies the request contents, only the \`provider\` and \`model\` fields. Token budgets, tools, and prompts are preserved across the fallback.
 - Backoff between attempts is exponential (base × 2^attempt, capped at \`maxDelayMs\`) with ±10% jitter.
+- Every fallback switch is recorded to the session trajectory as durable \`llm/retry\` events, so the user can see the failure and the retry progress in the UI. The new provider/model shows up in the next request's recorded config on its own.
 
 ## Configuration
 

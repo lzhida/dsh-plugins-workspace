@@ -27,6 +27,12 @@ export interface FallbackState {
   retries: number;
   /** 链耗尽后置 true(下次 request-error 时直接透传上游)。 */
   exhausted: boolean;
+  /**
+   * 本 step 回退链的稳定轨迹标识(官方 `llm/retry.retryId` 语义:同链复用)。
+   * 惰性生成——首次切换前为 undefined,由 index.ts 用 randomUUID 填充,
+   * state.ts 保持纯函数(无 IO/随机)以便单测。
+   */
+  retryId?: string;
 }
 
 /** 从 agent/request 的 proposedConfig 中提取 (provider, model)。 */

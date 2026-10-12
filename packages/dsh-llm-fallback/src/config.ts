@@ -264,14 +264,15 @@ export function resolveConfig(input: unknown): ResolvedConfig {
   const fallbackWhen = resolveFallbackWhen(raw.fallbackWhen);
   const maxRetriesRaw = Number(raw.maxRetries ?? 0);
   const maxRetries = maxRetriesRaw > 0 ? Math.floor(maxRetriesRaw) : chainLen;
+  // 0 = 禁用退避(失败后立即切换),与文件头文档一致;非法/负值回落默认。
   const baseDelayMsRaw = Number(raw.baseDelayMs ?? 500);
   const baseDelayMs =
-    Number.isFinite(baseDelayMsRaw) && baseDelayMsRaw > 0
+    Number.isFinite(baseDelayMsRaw) && baseDelayMsRaw >= 0
       ? Math.floor(baseDelayMsRaw)
       : 500;
   const maxDelayMsRaw = Number(raw.maxDelayMs ?? 30000);
   const maxDelayMs =
-    Number.isFinite(maxDelayMsRaw) && maxDelayMsRaw > 0
+    Number.isFinite(maxDelayMsRaw) && maxDelayMsRaw >= 0
       ? Math.floor(maxDelayMsRaw)
       : 30000;
   const codesRaw = Array.isArray(raw.retryableCodes)
