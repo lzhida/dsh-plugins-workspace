@@ -14,7 +14,8 @@
  * - `maxRetries`:单次请求最多**切换**次数(链上换候选的次数,不含同 provider 重试);
  *   `0` = 等于链长(全跑完才报错,与 omp 默认行为一致)
  * - `baseDelayMs` / `maxDelayMs`:指数退避的初值与上界;`0` = 禁用退避(失败后立即切换)
- * - `retryableCodes`:视为可重试的失败码(白名单;默认包含 omp 视为可重试的几个稳定码)
+ * - `retryableCodes`:视为可重试的失败码(白名单;默认对齐 dsh 宿主官方重试码
+ *   `dsh-llm` 的 DEFAULT_RETRYABLE_CODES,并保留配额/上下文类超集)
  * - `perTurn`:同一 step(`turn:step`)内是否允许多次切换;`false` = 至多切换一次(one-shot)
  *
  * 设计简化(本期不做):
@@ -82,17 +83,43 @@ export type FallbackWhen = (typeof FALLBACK_WHEN_VALUES)[number];
 
 /** 退避延迟的下限语义:0 = 禁用退避;负数/非有限数在 resolveConfig 中回落默认值。 */
 
-/** 默认视为可重试的稳定失败码。 */
+/**
+ * 默认视为可重试的稳定失败码。
+ *
+ * 码表对齐 dsh 宿主的失败分类(宿主 0.2.0-rc.2 实装代码):
+ * - `SERVER`——5xx 服务器错误(deepseek 适配器与 pi-ai 适配器的 `classifyPiAiError` 均产出);
+ * - `TRANSPORT`——连接类传输失败(openai / @anthropic-ai/sdk 的 `APIConnectionError`,
+ *   即 "Connection error.",以及 socket / fetch / 网络中断),宿主官方
+ *   `dsh-llm/lib/types/retry-policy.js` 的默认重试码含 `SERVER` 与 `TRANSPORT`;
+ * - 相比宿主官方默认(EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT)
+ *   额外保留 QUOTA / ACCOUNT_QUOTA / CONTEXT_WINDOW_EXCEEDED——切模型是配额类
+ *   失败的本职出路,属本插件的有意超集。
+ *
+ * 历史:0.3.1 及之前默认含 omp 系码 `NETWORK` / `SERVER_ERROR`,宿主两套适配器
+ * 均不产出这两个码,导致 "Connection error."(`TRANSPORT`)与 5xx(`SERVER`)
+ * 不触发切换;0.3.2 起修正,并对存量用户配置做旧码→新码的并集别名
+ * (见 RETRYABLE_CODE_ALIASES)。
+ */
 export const DEFAULT_RETRYABLE_CODES: readonly string[] = [
   'RATE_LIMIT',
   'QUOTA',
   'ACCOUNT_QUOTA',
   'CONTEXT_WINDOW_EXCEEDED',
   'EMPTY_RESPONSE',
-  'SERVER_ERROR',
+  'SERVER',
   'TIMEOUT',
-  'NETWORK',
+  'TRANSPORT',
 ] as const;
+
+/**
+ * 存量配置兼容:旧默认白名单码(omp 系命名)→ 宿主实际失败码。
+ * resolveConfig 解析用户自定义 retryableCodes 时按并集补入别名码
+ * (旧码保留无害——宿主适配器从不产出它们)。
+ */
+export const RETRYABLE_CODE_ALIASES: Readonly<Record<string, string>> = {
+  NETWORK: 'TRANSPORT',
+  SERVER_ERROR: 'SERVER',
+};
 
 /** 单条回退链项的规整形态:内部统一用此形态。 */
 export interface ChainEntry {
@@ -251,6 +278,12 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     ? (raw.retryableCodes as unknown[]).map((c) => String(c))
     : [...DEFAULT_RETRYABLE_CODES];
   const retryableCodes = new Set(codesRaw);
+  // 存量配置兼容:旧默认码(NETWORK / SERVER_ERROR)按并集补入宿主实际码
+  // (TRANSPORT / SERVER),让升级前保存过自定义白名单的用户无需手动改配置。
+  for (const code of codesRaw) {
+    const alias = RETRYABLE_CODE_ALIASES[code];
+    if (alias !== undefined) retryableCodes.add(alias);
+  }
   const perTurn = raw.perTurn !== false; // 默认 true
 
   return {
