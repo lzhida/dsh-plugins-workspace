@@ -114,6 +114,13 @@ describe('release-workflow', () => {
     expect(workflow).toMatch(/run:\s*pnpm install\s+--frozen-lockfile/);
   });
 
+  it('checkout 拉全量历史(fetch-depth: 0),供发布线守护解析 main 祖先关系', () => {
+    expect(
+      workflow,
+      '发布线守护需在 CI 解析 origin/main 与 tag 的祖先关系',
+    ).toMatch(/fetch-depth:\s*0/);
+  });
+
   it('第三方 action 均按主版本号固定,不含浮动 ref', () => {
     const uses = [...workflow.matchAll(/uses:\s*(\S+)@(\S+)/g)];
     expect(uses.length, '工作流应至少引用一个 action').toBeGreaterThan(0);

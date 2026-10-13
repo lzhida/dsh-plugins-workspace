@@ -48,6 +48,8 @@ const HELP_TEXT = `dsh-plugins-workspace 子包发布辅助
   pnpm release publish <tag> [选项]
       按发布 tag 决策并发布 npm:仅「公开包 + 正式版本」会真正发布,
       prerelease 与私有包明确跳过(退出 0);tag 与清单版本不一致报错。
+      发布线守护:tag 必须存在且指向的提交可从 main 到达(TAG_NOT_ON_MAIN),
+      从 dev 等集线提交打的 tag 会被拒绝。
       推送 tag 后由 .github/workflows/release.yml 自动执行同一逻辑
       (CI 用 --client npm-stage 走 OIDC 暂存发布,免 token;发布后需
       维护者在 npm 后台或 npm stage approve 人工放行)。
@@ -58,8 +60,10 @@ const HELP_TEXT = `dsh-plugins-workspace 子包发布辅助
   --client <名>  发布客户端:pnpm(默认) | npm(直发) | npm-stage(暂存,CI 用)
   -h, --help     显示本帮助
 
-推荐发布流: changeset → version → 人工提交 → release tag --all → git push --follow-tags
-(公开包正式版 tag 推送后自动发 npm;push 永远由你手动执行)。`;
+推荐发布流: changeset → version → 人工提交 → dev 合入 main →
+在 main 上 release tag --all → git push --follow-tags
+(发布线守护:tag 指向的提交须可从 main 到达,否则发布以 TAG_NOT_ON_MAIN 拒绝;
+ 公开包正式版 tag 推送后自动发 npm;push 永远由你手动执行)。`;
 
 interface ParsedArgs {
   readonly command: string | undefined;

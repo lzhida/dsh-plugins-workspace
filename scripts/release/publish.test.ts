@@ -96,7 +96,11 @@ function makePlainFixture(): string {
   return dir;
 }
 
-/** 在 plain fixture 基础上补 git 仓库与初始提交,用于 publish 路径(脏树门禁)。 */
+/**
+ * 在 plain fixture 基础上补 git 仓库与初始提交,用于 publish 路径(脏树门禁)。
+ * 发布线守护要求 publish 决策的 tag 存在且可从 main 到达,故在 main HEAD
+ * 预打 `dsh-beta-v1.2.3` tag;需要 tag 在发布线之外的用例自行调整分支。
+ */
 function makeGitFixture(): string {
   const dir = makePlainFixture();
   git(['init', '-b', 'main'], dir);
@@ -104,6 +108,19 @@ function makeGitFixture(): string {
   git(['config', 'user.email', 'test@example.com'], dir);
   git(['add', '.'], dir);
   git(['commit', '-m', 'init'], dir);
+  git(['tag', 'dsh-beta-v1.2.3'], dir);
+  return dir;
+}
+
+/** git fixture 基础上把 tag 打到 main 之外的 dev 提交上,并切回 main。 */
+function makeGitFixtureWithTagOffMain(): string {
+  const dir = makeGitFixture();
+  git(['switch', '-c', 'dev'], dir);
+  writeFileSync(join(dir, 'dev-only.txt'), 'dev work', 'utf8');
+  git(['add', '.'], dir);
+  git(['commit', '-m', 'dev work'], dir);
+  git(['tag', '-f', 'dsh-beta-v1.2.3'], dir);
+  git(['switch', 'main'], dir);
   return dir;
 }
 
@@ -423,5 +440,98 @@ describe('release publish(临时 workspace 端到端)', () => {
     expect(() =>
       publishForTag({ rootDir: root, tag: 'dsh-beta-v1.2.3', exec: failing }),
     ).toThrowError(expect.objectContaining({ code: 'PUBLISH_FAILED' }));
+  });
+});
+
+describe('release publish(发布线守护)', () => {
+  it('tag 打在 main 之外的 dev 提交上 → TAG_NOT_ON_MAIN,实发与 dry-run 都拒绝', () => {
+    const root = makeGitFixtureWithTagOffMain();
+    const { calls, exec } = recorder();
+    expect(() =>
+      publishForTag({ rootDir: root, tag: 'dsh-beta-v1.2.3', exec }),
+    ).toThrowError(expect.objectContaining({ code: 'TAG_NOT_ON_MAIN' }));
+    expect(() =>
+      publishForTag({
+        rootDir: root,
+        tag: 'dsh-beta-v1.2.3',
+        dryRun: true,
+        exec,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'TAG_NOT_ON_MAIN' }));
+    expect(calls).toEqual([]);
+  });
+
+  it('dev 上的 tag 合入 main 后变为可达 → 守护放行并执行发布', () => {
+    const root = makeGitFixtureWithTagOffMain();
+    git(['merge', 'dev'], root);
+    const { calls, exec } = recorder();
+    const outcome = publishForTag({
+      rootDir: root,
+      tag: 'dsh-beta-v1.2.3',
+      exec,
+    });
+    expect(outcome.decision.action).toBe('publish');
+    expect(outcome.published).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('本地无 main 时回退 origin/main(CI tag 检出形态)→ 守护放行', () => {
+    const dir = makePlainFixture();
+    git(['init', '-b', 'dev'], dir);
+    git(['config', 'user.name', 'test'], dir);
+    git(['config', 'user.email', 'test@example.com'], dir);
+    git(['add', '.'], dir);
+    git(['commit', '-m', 'init'], dir);
+    git(['tag', 'dsh-beta-v1.2.3'], dir);
+    // 模拟 CI fetch-depth: 0 之后的远端跟踪 ref:origin/main 含该 tag
+    git(['remote', 'add', 'origin', '.'], dir);
+    git(['update-ref', 'refs/remotes/origin/main', 'dsh-beta-v1.2.3'], dir);
+    const { calls, exec } = recorder();
+    const outcome = publishForTag({
+      rootDir: dir,
+      tag: 'dsh-beta-v1.2.3',
+      exec,
+    });
+    expect(outcome.published).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('本地与 origin 均无 main → RELEASE_LINE_NOT_FOUND', () => {
+    const dir = makePlainFixture();
+    git(['init', '-b', 'dev'], dir);
+    git(['config', 'user.name', 'test'], dir);
+    git(['config', 'user.email', 'test@example.com'], dir);
+    git(['add', '.'], dir);
+    git(['commit', '-m', 'init'], dir);
+    git(['tag', 'dsh-beta-v1.2.3'], dir);
+    expect(() =>
+      publishForTag({
+        rootDir: dir,
+        tag: 'dsh-beta-v1.2.3',
+        exec: recorder().exec,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'RELEASE_LINE_NOT_FOUND' }));
+  });
+
+  it('tag 在仓库中不存在(版本恰好与清单一致)→ TAG_NOT_FOUND,dry-run 同样拒绝', () => {
+    const root = makeGitFixture();
+    // 清单版本改成 9.9.9(未提交也无妨:守护先于脏树门禁),对应 tag 不存在
+    writePackage(root, 'dsh-beta', {
+      name: '@zhidal/dsh-beta',
+      version: '9.9.9',
+    });
+    const { calls, exec } = recorder();
+    expect(() =>
+      publishForTag({ rootDir: root, tag: 'dsh-beta-v9.9.9', exec }),
+    ).toThrowError(expect.objectContaining({ code: 'TAG_NOT_FOUND' }));
+    expect(() =>
+      publishForTag({
+        rootDir: root,
+        tag: 'dsh-beta-v9.9.9',
+        dryRun: true,
+        exec,
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'TAG_NOT_FOUND' }));
+    expect(calls).toEqual([]);
   });
 });
