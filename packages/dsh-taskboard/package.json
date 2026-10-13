@@ -1,7 +1,7 @@
 {
   "name": "@lzhida/dsh-taskboard",
   "description": "Agent-first 任务看板插件：宿主权威任务台账 + 10 个 taskboard_* agent 工具、项目(=workspace)认领边界、按任务指定模型执行、可选 git worktree 隔离、宿主侧 cron 调度、SSE 实时看板。源码同步自 cloader/dsh-taskboard 0.8.7，经本 monorepo 规范重构，功能与上游一致。",
-  "version": "0.8.7",
+  "version": "0.8.8",
   "private": true,
   "type": "module",
   "main": "src/index.ts",
