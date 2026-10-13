@@ -473,44 +473,118 @@ describe('resolveConfig', () => {
 // ── 3. state 模块 ────────────────────────────────────────────────────
 
 describe('nextCandidate', () => {
+  /** 未切换态(index=-1:仍在会话指定模型上)。 */
   function init(
     chain: ReadonlyArray<{ provider: string; model: string }>,
+    pageModel?: { provider: string; model: string },
   ): FallbackState {
-    return { chain, index: 0, retries: 0, exhausted: false };
+    return { chain, index: -1, retries: 0, exhausted: false, pageModel };
   }
 
-  it('从 index=0 推进到 index=1', () => {
-    const s = init([
-      { provider: 'a', model: 'x' },
-      { provider: 'b', model: 'y' },
-    ]);
-    expect(nextCandidate(s, 10)).toEqual({ index: 1, retries: 1 });
+  it('未切换态(index=-1)推进到 index=0:会话模型失败后切到队列第 1 项', () => {
+    const s = init(
+      [
+        { provider: 'a', model: 'x' },
+        { provider: 'b', model: 'y' },
+      ],
+      { provider: 'deepseek', model: 'deepseek-chat' },
+    );
+    expect(nextCandidate(s, 10)).toEqual({ index: 0, retries: 1 });
   });
 
-  it('最后一跳返回 null', () => {
-    const s = init([
-      { provider: 'a', model: 'x' },
-      { provider: 'b', model: 'y' },
-    ]);
+  it('单项队列也有一次切换机会(会话模型失败 → 切到唯一候选)', () => {
+    // 旧语义(首项=主模型)下单项链无备选、失败即透传;新语义下队列
+    // 是纯回退候选,会话模型失败后切到它就是有意义的重试。
+    const s = init([{ provider: 'a', model: 'x' }], {
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+    });
+    expect(nextCandidate(s, 10)).toEqual({ index: 0, retries: 1 });
+    // 已在唯一候选上再失败 → 耗尽
+    s.index = 0;
+    expect(nextCandidate(s, 10)).toBeNull();
+  });
+
+  it('沿队列逐项推进:-1 → 0 → 1', () => {
+    const s = init(
+      [
+        { provider: 'a', model: 'x' },
+        { provider: 'b', model: 'y' },
+      ],
+      { provider: 'deepseek', model: 'deepseek-chat' },
+    );
+    const first = nextCandidate(s, 10);
+    expect(first).toEqual({ index: 0, retries: 1 });
+    s.index = first!.index;
+    s.retries = first!.retries;
+    expect(nextCandidate(s, 10)).toEqual({ index: 1, retries: 2 });
+  });
+
+  it('跳过与会话指定模型(pageModel)相同的候选(永不切回刚失败的模型)', () => {
+    // 旧"首项=主模型"配置的兼容路径:队列里也勾了会话模型时,推进时跳过之。
+    const s = init(
+      [
+        { provider: 'deepseek', model: 'x' },
+        { provider: 'openai', model: 'y' },
+        { provider: 'deepseek', model: 'x' },
+        { provider: 'anthropic', model: 'z' },
+      ],
+      { provider: 'deepseek', model: 'x' },
+    );
+    // 从 -1 出发:chain[0] 是 pageModel → 跳过,落到 chain[1]
+    expect(nextCandidate(s, 10)).toEqual({ index: 1, retries: 1 });
+    s.index = 1;
+    s.retries = 1;
+    // 从 1 出发:chain[2] 也是 pageModel → 跳过,落到 chain[3]
+    expect(nextCandidate(s, 10)).toEqual({ index: 3, retries: 2 });
+  });
+
+  it('全部候选都等于 pageModel → null(耗尽)', () => {
+    const s = init([{ provider: 'a', model: 'x' }], {
+      provider: 'a',
+      model: 'x',
+    });
+    expect(nextCandidate(s, 10)).toBeNull();
+  });
+
+  it('pageModel 缺省(极端时序 error 先于 request)→ 不跳过,优雅降级', () => {
+    const s = init([{ provider: 'a', model: 'x' }]);
+    expect(nextCandidate(s, 10)).toEqual({ index: 0, retries: 1 });
+  });
+
+  it('最后一项之后返回 null(队列耗尽)', () => {
+    const s = init(
+      [
+        { provider: 'a', model: 'x' },
+        { provider: 'b', model: 'y' },
+      ],
+      { provider: 'deepseek', model: 'deepseek-chat' },
+    );
     s.index = 1;
     expect(nextCandidate(s, 10)).toBeNull();
   });
 
   it('retries 达 maxRetries 上限返回 null', () => {
-    const s = init([
-      { provider: 'a', model: 'x' },
-      { provider: 'b', model: 'y' },
-      { provider: 'c', model: 'z' },
-    ]);
+    const s = init(
+      [
+        { provider: 'a', model: 'x' },
+        { provider: 'b', model: 'y' },
+        { provider: 'c', model: 'z' },
+      ],
+      { provider: 'deepseek', model: 'deepseek-chat' },
+    );
     s.retries = 2;
     expect(nextCandidate(s, 2)).toBeNull();
   });
 
   it('exhausted=true 时直接 null', () => {
-    const s = init([
-      { provider: 'a', model: 'x' },
-      { provider: 'b', model: 'y' },
-    ]);
+    const s = init(
+      [
+        { provider: 'a', model: 'x' },
+        { provider: 'b', model: 'y' },
+      ],
+      { provider: 'deepseek', model: 'deepseek-chat' },
+    );
     s.exhausted = true;
     expect(nextCandidate(s, 10)).toBeNull();
   });
@@ -564,11 +638,13 @@ describe('isFailureRetryable', () => {
 });
 
 describe('stateFor', () => {
-  it('首次创建并惰性初始化', () => {
+  it('首次创建并惰性初始化(index=-1:尚未切换,在会话指定模型上)', () => {
     const map = new Map<string, FallbackState>();
     const s = stateFor(map, '1:1', [{ provider: 'a', model: 'x' }]);
-    expect(s.index).toBe(0);
+    expect(s.index).toBe(-1);
     expect(s.retries).toBe(0);
+    expect(s.exhausted).toBe(false);
+    expect(s.pageModel).toBeUndefined();
     expect(s.chain).toEqual([{ provider: 'a', model: 'x' }]);
   });
 
@@ -615,7 +691,7 @@ describe('modelFallbackSection', () => {
 // ── 5. agent/request 与 agent/request-error 行为 ─────────────────────
 
 describe('agent/request listener', () => {
-  it('首次进入(state 未创建)不动 seedConfig', async () => {
+  it('首次请求(尚未切换)不动 seedConfig', async () => {
     const { ctx, listeners } = stubCtx();
     apply(ctx, {
       fallbackChains: ['deepseek/deepseek-chat', 'openai/gpt-4o'],
@@ -634,14 +710,20 @@ describe('agent/request listener', () => {
     expect(result).toEqual(seed);
   });
 
-  it('state.index=1 时改写 seedConfig 为下一候选', async () => {
+  it('失败切换后(state.index=0)改写 seedConfig 为链上候选', async () => {
     const { ctx, listeners } = stubCtx();
     apply(ctx, {
-      fallbackChains: ['deepseek/deepseek-chat', 'openai/gpt-4o'],
+      fallbackChains: ['openai/gpt-4o', 'anthropic/claude-sonnet-4'],
     });
     const listener = findListener(listeners, 'agent/request');
     const errListener = findListener(listeners, 'agent/request-error');
-    // 模拟先来一次 request-error,切到 openai/gpt-4o
+    // 真实流程:先 request(捕获会话指定模型 pageModel = deepseek/deepseek-chat)
+    await callListener(
+      listener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    // 会话模型失败 → 切到队列第 1 项 openai/gpt-4o
     await callListener(
       errListener,
       {
@@ -653,12 +735,11 @@ describe('agent/request listener', () => {
       },
       async () => undefined,
     );
-    // 现在 agent/request 进来,seed 还是 deepseek → 改写为 openai
-    const seed = { provider: 'deepseek', model: 'deepseek-chat' };
+    // loop 重进 request:seed 仍是 deepseek → 改写为 openai/gpt-4o
     const result = await callListener(
       listener,
       { turn: 1, step: 1, signal: new AbortController().signal },
-      async () => seed,
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
     );
     expect(result).toEqual({ provider: 'openai', model: 'gpt-4o' });
   });
@@ -666,10 +747,15 @@ describe('agent/request listener', () => {
   it('seed 已被外部 listener 改成期望值时不动(seed === expected)', async () => {
     const { ctx, listeners } = stubCtx();
     apply(ctx, {
-      fallbackChains: ['deepseek/deepseek-chat', 'openai/gpt-4o'],
+      fallbackChains: ['openai/gpt-4o', 'anthropic/claude-sonnet-4'],
     });
     const listener = findListener(listeners, 'agent/request');
     const errListener = findListener(listeners, 'agent/request-error');
+    await callListener(
+      listener,
+      { turn: 1, step: 2, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
     await callListener(
       errListener,
       {
@@ -693,15 +779,22 @@ describe('agent/request listener', () => {
 });
 
 describe('agent/request-error listener', () => {
-  it('可重试失败码 + 还有下一候选 + upstream 无决策 → backoff + 返回 {kind: "retry"}', async () => {
+  it('会话模型失败 + upstream 无决策 → 切到队列第 1 项并返回 {kind: "retry"}', async () => {
     const { ctx, listeners } = stubCtx();
     apply(ctx, {
-      fallbackChains: ['deepseek/deepseek-chat', 'openai/gpt-4o'],
+      fallbackChains: ['openai/gpt-4o', 'anthropic/claude-sonnet-4'],
       maxRetries: 2,
       baseDelayMs: 100,
       maxDelayMs: 500,
     });
+    const reqListener = findListener(listeners, 'agent/request');
     const errListener = findListener(listeners, 'agent/request-error');
+    // 真实流程:先 request(捕获 pageModel = deepseek/deepseek-chat)
+    await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
     const result = await callListener(
       errListener,
       {
@@ -714,16 +807,93 @@ describe('agent/request-error listener', () => {
       async () => undefined,
     );
     expect(result).toEqual({ kind: 'retry' });
+    // 切换目标 = 队列第 1 项(而非旧语义的"跳过首项")
+    const nextSeed = await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    expect(nextSeed).toEqual({ provider: 'openai', model: 'gpt-4o' });
   });
 
-  it('afterRetry(默认)+ upstream={retry}(官方 retry 预算内)→ 透传 upstream,不切换', async () => {
+  it('队列里也勾了会话模型 → 推进时跳过它(兼容旧"首项=主模型"配置)', async () => {
     const { ctx, listeners } = stubCtx();
     apply(ctx, {
       fallbackChains: ['deepseek/deepseek-chat', 'openai/gpt-4o'],
       baseDelayMs: 0,
       maxDelayMs: 0,
     });
+    const reqListener = findListener(listeners, 'agent/request');
     const errListener = findListener(listeners, 'agent/request-error');
+    await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure: stubFailure('RATE_LIMIT'),
+        signal: new AbortController().signal,
+      },
+      async () => undefined,
+    );
+    // chain[0] === 会话模型被跳过,直接切到 chain[1]
+    const nextSeed = await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    expect(nextSeed).toEqual({ provider: 'openai', model: 'gpt-4o' });
+  });
+
+  it('单项队列(候选 ≠ 会话模型)→ 会话模型失败切到唯一候选', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, { fallbackChains: ['openai/gpt-4o'] });
+    const reqListener = findListener(listeners, 'agent/request');
+    const errListener = findListener(listeners, 'agent/request-error');
+    await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    const result = await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure: stubFailure('RATE_LIMIT'),
+        signal: new AbortController().signal,
+      },
+      async () => undefined,
+    );
+    expect(result).toEqual({ kind: 'retry' });
+    const nextSeed = await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    expect(nextSeed).toEqual({ provider: 'openai', model: 'gpt-4o' });
+  });
+
+  it('afterRetry(默认)+ upstream={retry}(官方 retry 预算内)→ 透传 upstream,不切换', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['openai/gpt-4o', 'anthropic/claude-sonnet-4'],
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const reqListener = findListener(listeners, 'agent/request');
+    const errListener = findListener(listeners, 'agent/request-error');
+    await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
     const upstreamRetry = { kind: 'retry' as const };
     const result = await callListener(
       errListener,
@@ -740,14 +910,12 @@ describe('agent/request-error listener', () => {
     expect(result).toBe(upstreamRetry);
 
     // 状态未推进:下一个请求进来,seed 仍不被改写
-    const reqListener = findListener(listeners, 'agent/request');
-    const seed = { provider: 'deepseek', model: 'deepseek-chat' };
     const nextSeed = await callListener(
       reqListener,
       { turn: 1, step: 1, signal: new AbortController().signal },
-      async () => seed,
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
     );
-    expect(nextSeed).toEqual(seed);
+    expect(nextSeed).toEqual({ provider: 'deepseek', model: 'deepseek-chat' });
   });
 
   it('afterRetry + TRANSPORT("Connection error.")官方重试耗尽 → 切下一候选', async () => {
@@ -757,11 +925,17 @@ describe('agent/request-error listener', () => {
     // 否则官方重试耗尽后不切换,对话以 "Connection error." 终态中断。
     const { ctx, listeners } = stubCtx();
     apply(ctx, {
-      fallbackChains: ['deepseek/deepseek-chat', 'openai/gpt-4o'],
+      fallbackChains: ['openai/gpt-4o', 'anthropic/claude-sonnet-4'],
       baseDelayMs: 0,
       maxDelayMs: 0,
     });
+    const reqListener = findListener(listeners, 'agent/request');
     const errListener = findListener(listeners, 'agent/request-error');
+    await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
     // upstream=undefined:官方 retry 预算耗尽,决策权落到本插件
     const result = await callListener(
       errListener,
@@ -776,8 +950,7 @@ describe('agent/request-error listener', () => {
     );
     expect(result).toEqual({ kind: 'retry' });
 
-    // 状态已推进:下一请求的 seed 被改写为 openai/gpt-4o
-    const reqListener = findListener(listeners, 'agent/request');
+    // 状态已推进:下一请求的 seed 被改写为队列第 1 项
     const nextSeed = await callListener(
       reqListener,
       { turn: 1, step: 1, signal: new AbortController().signal },
@@ -790,11 +963,17 @@ describe('agent/request-error listener', () => {
     // 与 TRANSPORT 同源的回归:宿主把 5xx 归类为 SERVER(非 omp 系 SERVER_ERROR)
     const { ctx, listeners } = stubCtx();
     apply(ctx, {
-      fallbackChains: ['deepseek/deepseek-chat', 'openai/gpt-4o'],
+      fallbackChains: ['openai/gpt-4o', 'anthropic/claude-sonnet-4'],
       baseDelayMs: 0,
       maxDelayMs: 0,
     });
+    const reqListener = findListener(listeners, 'agent/request');
     const errListener = findListener(listeners, 'agent/request-error');
+    await callListener(
+      reqListener,
+      { turn: 2, step: 3, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
     const result = await callListener(
       errListener,
       {
@@ -807,7 +986,6 @@ describe('agent/request-error listener', () => {
       async () => undefined,
     );
     expect(result).toEqual({ kind: 'retry' });
-    const reqListener = findListener(listeners, 'agent/request');
     const nextSeed = await callListener(
       reqListener,
       { turn: 2, step: 3, signal: new AbortController().signal },
@@ -819,12 +997,18 @@ describe('agent/request-error listener', () => {
   it('immediately + upstream={retry} → 仍立即切换并返回 {kind: "retry"}', async () => {
     const { ctx, listeners } = stubCtx();
     apply(ctx, {
-      fallbackChains: ['deepseek/deepseek-chat', 'openai/gpt-4o'],
+      fallbackChains: ['openai/gpt-4o', 'anthropic/claude-sonnet-4'],
       fallbackWhen: 'immediately',
       baseDelayMs: 100,
       maxDelayMs: 500,
     });
+    const reqListener = findListener(listeners, 'agent/request');
     const errListener = findListener(listeners, 'agent/request-error');
+    await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
     const result = await callListener(
       errListener,
       {
@@ -838,8 +1022,7 @@ describe('agent/request-error listener', () => {
     );
     expect(result).toEqual({ kind: 'retry' });
 
-    // 状态已推进:seed 被改写为下一候选
-    const reqListener = findListener(listeners, 'agent/request');
+    // 状态已推进:seed 被改写为队列第 1 项
     const nextSeed = await callListener(
       reqListener,
       { turn: 1, step: 1, signal: new AbortController().signal },
@@ -868,18 +1051,23 @@ describe('agent/request-error listener', () => {
     expect(result).toBeUndefined();
   });
 
-  it('链耗尽 → 透传 upstream(undefined)并标记 exhausted', async () => {
+  it('单项队列且队列项=会话模型(无备选)→ 耗尽透传', async () => {
     const { ctx, listeners } = stubCtx();
-    apply(ctx, {
-      fallbackChains: ['a/x'], // 单项链 → 失败一次即耗尽
-    });
+    apply(ctx, { fallbackChains: ['deepseek/deepseek-chat'] });
+    const reqListener = findListener(listeners, 'agent/request');
     const errListener = findListener(listeners, 'agent/request-error');
+    await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    // 唯一候选即会话模型 → 推进时被跳过 → 无候选可切,透传
     const result = await callListener(
       errListener,
       {
         turn: 1,
         step: 1,
-        provider: 'a',
+        provider: 'deepseek',
         failure: stubFailure('RATE_LIMIT'),
         signal: new AbortController().signal,
       },
@@ -888,14 +1076,20 @@ describe('agent/request-error listener', () => {
     expect(result).toBeUndefined();
   });
 
-  it('afterRetry 连续失败按链顺序切:deepseek → openai → anthropic', async () => {
+  it('afterRetry 连续失败按队列顺序切:会话模型 → openai → anthropic → 耗尽', async () => {
     const { ctx, listeners } = stubCtx();
     apply(ctx, {
       fallbackChains: ['deepseek/x', 'openai/y', 'anthropic/z'],
       baseDelayMs: 0,
       maxDelayMs: 0,
     });
+    const reqListener = findListener(listeners, 'agent/request');
     const errListener = findListener(listeners, 'agent/request-error');
+    await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'x' }),
+    );
     // 三次失败:第 1、2 次切候选,第 3 次透传
     const r1 = await callListener(
       errListener,
@@ -986,8 +1180,15 @@ describe('轨迹记录(llm/retry 事件)', () => {
       baseDelayMs: 0,
       maxDelayMs: 0,
     });
+    const reqListener = findListener(listeners, 'agent/request');
     const errListener = findListener(listeners, 'agent/request-error');
     const { agent, appends } = stubAgent();
+    // 先 request:捕获会话指定模型 pageModel = deepseek/x
+    await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'x' }),
+    );
     const failure = stubFailure('RATE_LIMIT');
     const result = await callListener(
       errListener,
@@ -1017,7 +1218,7 @@ describe('轨迹记录(llm/retry 事件)', () => {
       mode: 'normal',
       policyKey: 'llm-fallback',
       retry: 1,
-      maxRetries: 2, // min(maxRetries=2, 链长-1=2)
+      maxRetries: 2, // min(maxRetries=2, 队列长 3)
       delayMs: 0,
       failure,
       targetProvider: 'openai', // 切换目标:轨迹里直接可见"切到哪个模型继续跑"
@@ -1041,8 +1242,14 @@ describe('轨迹记录(llm/retry 事件)', () => {
       baseDelayMs: 0,
       maxDelayMs: 0,
     });
+    const reqListener = findListener(listeners, 'agent/request');
     const errListener = findListener(listeners, 'agent/request-error');
     const { agent, appends } = stubAgent();
+    await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'x' }),
+    );
     await callListener(
       errListener,
       {
@@ -1075,7 +1282,7 @@ describe('轨迹记录(llm/retry 事件)', () => {
     expect(second?.retry).toBe(2);
     expect(second?.provider).toBe('openai');
     expect(second?.failure).toMatchObject({ code: 'QUOTA' });
-    // 第二跳目标 = 链第三项(链上候选逐跳推进,目标随之更新)
+    // 第二跳目标 = 队列第三项(候选逐跳推进,目标随之更新)
     expect(second?.targetProvider).toBe('anthropic');
     expect(second?.targetModel).toBe('z');
   });
@@ -1390,7 +1597,10 @@ describe('Config schema 国际化(desc i18n 映射)', () => {
       string,
       string
     >;
-    expect(chains.zh).toContain('主模型');
+    // 0.5.0 起去主模型概念:描述声明这是"纯回退候选队列"
+    expect(chains.zh).toContain('回退候选队列');
+    expect(chains.zh).not.toContain('首项');
+    expect(chains.en).toContain('fallback candidates');
     const when = fieldOf('fallbackWhen')?.meta?.description as Record<
       string,
       string

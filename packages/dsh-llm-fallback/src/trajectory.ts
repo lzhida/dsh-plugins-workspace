@@ -50,7 +50,7 @@ export interface LlmRetryEventData {
   policyKey: string;
   /** 本次切换的序号(1 起)。 */
   retry: number;
-  /** 本 step 最多可切换次数(min(链长-1, maxRetries))。 */
+  /** 本 step 最多可切换次数(min(链长, maxRetries))。 */
   maxRetries: number;
   /** 实际退避毫秒数。 */
   delayMs: number;
@@ -87,7 +87,8 @@ export interface TrajectoryAgent {
 
 /**
  * 本 step 的有效最大切换次数:链长上限与用户 maxRetries 上限取小者。
- * 链长 1(无备选)时为 0;防御非法负值。
+ * 0.5.0 起配置链是纯回退候选队列:会话指定模型失败后可依次切完整个队列,
+ * 故上限为 min(maxRetries, 链长)(单项链也有 1 次切换机会);防御非法负值。
  */
 export function effectiveMaxSwitches(
   chainLength: number,
@@ -95,7 +96,7 @@ export function effectiveMaxSwitches(
 ): number {
   if (!Number.isFinite(chainLength) || chainLength < 1) return 0;
   if (!Number.isFinite(maxRetries) || maxRetries < 0) return 0;
-  return Math.min(Math.floor(maxRetries), Math.floor(chainLength) - 1);
+  return Math.min(Math.floor(maxRetries), Math.floor(chainLength));
 }
 
 /**

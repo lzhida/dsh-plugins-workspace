@@ -3,7 +3,8 @@
  *
  * 命名/默认值对齐 oh-my-pi 的 `retry.*` 子树:
  * - `enabled`: 总开关
- * - `fallbackChains`:候选列表(首项=主模型);数组项可为
+ * - `fallbackChains`:纯回退候选队列(**不含主模型**——会话页面指定的
+ *     provider/model 就是事实主模型,失败后按队列顺序切换);数组项可为
  *     - `string`(旧 0.2.x 形态,`'provider/model'`,自动归一化为对象)或
  *     - `object`(`{provider, model, displayName?, description?}`,可在 dsh 设置
  *       面板里展示为可读条目;若 dsh 前端支持 `modelList` role 则渲染为模型
@@ -11,16 +12,21 @@
  * - `fallbackWhen`:回退时机——`afterRetry`(默认)= 官方 dsh-llm-retry 等上游
  *   恢复器仍在预算内决定同 provider 重试时透传其决策,耗尽/委派后才切下一候选;
  *   `immediately` = 一次失败立即切换,不等上游
- * - `maxRetries`:单次请求最多**切换**次数(链上换候选的次数,不含同 provider 重试);
- *   `0` = 等于链长(全跑完才报错,与 omp 默认行为一致)
+ * - `maxRetries`:单次请求最多**切换**次数(不含同 provider 重试);
+ *   `0` = 链长(会话模型失败后可依次切完整个队列才报错)
  * - `baseDelayMs` / `maxDelayMs`:指数退避的初值与上界;`0` = 禁用退避(失败后立即切换)
  * - `retryableCodes`:视为可重试的失败码(白名单;默认对齐 dsh 宿主官方重试码
  *   `dsh-llm` 的 DEFAULT_RETRYABLE_CODES,并保留配额/上下文类超集)
  * - `perTurn`:同一 step(`turn:step`)内是否允许多次切换;`false` = 至多切换一次(one-shot)
  *
+ * 主模型语义(0.5.0 起):插件配置里没有"主模型"——dsh 会话页面指定的模型
+ * 就是事实主模型。回退推进时自动跳过与会话模型相同的队列项(用户把会话模型
+ * 也勾进队列的防呆),旧"首项=主模型"的存量配置因此零迁移、行为不劣化。
+ *
  * 设计简化(本期不做):
  * - 不区分 role/specificity 的多链(`retry.fallbackChains.<role>`);本期就是"按 provider/model 串行"
- * - 不实现 `fallbackRevertPolicy`(跨回合切回主模型);本期仅在请求内回退
+ * - 不实现 `fallbackRevertPolicy`(同一 step 链耗尽后切回会话指定模型);回退状态
+ *   以 `turn:step` 为 key,新 step 天然从会话指定模型重新开始
  * - 不实现 provider/* 通配条目;链中每项就是字面 `provider/model`
  *
  * 渲染设置表单:loader 用 schemastery 把本 schema 投影成 GUI(参见 dsh-guided-goal
@@ -259,7 +265,7 @@ export function normalizeChainEntry(
 /** 解析用户配置:返回最终规整后的可执行结构;非法输入 → 抛出 schema 错误。 */
 export interface ResolvedConfig {
   enabled: boolean;
-  /** 链中每项的 (provider, model)。首项为主模型;空链=插件不做事。 */
+  /** 纯回退候选队列(不含主模型——会话页面指定的模型即事实主模型);空链=插件不做事。 */
   chain: ReadonlyArray<{ provider: string; model: string }>;
   /** 链中每项的规整形态(含 displayName / description);state 不直接用,留作未来扩展。 */
   entries: ReadonlyArray<ChainEntry>;
@@ -415,8 +421,8 @@ export const Config = Schema.object({
         .default([])
         .role('modelList', { source: 'dsh-llm-runtime' }),
       desc(
-        'Ordered fallback chain; first entry is the primary model; subsequent entries are tried in order when the current one fails',
-        '有序回退链:首项 = 主模型,当前模型失败时按顺序尝试后续候选',
+        'Ordered fallback candidates — the model selected in the session UI is the primary and is not configured here; tried in order when the session model fails',
+        '回退候选队列(不含主模型——会话页面指定的模型即事实主模型),失败后按顺序切换',
       ),
     ),
   ),
@@ -433,8 +439,8 @@ export const Config = Schema.object({
     setDescription(
       Schema.number().default(0).role('modelChainMeta', { kind: 'retries' }),
       desc(
-        'Max attempts per request (0 = chain length; i.e. try every configured model before erroring)',
-        '单次请求最多尝试次数(0 = 链长,即跑完所有候选才报错)',
+        'Max fallback switches per request (0 = queue length; i.e. try every candidate before erroring)',
+        '单次请求最多切换次数(0 = 队列长度,即切完所有候选才报错)',
       ),
     ),
   ),

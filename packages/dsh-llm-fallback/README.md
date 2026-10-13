@@ -3,7 +3,7 @@
 [![npm version](https://img.shields.io/npm/v/@zhidal/dsh-llm-fallback)](https://www.npmjs.com/package/@zhidal/dsh-llm-fallback)
 [![license](https://img.shields.io/npm/l/@zhidal/dsh-llm-fallback)](./LICENSE)
 
-dsh 的模型回退插件：拦截全局 LLM 调用，主模型失败时按候选链自动切换到下一个 `provider/model`，**对话不中断**。默认在官方 `@deepseek-ai/dsh-llm-retry` 同 provider 重试预算耗尽后才切换（第二道防线），也可配置为一次失败立即切换。
+dsh 的模型回退插件：拦截全局 LLM 调用，**会话页面指定的模型**（事实主模型）失败时，按回退队列自动切换到下一个 `provider/model`，**对话不中断**。配置里没有"主模型"——`fallbackChains` 就是纯回退候选队列。默认在官方 `@deepseek-ai/dsh-llm-retry` 同 provider 重试预算耗尽后才切换（第二道防线），也可配置为一次失败立即切换。
 
 ## 目录
 
@@ -22,7 +22,7 @@ dsh 的模型回退插件：拦截全局 LLM 调用，主模型失败时按候�
 
 ## 特性
 
-- 🔄 **自动回退**——失败码命中白名单且还有下一候选时，指数退避后切换并让 loop 重发请求，对 agent 完全透明
+- 🔄 **自动回退**——失败码命中白名单且队列还有候选时，指数退避后切换并让 loop 重发请求，对 agent 完全透明
 - 🤝 **与官方重试正交**——默认先同 provider 重试（官方 `dsh-llm-retry`），预算耗尽再跨 provider 回退（本插件），两者可叠加
 - 🎛️ **可视化配置卡**——内嵌设置面板：勾选候选模型、排序队列、设置回退次数与时机，保存即生效，无需重载插件
 - 🌐 **中英双语设置表单**——配置卡文案与 schema 字段描述跟随 dsh 语言设置（设置 → 通用 → 语言）即时切换，无需重载插件
@@ -32,9 +32,9 @@ dsh 的模型回退插件：拦截全局 LLM 调用，主模型失败时按候�
 ## 工作原理
 
 1. 插件监听 dsh agent-loop 的两个 loop 级 waterfall：`agent/request`（发请求前）与 `agent/request-error`（请求失败后）；
-2. 失败时，若失败码在白名单、按 `fallbackWhen` 判定可切、且链上还有下一候选 → 指数退避后推进到下一候选，返回 `{kind: 'retry'}`；
+2. 失败时，若失败码在白名单、按 `fallbackWhen` 判定可切、且队列还有候选 → 指数退避后推进到下一候选（会话指定模型失败后切到队列第 1 项，再失败切第 2 项，依此推进；队列中与会话指定模型相同的项会被自动跳过），返回 `{kind: 'retry'}`；
 3. loop 收到 retry 后重走 `agent/request`，插件把 `provider/model` 改写为新候选，请求无感续发——对话不中断；
-4. 失败码不在白名单或链耗尽 → 透传上游（官方 retry / loop 默认行为），错误正常上抛。
+4. 失败码不在白名单或队列耗尽 → 透传上游（官方 retry / loop 默认行为），错误正常上抛。
 
 ## 安装
 
@@ -80,18 +80,18 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 
 启用插件后，在 设置 → 插件 → `@zhidal/dsh-llm-fallback` 详情页的「模型回退」配置卡中配置：
 
-| 字段             | 类型                                                   | 默认                            | 说明                                                          |
-| ---------------- | ------------------------------------------------------ | ------------------------------- | ------------------------------------------------------------- |
-| `enabled`        | `boolean`                                              | `true`                          | 总开关，关闭后不再拦截模型失败                                |
-| `fallbackChains` | `Array<{provider, model, displayName?, description?}>` | `[]`                            | 候选列表，首项 = 主模型，逐个回退；旧 `string[]` 形态自动归一 |
-| `fallbackWhen`   | `'afterRetry' \| 'immediately'`                        | `'afterRetry'`                  | 回退时机，见[回退时机](#回退时机fallbackwhen)                 |
-| `maxRetries`     | `number`                                               | `0`（= 链长）                   | 单次请求最多**切换**次数，不含官方重试的同 provider 重试      |
-| `baseDelayMs`    | `number`                                               | `500`                           | 指数退避初值；`0` = 禁用退避（失败后立即切换）                |
-| `maxDelayMs`     | `number`                                               | `30000`                         | 指数退避上限                                                  |
-| `retryableCodes` | `string[]`                                             | 见[失败码白名单](#失败码白名单) | 可触发切换的失败码白名单                                      |
-| `perTurn`        | `boolean`                                              | `true`                          | 预留字段，尚未参与回退判定，见[已知限制](#已知限制)           |
+| 字段             | 类型                                                   | 默认                            | 说明                                                                               |
+| ---------------- | ------------------------------------------------------ | ------------------------------- | ---------------------------------------------------------------------------------- |
+| `enabled`        | `boolean`                                              | `true`                          | 总开关，关闭后不再拦截模型失败                                                     |
+| `fallbackChains` | `Array<{provider, model, displayName?, description?}>` | `[]`                            | 纯回退候选队列（不含会话指定的主模型），失败后按序切换；旧 `string[]` 形态自动归一 |
+| `fallbackWhen`   | `'afterRetry' \| 'immediately'`                        | `'afterRetry'`                  | 回退时机，见[回退时机](#回退时机fallbackwhen)                                      |
+| `maxRetries`     | `number`                                               | `0`（= 链长）                   | 单次请求最多**切换**次数，不含官方重试的同 provider 重试                           |
+| `baseDelayMs`    | `number`                                               | `500`                           | 指数退避初值；`0` = 禁用退避（失败后立即切换）                                     |
+| `maxDelayMs`     | `number`                                               | `30000`                         | 指数退避上限                                                                       |
+| `retryableCodes` | `string[]`                                             | 见[失败码白名单](#失败码白名单) | 可触发切换的失败码白名单                                                           |
+| `perTurn`        | `boolean`                                              | `true`                          | 预留字段，尚未参与回退判定，见[已知限制](#已知限制)                                |
 
-配置卡功能：启用开关；从宿主模型目录（按 provider 分组）勾选候选模型，列表限高滚动并支持按 provider 分组名 / 模型 id / 显示名搜索过滤（大小写不敏感，无命中给空态）；上移 / 下移 / 移除调整回退优先级（顺序即回退顺序，首项 = 主模型）；设置最大回退次数与回退时机；保存 / 放弃，带 revision 冲突检测。所有改动保存后即时生效，无需重载插件。配色接入 dsh web 主题变量（`--dsw-alias-*`），明暗模式均保持文字可读。
+配置卡功能：启用开关；从宿主模型目录（按 provider 分组）勾选回退候选，列表限高滚动并支持按 provider 分组名 / 模型 id / 显示名搜索过滤（大小写不敏感，无命中给空态）；上移 / 下移 / 移除调整回退优先级（顺序即回退顺序，会话指定的模型不在此队列中）；设置最大回退次数与回退时机；保存 / 放弃，带 revision 冲突检测。所有改动保存后即时生效，无需重载插件。配色接入 dsh web 主题变量（`--dsw-alias-*`），明暗模式均保持文字可读。
 
 ### 国际化（i18n）
 
@@ -126,8 +126,9 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 
 ## 行为
 
-- 失败码在白名单 + 按时机判定可切 + 还有下一候选 → 退避 + 切下一候选 + 返回 `{kind: 'retry'}`，loop 重发请求（`agent/request` 监听器改写 `provider/model`）
-- 失败码不在白名单或链耗尽 → 透传上游决策（官方 retry 的 retry 也到此为止），错误正常上抛
+- 失败码在白名单 + 按时机判定可切 + 队列还有候选 → 退避 + 切下一候选 + 返回 `{kind: 'retry'}`，loop 重发请求（`agent/request` 监听器改写 `provider/model`）
+- 回退推进永不切向会话指定的模型（它刚失败过）——把会话模型也勾进队列时该项被自动跳过
+- 失败码不在白名单或队列耗尽 → 透传上游决策（官方 retry 的 retry 也到此为止），错误正常上抛
 - 每次切换向会话轨迹写入官方 `llm/retry` / `llm/retry-started` 事件（见[轨迹可见性](#轨迹可见性)）；写轨迹失败不影响回退本体
 - 退避等待期间 turn 被取消 → 立即中止等待并透传上游，不写 `llm/retry-started`
 - 同时注册 system-prompt section，告知 agent 回退协议存在、无需自行"手加重试"
@@ -151,7 +152,7 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 - `afterRetry` 时机依赖 waterfall 链位：需能在 `agent/request-error` 中通过 `next()` 观察到官方 retry 的决策；自定义装载顺序导致观察不到时，回退退化为 `immediately` 语义
 - `perTurn` 尚未实装：schema 有声明、配置会解析，但回退状态机未读取该字段，设 `false` 无效果
 - 每 step 的回退状态以 `turn:step` 为 key 存内存且不清理：超长会话下按 step 数缓增（每项是小对象，量级可忽略，严格意义上无上界）
-- 不实现 provider/* 通配条目、role/specificity 多链分派、跨回合切回主模型
+- 不实现 provider/* 通配条目、role/specificity 多链分派、同一 step 链耗尽后切回会话指定模型（新 step 天然从会话指定模型重新开始）
 
 ## 故障排查
 

@@ -7,13 +7,19 @@
  *   1. 打印 `[dsh-llm-fallback] plugin loaded`(e2e 契约);
  *   2. 解析 config(loader 已把 settings 投影成普通值,直接读取);
  *   3. 注册 system-prompt section(对 agent 的协议说明);
- *   4. 监听 `agent/request` waterfall:每次 loop 准备发请求时,如果 state 要求
- *      换 model,则改写 proposedConfig 的 provider/model;
+ *   4. 监听 `agent/request` waterfall:每次 loop 准备发请求时——尚未切换
+ *      (index<0)则把会话页面指定的模型捕获为 pageModel(事实主模型,配置
+ *      链不含主模型),已切换(index>=0)则改写 proposedConfig 为链上候选;
  *   5. 监听 `agent/request-error` waterfall:每次 LLM 请求失败,若在 retryable
  *      失败码白名单内且还有下一候选 → 写轨迹(llm/retry)+ backoff + 切下一候选
  *      + 写轨迹(llm/retry-started)+ 返回 retry;
  *      否则透传上游决策(让同 provider 内重试或抛错);
  *   6. effect 卸载时一次性清理(disposeSection + disposeListeners)。
+ *
+ * 主模型语义(0.5.0 起):会话页面指定的模型就是事实主模型;配置的
+ * fallbackChains 是纯回退候选队列,会话模型失败后按队列顺序切换(首失败
+ * → chain[0]),推进时自动跳过与 pageModel 相同的候选(用户把会话模型
+ * 也配进队列的防呆,同时让旧"首项=主模型"配置零迁移)。
  *
  * 回退时机(fallbackWhen):
  * - `afterRetry`(默认):先 `await next()` 观察上游决策。官方 `dsh-llm-retry`
@@ -38,7 +44,8 @@
  *
  * 局限性:
  * - 不实现 provider/* 通配条目、role/specificity 分派链;
- * - 不实现"跨回合切回主 model"(本期仅在请求内回退);
+ * - 不实现"跨回合切回会话指定模型"(回退状态以 turn:step 为 key,新 step
+ *   天然从会话指定模型重新开始;同一 step 内链耗尽后不再回头);
  * - backoff 是简单指数退避 + 抖动 ±10%;
  * - 轨迹复用官方 `llm/retry` / `llm/retry-started` 事件类型(policyKey='llm-fallback'
  *   可辨识):`Session.append` 无法写 `ignorable` 标记,自创事件类型会在会话日志
@@ -162,8 +169,10 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
   const getState = (key: StepKey): FallbackState =>
     stateFor(states, key, current().chain);
 
-  // 5. 监听 agent/request:每次 loop 准备发请求时,若 state 要求换 model,
-  //    则改写 proposedConfig 的 provider/model。
+  // 5. 监听 agent/request:每次 loop 准备发请求时——
+  //    - 尚未切换(index<0):当前就是会话页面指定的模型(事实主模型),
+  //      捕获为 pageModel(回退时永不切向它),不改写 seed;
+  //    - 已切换(index>=0):改写 proposedConfig 为链上当前候选。
   ctx.effect(() => {
     const dispose = ctx.on(
       'agent/request',
@@ -173,9 +182,18 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
       ): Promise<RequestConfig> => {
         const seed = await next();
         const key: StepKey = `${payload.turn}:${payload.step}`;
-        const state = states.get(key);
-        // 没有 state = 首次进入,或从未失败过 → 不动 seed
-        if (!state || state.index === 0) return seed;
+        // 惰性创建/取出该 step 的状态(此前仅在失败时创建;现在请求阶段就建,
+        // 以便在首次失败前捕获会话指定模型——error payload 不带 model)
+        const state = stateFor(states, key, current().chain);
+        if (state.index < 0) {
+          if (!state.pageModel) {
+            state.pageModel = {
+              provider: seed.provider,
+              model: seed.model,
+            };
+          }
+          return seed;
+        }
         const expected = state.chain[state.index];
         if (!expected) return seed;
         // 若 seed 已是 state 期望值(其他 listener 也已切),不动

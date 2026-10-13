@@ -7,7 +7,8 @@
  *   provider 的模型目录,按 provider 分组),勾选即加入回退队列;列表限高
  *   滚动(280px 内部滚动,不再撑长设置页外层滚动条),并提供搜索框
  *   (provider 分组名 / 模型 id / 显示名,大小写不敏感子串过滤,无命中给空态);
- * - **排序**:已选队列可上移/下移/移除,顺序即回退优先级(首项=主模型);
+ * - **排序**:已选队列可上移/下移/移除,顺序即回退优先级(纯回退候选,
+ *   不含会话指定的模型——它失败后从队列第 1 项开始切);
  * - **最大回退次数**(maxRetries,0 = 链长);
  * - 回退时机(fallbackWhen)。
  *
@@ -60,12 +61,11 @@ globalThis.__ModuleLoader__.load({
       zh: {
         title: '模型回退',
         intro:
-          '主模型失败时按队列顺序自动切换到下一个模型(对话不中断)。队列首项 = 主模型。',
+          '会话指定的模型失败时,自动按队列顺序切换到下一个模型(对话不中断)。本队列是纯回退候选,不含会话指定的模型。',
         enabled: '启用',
         enabledDesc: '关闭后不再拦截模型失败',
         queue: '回退队列(可上移/下移调整顺序)',
         queueEmpty: '尚未选择模型;请在下方勾选可用模型。',
-        primary: '主模型',
         fallbackN: '回退',
         moveUp: '上移',
         moveDown: '下移',
@@ -80,7 +80,7 @@ globalThis.__ModuleLoader__.load({
         searchAria: '搜索模型',
         catalogNoMatch: '没有匹配的模型',
         maxRetries: '最大回退次数',
-        maxRetriesHint: '0 = 按队列长度(跑完全部候选才报错)',
+        maxRetriesHint: '0 = 按队列长度(切完所有候选才报错)',
         fallbackWhen: '回退时机',
         afterRetry: '官方重试耗尽后(afterRetry)',
         immediately: '一次失败立即切换(immediately)',
@@ -98,12 +98,11 @@ globalThis.__ModuleLoader__.load({
       en: {
         title: 'Model fallback',
         intro:
-          'When the primary model fails, the next model in the queue is tried automatically (the conversation is not interrupted). The first entry is the primary model.',
+          'When the model selected in the session fails, the next model in the queue is tried automatically (the conversation is not interrupted). This queue holds pure fallback candidates — the session-selected primary is not configured here.',
         enabled: 'Enabled',
         enabledDesc: 'When off, model failures are no longer intercepted',
         queue: 'Fallback queue (move up/down to reorder)',
         queueEmpty: 'No model selected yet — check models below.',
-        primary: 'Primary',
         fallbackN: 'Fallback',
         moveUp: 'Move up',
         moveDown: 'Move down',
@@ -600,7 +599,7 @@ globalThis.__ModuleLoader__.load({
           return h(
             'div',
             { key: routeKey(r), style: S.queueRow },
-            h('span', { style: S.badge }, index === 0 ? t('primary') : t('fallbackN') + ' ' + index),
+            h('span', { style: S.badge }, t('fallbackN') + ' ' + (index + 1)),
             h(
               'span',
               { style: { flex: 1, fontSize: 13 } },

@@ -2,7 +2,7 @@
  * 轨迹写入单元测试。
  *
  * 覆盖:
- * - effectiveMaxSwitches:链长/maxRetries 取小、退化输入(链长 1、负值、非有限值);
+ * - effectiveMaxSwitches:链长/maxRetries 取小(0.5.0 起上限=链长)、退化输入(链长 0、负值、非有限值);
  * - recordFallbackScheduled / recordFallbackStarted:
  *   - session 缺失 → no-op 不抛;
  *   - 正常路径 → session.append 收到正确的事件类型与 payload;
@@ -20,14 +20,14 @@ import {
 } from './trajectory.ts';
 
 describe('effectiveMaxSwitches', () => {
-  it('取链长-1 与 maxRetries 的较小者', () => {
-    expect(effectiveMaxSwitches(4, 10)).toBe(3);
+  it('取链长与 maxRetries 的较小者(0.5.0 起:纯回退队列可切满整个队列)', () => {
+    expect(effectiveMaxSwitches(4, 10)).toBe(4);
     expect(effectiveMaxSwitches(4, 2)).toBe(2);
-    expect(effectiveMaxSwitches(2, 5)).toBe(1);
+    expect(effectiveMaxSwitches(2, 5)).toBe(2);
   });
 
-  it('链长 1(无备选)→ 0', () => {
-    expect(effectiveMaxSwitches(1, 5)).toBe(0);
+  it('链长 1 → 1(会话指定模型失败后仍可切到唯一候选)', () => {
+    expect(effectiveMaxSwitches(1, 5)).toBe(1);
   });
 
   it('非法输入(0 / 负值 / 非有限值)→ 0', () => {
