@@ -20,13 +20,17 @@
 # —— 版本管理(Changesets)——
 pnpm changeset              # 声明一次变更:选包、选 semver 档位、写摘要
 pnpm changeset:version      # 消费 changeset 文件:写回版本号 + 生成各包 CHANGELOG.md
-pnpm changeset:publish      # 发布公开包到 npm(目前仅 @zhidal/dsh-llm-fallback)
+pnpm changeset:publish      # 手动发布公开包到 npm(自动流水线的备用路径)
 
 # —— tag 发布(本工具,tag 名 = {短包名}-v{X.Y.Z})——
 pnpm release list                       # 子包清单:包名 / 版本 / 可见性 / tag 名预览
 pnpm release tag dsh-taskboard          # 为当前已提交版本补打 annotated tag
 pnpm release tag --all                  # 批量:尚无 tag 的子包全打,已有的跳过(幂等)
 pnpm release tag --all --dry-run        # 预览将创建/跳过哪些 tag,零副作用
+
+# —— npm 发布流水线(tag 推送触发,CI 自动;本地可 dry-run)——
+pnpm release publish dsh-llm-fallback-v0.3.2           # 按tag决策并发布(公开包正式版)
+pnpm release publish dsh-llm-fallback-v0.3.2 --dry-run # 只预览三态决策,不发npm
 ```
 
 推荐发布流(与 `.changeset/README.md` 一致):
@@ -36,9 +40,58 @@ pnpm changeset            # 1. 声明变更
 pnpm changeset:version    # 2. 版本 + CHANGELOG 落盘
 git add . && git commit   # 3. 人工审阅后提交(建议: chore(release): 发布新版本)
 pnpm release tag --all    # 4. 批量打 {短名}-v{X.Y.Z} annotated tag
-pnpm changeset:publish    # 5. (可选)发布 npm
-git push --follow-tags    # 6. push 永远由你手动执行,工具绝不自动 push
+git push --follow-tags    # 5. push 永远由你手动执行,工具绝不自动 push
+                          # 6. 公开包正式版 tag 推送后,Release 流水线自动发到
+                          #    npm 暂存队列;去 npmjs.com 包页(或 `npm stage
+                          #    approve`,2FA)人工放行,版本才公开可安装
 ```
+
+## 发布流水线(tag 推送 → npm 暂存 → 人工放行)
+
+`.github/workflows/release.yml` 监听 `push: tags: ['*-v*']`,检出 tag 指向的
+commit,先跑与 CI 完全相同的门禁链(format:check → lint → typecheck → test),
+再执行 `pnpm release publish "${{ github.ref_name }}" --client npm-stage`,
+与本地 CLI 共用 `scripts/release/publish.ts` 的同一套决策逻辑:
+
+| tag 形态                                        | 决策      | 行为                                                                                                           |
+| ----------------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------- |
+| `{短名}-v{正式版}`,短名命中唯一**公开**包       | `publish` | CI 执行 `npm stage publish --access public`(OIDC 暂存);本地默认 `pnpm publish --no-git-checks --access public` |
+| `{短名}-v{预发布版}`(如 `-rc.1`)                | `skip`    | 按约定不发 npm,退出 0 并留日志                                                                                 |
+| `{短名}-v{正式版}` 但包为 `private: true`       | `skip`    | 私有包不发 npm,退出 0 并留日志                                                                                 |
+| 不符合 `{短名}-v{semver}` 约定的 tag            | `skip`    | 与流水线无关,退出 0                                                                                            |
+| 短名无对应包 / 短名命中多个 scope 包            | `fail`    | `PKG_NOT_FOUND` / `PKG_AMBIGUOUS`,非零退出                                                                     |
+| tag 版本 ≠ tag 指向 commit 上 package.json 版本 | `fail`    | `TAG_VERSION_MISMATCH`,非零退出                                                                                |
+
+前置与边界:
+
+- **凭证(现行:npm OIDC trusted publishing + 暂存发布,免 token)**:CI 用
+  GitHub 的短时 OIDC id-token 向 npm 换取一次性凭证,仓库无需任何 npm secret。
+  发布模式为 npm 推荐的**暂存发布**:工作流执行 `npm stage publish` 把版本送进
+  暂存队列(后台可见、不可安装),维护者去 npmjs.com 包页 Staged versions 审阅
+  放行,或本地 `npm stage approve <stage-id>`(2FA)后才公开。暂存命令在
+  trusted publishing 下始终允许,**无需勾选 Allow npm publish**(即 npm 提示
+  "Not recommended" 的那个直发勾选,保持不勾即可)。前置是一次性人工登记
+  (2026-10-13 起):npmjs.com → `@zhidal/dsh-llm-fallback` 包页 → Settings →
+  Trusted Publisher,登记 `lzhida/dsh-plugins-workspace` + workflow
+  `release.yml`。npm 自动生成 provenance attestation,无需 `--provenance`。
+  CI 固定 `--client npm-stage`(npm ≥ 11.5.1,Node 24 内置版满足),因 pnpm 11
+  原生 publish 的 OIDC 在 CI 尚不可靠(见 pnpm/pnpm#11513)且 pnpm 无 stage
+  子命令。
+- **凭证(备选:granular token)**:若临时退回 token 方案,`NPM_TOKEN` 必须是
+  **Granular Access Token** 且创建时勾选 **Bypass 2FA**(npm 自 2025-12-09 起
+  永久吊销经典 token;所有包默认强制 2FA,未勾 Bypass 2FA 的 token 发布时会被
+  要求 OTP,CI 中直接失败),并把 workflow 发布步骤改回 `pnpm publish` 路径。
+- **本地发布**:本地手动 `pnpm publish` 被 2FA 拦下属预期安全行为——按提示输
+  OTP,或 `PNPM_CONFIG_OTP=<码>` 免交互;本地 `--client npm-stage` 同样只进
+  暂存队列,放行动作永远在人工手里。
+- **发布内容即 tag 内容**:非 dry-run 的 publish 前强制工作树干净
+  (`pnpm publish` 打包的是工作树而非 tag 指向的提交,脏树会造成脱节);
+  CI 全新检出天然干净,本地执行加 `--allow-dirty` 可显式越过。
+- **构建**:发布触发各包自带 `prepack`(如 dsh-llm-fallback 自动 esbuild 出
+  dist),流水线无需额外构建步骤。
+- **不变式**:工具与流水线都不 push、不创建 GitHub Release、不做 dist-tag
+  管理(Trusted Publisher 的 Allow npm dist-tag 保持关闭);prerelease 想发
+  npm 时仍走手动 `pnpm changeset:publish` / `pnpm publish`(带 dist-tag 自理)。
 
 ## 语义与边界
 
@@ -67,16 +120,21 @@ git push --follow-tags    # 6. push 永远由你手动执行,工具绝不自动 
   config.json          Changesets 配置(baseBranch=dev、privatePackages.version=true/tag=false)
   README.md            Changesets 工作流说明
 scripts/
-  pkg-release.ts       tag 助手 CLI 入口(list / tag <包名|--all>,参数解析、输出、退出码)
+  pkg-release.ts       CLI 入口(list / tag <包名|--all> / publish <tag>,参数解析、输出、退出码)
   release/
-    core.ts            纯函数:semver 解析校验、tag 名生成、包名解析、ReleaseError(11 种错误码)
+    core.ts            纯函数:semver 解析校验、tag 名生成、包名解析、ReleaseError(13 种错误码)
     workspace.ts       workspace 模式解析、子包发现(只读)
     git.ts             git 子进程薄封装(结构化错误)
     workflow.ts        tagPackage / tagAllPackages 编排(dry-run、脏树与 tag 冲突检查)
+    publish.ts         发布流水线:parseReleaseTag / isStableVersion / decidePublish 纯函数 + 发布编排(pnpm/npm 双客户端)
     *.test.ts          单测 + 临时 git 仓库端到端回归
+.github/workflows/
+  ci.yml               push/PR 门禁(镜像本地提交前检查链)
+  release.yml          tag 推送 → npm 发布流水线(门禁 + release publish 决策,OIDC 免 token)
 ```
 
 错误以 `ReleaseError { code }` 结构化抛出:`PKG_NOT_FOUND`、`PKG_AMBIGUOUS`、
-`INVALID_CURRENT_VERSION`、`TAG_EXISTS`、`DIRTY_WORKTREE`、`NOT_A_GIT_REPO`、
-`GIT_FAILURE`、`WORKSPACE_CONFIG`、`PKG_VERSION_MISSING`、`PKG_MANIFEST_INVALID`、
+`INVALID_CURRENT_VERSION`、`TAG_EXISTS`、`TAG_VERSION_MISMATCH`、
+`DIRTY_WORKTREE`、`NOT_A_GIT_REPO`、`GIT_FAILURE`、`WORKSPACE_CONFIG`、
+`PKG_VERSION_MISSING`、`PKG_MANIFEST_INVALID`、`PUBLISH_FAILED`、
 `USAGE`;CLI 以非零码退出并打印 `[CODE] 文案`。

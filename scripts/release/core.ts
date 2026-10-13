@@ -16,9 +16,11 @@ export type ReleaseErrorCode =
   | 'PKG_VERSION_MISSING'
   | 'INVALID_CURRENT_VERSION'
   | 'TAG_EXISTS'
+  | 'TAG_VERSION_MISMATCH'
   | 'DIRTY_WORKTREE'
   | 'NOT_A_GIT_REPO'
-  | 'GIT_FAILURE';
+  | 'GIT_FAILURE'
+  | 'PUBLISH_FAILED';
 
 /** 结构化错误:CLI 按 code 输出文案并以非零码退出,测试按 code 断言。 */
 export class ReleaseError extends Error {
@@ -83,6 +85,11 @@ export function parseSemver(
 /** 生成 git tag 名:`{短包名}-v{版本}`,如 `dsh-taskboard-v0.2.0`。 */
 export function tagFor(shortName: string, version: string): string {
   return `${shortName}-v${version}`;
+}
+
+/** 版本是否为合法 semver(parseSemver 的不抛错探测版,用于 tag 解析过滤)。 */
+export function isSemver(version: string): boolean {
+  return SEMVER_PATTERN.test(version);
 }
 
 /** 从完整包名提取短名(最后一个 `/` 之后的段);无 scope 时原样返回。 */

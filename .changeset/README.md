@@ -13,8 +13,10 @@ pnpm changeset              # 1. 声明一次变更:选包、选 semver 档位�
 pnpm changeset:version      # 2. 消费 changeset 文件:写回版本号 + 生成各包 CHANGELOG.md
 git add . && git commit     # 3. 人工审阅后提交(建议: chore(release): 发布新版本)
 pnpm release tag --all      # 4. 为当前版本尚无 tag 的子包批量打 {短名}-v{X.Y.Z} annotated tag
-pnpm changeset:publish      # 5. (可选)发布公开包到 npm —— 目前仅 @zhidal/dsh-llm-fallback
-git push --follow-tags      # 6. push 永远由你手动执行,工具绝不自动 push
+git push --follow-tags      # 5. push 永远由你手动执行,工具绝不自动 push
+                            # 6. 公开包正式版 tag 推送后,.github/workflows/release.yml
+                            #    自动发布 npm(prerelease 与私有包自动跳过);
+                            #    pnpm changeset:publish 保留为手动备用路径
 ```
 
 ## 本仓库的关键配置(`config.json`)
