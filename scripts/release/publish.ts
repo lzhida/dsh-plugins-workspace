@@ -2,7 +2,10 @@
  * tag → npm 发布流水线:解析 `{短包名}-v{semver}` 形式的发布 tag,校验
  * 包存在性、短名唯一性与 tag/清单版本一致性后,仅对「公开包 + 正式版本」
  * 执行发布。prerelease 版本与私有包按约定明确跳过(不算错误);完整性问题
- * (tag 不指向已提交版本、短名歧义)直接失败。dry-run 全程预览,绝不触碰网络。
+ * (tag 不指向已提交版本、短名歧义)直接失败。发布决策只接受**发布线上的
+ * tag**:tag 必须存在且其指向的提交可从 main 到达(发布线守护,见
+ * assertTagOnReleaseLine),贴合仓库 main(发布线)/ dev(集线)分支模型。
+ * dry-run 全程预览,绝不触碰网络。
  *
  * 发布客户端(见 PublishClient):pnpm 为默认(本地);CI 走 `npm-stage` 的
  * OIDC 暂存发布(免 token,需 npm 包后台登记 trusted publisher;版本进暂存
@@ -16,7 +19,12 @@ import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { ReleaseError, isSemver, parseSemver } from './core.ts';
 import type { WorkspacePackage } from './core.ts';
-import { worktreeIsClean } from './git.ts';
+import {
+  commitReachableFrom,
+  releaseLineRef,
+  tagExists,
+  worktreeIsClean,
+} from './git.ts';
 import { listWorkspacePackages } from './workspace.ts';
 
 /** 从发布 tag 中解析出的引用:短包名 + 精确版本。 */
@@ -222,12 +230,37 @@ export interface PublishOutcome {
 }
 
 /**
+ * 发布线守护:publish 决策落地前,tag 必须存在,且其指向的提交可从发布线
+ * main 到达(相等或为其祖先均算)。语义:只有进入发布线(main)的版本才代表
+ * 「已发布状态」——从 dev 等集线提交直接打的 tag 会被拒绝,防止未合入发布线
+ * 的内容走 CI 发到 npm。发布线 ref 由 releaseLineRef 解析(本地 main 优先,
+ * 回退 origin/main,兼容 CI 的 tag 检出);dry-run 同样校验(纯只读),
+ * 让预览与真实发布看到同一结果。
+ */
+function assertTagOnReleaseLine(rootDir: string, tag: string): void {
+  if (!tagExists(rootDir, tag)) {
+    throw new ReleaseError(
+      'TAG_NOT_FOUND',
+      `tag ${tag} 在本仓库不存在;发布以 git tag 指向的提交为准,请先用 pnpm release tag 创建`,
+    );
+  }
+  const line = releaseLineRef(rootDir);
+  if (!commitReachableFrom(rootDir, `refs/tags/${tag}`, line)) {
+    throw new ReleaseError(
+      'TAG_NOT_ON_MAIN',
+      `tag ${tag} 指向的提交不可从发布线 ${line} 到达;发布只接受发布线上的 tag——请先在 main 上打 tag,或把该提交合入 main 后重新发布`,
+    );
+  }
+}
+
+/**
  * 按发布 tag 走完整决策并在决策为 publish 时执行发布:
  * - fail 决策 → 抛 ReleaseError(码即失败原因),调用方非零退出;
  * - skip 决策 → 原样返回,不执行任何命令;
- * - publish 决策 → 非 dry-run 时先要求工作树干净(发布打包的是工作树而非
- *   tag 指向的内容,脏树会造成 tag 与发布内容脱节),再执行;客户端由
- *   `client` 决定(默认 pnpm,CI 暂存发布传 'npm-stage')。
+ * - publish 决策 → 先过发布线守护(tag 存在且可从 main 到达,dry-run 同样
+ *   生效);非 dry-run 时再要求工作树干净(发布打包的是工作树而非 tag 指向
+ *   的内容,脏树会造成 tag 与发布内容脱节),然后执行;客户端由 `client`
+ *   决定(默认 pnpm,CI 暂存发布传 'npm-stage')。
  */
 export function publishForTag(input: {
   readonly rootDir: string;
@@ -256,6 +289,7 @@ export function publishForTag(input: {
     return { decision, dryRun, published: false };
   }
   const { pkg } = decision;
+  assertTagOnReleaseLine(rootDir, tag);
   if (!dryRun && !allowDirty && !worktreeIsClean(rootDir)) {
     throw new ReleaseError(
       'DIRTY_WORKTREE',

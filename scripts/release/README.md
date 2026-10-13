@@ -33,15 +33,17 @@ pnpm release publish dsh-llm-fallback-v0.3.2           # 按tag决策并发布(�
 pnpm release publish dsh-llm-fallback-v0.3.2 --dry-run # 只预览三态决策,不发npm
 ```
 
-推荐发布流(与 `.changeset/README.md` 一致):
+推荐发布流(与 `.changeset/README.md` 一致;发布线守护要求 tag 可从 main 到达):
 
 ```sh
 pnpm changeset            # 1. 声明变更
 pnpm changeset:version    # 2. 版本 + CHANGELOG 落盘
-git add . && git commit   # 3. 人工审阅后提交(建议: chore(release): 发布新版本)
-pnpm release tag --all    # 4. 批量打 {短名}-v{X.Y.Z} annotated tag
-git push --follow-tags    # 5. push 永远由你手动执行,工具绝不自动 push
-                          # 6. 公开包正式版 tag 推送后,Release 流水线自动发到
+git add . && git commit   # 3. 人工审阅后提交,合入 dev(建议: chore(release): 发布新版本)
+git switch main && git merge dev
+                          # 4. 把集线合入发布线(main)——发布线守护的前提
+pnpm release tag --all    # 5. 在 main 上批量打 {短名}-v{X.Y.Z} annotated tag
+git push --follow-tags    # 6. push 永远由你手动执行,工具绝不自动 push
+                          # 7. 公开包正式版 tag 推送后,Release 流水线自动发到
                           #    npm 暂存队列;去 npmjs.com 包页(或 `npm stage
                           #    approve`,2FA)人工放行,版本才公开可安装
 ```
@@ -61,6 +63,8 @@ commit,先跑与 CI 完全相同的门禁链(format:check → lint → typecheck
 | 不符合 `{短名}-v{semver}` 约定的 tag            | `skip`    | 与流水线无关,退出 0                                                                                            |
 | 短名无对应包 / 短名命中多个 scope 包            | `fail`    | `PKG_NOT_FOUND` / `PKG_AMBIGUOUS`,非零退出                                                                     |
 | tag 版本 ≠ tag 指向 commit 上 package.json 版本 | `fail`    | `TAG_VERSION_MISMATCH`,非零退出                                                                                |
+| tag 指向的提交不可从发布线 main 到达            | `fail`    | `TAG_NOT_ON_MAIN`,非零退出(发布线守护,见下)                                                                    |
+| tag 在仓库中不存在(版本恰好与清单一致)          | `fail`    | `TAG_NOT_FOUND`,非零退出                                                                                       |
 
 前置与边界:
 
@@ -84,6 +88,12 @@ commit,先跑与 CI 完全相同的门禁链(format:check → lint → typecheck
 - **本地发布**:本地手动 `pnpm publish` 被 2FA 拦下属预期安全行为——按提示输
   OTP,或 `PNPM_CONFIG_OTP=<码>` 免交互;本地 `--client npm-stage` 同样只进
   暂存队列,放行动作永远在人工手里。
+- **发布线守护(main 可达性,2026-10-13 起)**:publish 决策要求 tag 存在且其
+  指向的提交可从发布线 main 到达(相等或为其祖先;发布线 ref 本地 `main`
+  优先,回退 `origin/main`——CI 按 tag 检出是 detached HEAD,`release.yml`
+  以 `fetch-depth: 0` 拉全量历史保证 ref 齐全)。从 dev 等集线提交直接打的
+  tag 推送后 CI 以 `TAG_NOT_ON_MAIN` 失败,发布一律走「dev 合入 main →
+  在 main 上打 tag」;dry-run 同样校验,预览与真实发布结果一致。
 - **发布内容即 tag 内容**:非 dry-run 的 publish 前强制工作树干净
   (`pnpm publish` 打包的是工作树而非 tag 指向的提交,脏树会造成脱节);
   CI 全新检出天然干净,本地执行加 `--allow-dirty` 可显式越过。
@@ -122,11 +132,11 @@ commit,先跑与 CI 完全相同的门禁链(format:check → lint → typecheck
 scripts/
   pkg-release.ts       CLI 入口(list / tag <包名|--all> / publish <tag>,参数解析、输出、退出码)
   release/
-    core.ts            纯函数:semver 解析校验、tag 名生成、包名解析、ReleaseError(13 种错误码)
+    core.ts            纯函数:semver 解析校验、tag 名生成、包名解析、ReleaseError(16 种错误码)
     workspace.ts       workspace 模式解析、子包发现(只读)
-    git.ts             git 子进程薄封装(结构化错误)
+    git.ts             git 子进程薄封装(结构化错误)+ 发布线解析与可达性判定
     workflow.ts        tagPackage / tagAllPackages 编排(dry-run、脏树与 tag 冲突检查)
-    publish.ts         发布流水线:parseReleaseTag / isStableVersion / decidePublish 纯函数 + 发布编排(pnpm/npm 双客户端)
+    publish.ts         发布流水线:parseReleaseTag / isStableVersion / decidePublish 纯函数 + 发布编排(pnpm/npm 双客户端,发布线 main 可达性守护)
     *.test.ts          单测 + 临时 git 仓库端到端回归
 .github/workflows/
   ci.yml               push/PR 门禁(镜像本地提交前检查链)
@@ -134,7 +144,8 @@ scripts/
 ```
 
 错误以 `ReleaseError { code }` 结构化抛出:`PKG_NOT_FOUND`、`PKG_AMBIGUOUS`、
-`INVALID_CURRENT_VERSION`、`TAG_EXISTS`、`TAG_VERSION_MISMATCH`、
+`INVALID_CURRENT_VERSION`、`TAG_EXISTS`、`TAG_NOT_FOUND`、`TAG_NOT_ON_MAIN`、
+`RELEASE_LINE_NOT_FOUND`、`TAG_VERSION_MISMATCH`、
 `DIRTY_WORKTREE`、`NOT_A_GIT_REPO`、`GIT_FAILURE`、`WORKSPACE_CONFIG`、
 `PKG_VERSION_MISSING`、`PKG_MANIFEST_INVALID`、`PUBLISH_FAILED`、
 `USAGE`;CLI 以非零码退出并打印 `[CODE] 文案`。
