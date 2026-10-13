@@ -1,0 +1,80 @@
+# 发布流水线:推送 {短包名}-v{semver} 形式 git tag 时,发布对应子包到 npm。
+# 认证走 npm OIDC trusted publishing(免 token):GitHub 的短时 OIDC id-token
+# 直接向 npm 换取一次性发布凭证,无长期 secret、无泄漏面,且自动生成
+# provenance attestation(npm 官方文档:trusted publishing 下无需 --provenance)。
+#
+# 发布模式为「暂存发布」(npm 推荐的安全姿态):工作流执行 `npm stage publish`,
+# 版本进 npm 暂存队列(后台可见但不可安装),由维护者人工放行后才公开——
+#   npmjs.com 包页 Staged versions 审阅放行,或本地 `npm stage approve <id>`(2FA)。
+# 暂存命令在 trusted publishing 下始终允许,无需勾选 Allow npm publish。
+#
+# 前置(一次性,须人工在 npm 后台完成):
+#   npmjs.com → @zhidal/dsh-llm-fallback 包页 → Settings → Trusted Publisher
+#   登记 owner=lzhida / repo=dsh-plugins-workspace / workflow=release.yml。
+#
+# 决策规则(与 `pnpm release publish` 同一逻辑,见 scripts/release/publish.ts):
+#   - 仅「公开包 + 正式版本」真正执行发布(CI 用 --client npm-stage 暂存;
+#     pnpm 11 原生 publish 的 OIDC 在 CI 不可靠,见 pnpm/pnpm#11513);
+#   - 发布线守护:tag 指向的提交必须可从发布线 main 到达,否则以
+#     TAG_NOT_ON_MAIN 直接失败(从 dev 等集线提交打的 tag 不允许发布);
+#   - prerelease 版本(如 dsh-x-v1.0.0-rc.1)与 private 包明确跳过(退出 0 并留日志);
+#   - tag 短名无对应包 / 短名歧义 / tag 版本与该提交 package.json 不一致 → 直接失败。
+name: Release
+
+on:
+  push:
+    tags: ['*-v*']
+
+# contents: read 供只读检出;id-token: write 供 npm OIDC trusted publishing
+# 换取短时发布凭证——这是发布所需的最小权限组合
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: stage publish (npm OIDC, stable public only)
+    runs-on: ubuntu-latest
+    steps:
+      # 检出 tag 指向的 commit,保证校验与发布的内容即 tag 内容;
+      # fetch-depth: 0 拉全量历史与分支 ref——发布线守护需解析 origin/main
+      # 与 tag 的祖先关系(浅检出的 detached HEAD 下只有 tag 本身)
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # 从根 package.json 的 packageManager 字段读取 pnpm 版本(pnpm@11.10.0),
+      # 安装/门禁仍走 pnpm;发布一步切 npm CLI(见上)
+      - uses: pnpm/action-setup@v4
+
+      # OIDC trusted publishing 要求 npm CLI ≥ 11.5.1——由 Node 24 内置版本满足
+      # (Node 22 内置 npm 10.x 不够);registry-url 写入官方 registry 配置
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          # 发布构建不用缓存(npm 官方发布流水线建议),防供应链投毒面
+          package-manager-cache: false
+
+      # --frozen-lockfile:lockfile 与 package.json 不一致时直接失败,不静默更新
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      # 发布前跑与 CI 完全相同的门禁链,不发布未过门禁的代码
+      - name: 格式检查
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: 类型检查
+        run: pnpm typecheck
+
+      - name: 单元测试
+        run: pnpm test
+
+      # 三态决策:publish(公开包正式版)/ skip(prerelease、私有包,退出 0)/
+      # fail(tag 与清单不一致,非零退出)。公开包的 prepack 会自动构建 dist;
+      # 认证由 OIDC id-token 完成,不需要任何 NPM_TOKEN。
+      - name: 按 tag 暂存发布(仅公开包正式版,OIDC 免 token)
+        run: pnpm release publish "${{ github.ref_name }}" --client npm-stage

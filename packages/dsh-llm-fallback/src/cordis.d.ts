@@ -42,6 +42,19 @@ declare module '@deepseek-ai/cordis' {
         };
         retryPolicy?: unknown;
         signal: AbortSignal;
+        /**
+         * 主体 agent(dsh-agent fused dispatcher 注入 `{ ...payload, agent }`;
+         * 官方类型 dsh-agent runtime-types.d.ts 的 'agent/request-error' 声明
+         * `agent: Agent`)。`agent.session` 是 append-only 会话日志,插件用它
+         * 写官方 `llm/retry` / `llm/retry-started` 轨迹事件。标可选以防御
+         * 非 agent 作用域 dispatch 或旧宿主。
+         */
+        agent?: {
+          session: {
+            append(type: 'llm/retry', data: unknown): unknown;
+            append(type: 'llm/retry-started', data: unknown): unknown;
+          };
+        };
       },
       next: () => Promise<{ kind: 'retry' } | undefined | void>,
     ): Promise<{ kind: 'retry' } | undefined | void>;

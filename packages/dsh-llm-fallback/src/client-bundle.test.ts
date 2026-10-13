@@ -15,6 +15,9 @@ function readPackageFile(relativePath: string): string {
 interface ClientExports {
   name: string;
   inject: string[];
+  /** locale 字典(命名空间 'llm-fallback'),导出供测试断言 zh/en 键集一致。 */
+  DICT: Record<'zh' | 'en', Record<string, string>>;
+  apply: (ctx: unknown) => void;
   modelMatches: (
     group: { id: string },
     model: { id: string; name?: string },
@@ -165,6 +168,183 @@ describe('dsh-llm-fallback', () => {
     it('无任何命中时返回空数组(UI 据此渲染空态文案)', () => {
       const { exports } = loadClientExports();
       expect(exports.filteredCatalogGroups(groups, '不存在的模型')).toEqual([]);
+    });
+  });
+
+  // ── 国际化(0.3.3):跟随 dsh 语言配置 ─────────────────────────────
+
+  describe('配置卡国际化', () => {
+    it('字典 zh/en 键集一致且无空文案(缺译 / 漏译防回归)', () => {
+      const { exports } = loadClientExports();
+      const zhKeys = Object.keys(exports.DICT.zh).sort();
+      const enKeys = Object.keys(exports.DICT.en).sort();
+      expect(zhKeys).toEqual(enKeys);
+      expect(zhKeys.length).toBeGreaterThan(20);
+      for (const [locale, dict] of Object.entries(exports.DICT)) {
+        for (const [key, value] of Object.entries(dict)) {
+          expect(
+            typeof value === 'string' && value.length > 0,
+            `${locale}.${key} 应为非空字符串`,
+          ).toBe(true);
+        }
+      }
+    });
+
+    /** 与 LocaleRuntime.bind/translate 同语义的最小 locale 假体(bind 按 ns 缓存)。 */
+    function fakeLocale(initial: 'zh' | 'en' = 'zh'): {
+      bind: (ns: string) => (key: string) => string;
+      register: (ns: string, dict: unknown) => () => void;
+      getSnapshot: () => { active: string; revision: number };
+      subscribe: (fn: () => void) => () => void;
+      switchTo: (lang: 'zh' | 'en') => void;
+      registered: Map<string, unknown>;
+    } {
+      let active = initial;
+      let revision = 0;
+      const registered = new Map<string, unknown>();
+      const listeners = new Set<() => void>();
+      const bound = new Map<string, (key: string) => string>();
+      return {
+        bind(ns) {
+          let t = bound.get(ns);
+          if (!t) {
+            t = (key: string) => {
+              const dict = registered.get(ns) as
+                Record<string, Record<string, string>> | undefined;
+              // 与 LocaleRuntime.translate 一致:激活语言 → en → key 原样
+              return dict?.[active]?.[key] ?? dict?.en?.[key] ?? key;
+            };
+            bound.set(ns, t);
+          }
+          return t;
+        },
+        register(ns, dict) {
+          registered.set(ns, dict);
+          revision += 1;
+          for (const fn of listeners) fn();
+          return () => {
+            registered.delete(ns);
+          };
+        },
+        getSnapshot: () => ({ active, revision }),
+        subscribe(fn) {
+          listeners.add(fn);
+          return () => {
+            listeners.delete(fn);
+          };
+        },
+        switchTo(lang) {
+          if (active === lang) return;
+          active = lang;
+          revision += 1;
+          for (const fn of listeners) fn();
+        },
+        registered,
+      };
+    }
+
+    /** client apply 的最小 ctx 假体:effect 立即执行,slots/configForms 记录。 */
+    function stubClientCtx(locale: ReturnType<typeof fakeLocale> | null): {
+      ctx: unknown;
+      slotRegistrations: Array<{
+        options: { name: string; key?: string; locale?: string };
+        component: unknown;
+      }>;
+      cleanups: Array<() => void>;
+    } {
+      const slotRegistrations: Array<{
+        options: { name: string; key?: string; locale?: string };
+        component: unknown;
+      }> = [];
+      const cleanups: Array<() => void> = [];
+      const scope = {
+        getSnapshot: () => ({
+          status: 'ready',
+          value: {},
+          writable: true,
+          revision: 1,
+        }),
+        subscribe: () => () => undefined,
+        mutate: () => Promise.resolve(),
+      };
+      const ctx = {
+        effect(fn: () => () => void): void {
+          const dispose = fn();
+          if (typeof dispose === 'function') cleanups.push(dispose);
+        },
+        ...(locale === null ? {} : { locale }),
+        configForms: {
+          get: () => scope,
+          whileServed: (_ns: string[], register: () => () => void) => {
+            const dispose = register();
+            if (typeof dispose === 'function') cleanups.push(dispose);
+          },
+        },
+        slots: {
+          inject: (_name: string, registrar: () => void) => registrar(),
+          register: (
+            options: { name: string; key?: string; locale?: string },
+            component: unknown,
+          ) => {
+            // 与 ctx.slots.register(options, component) 形态一致:第一个参数
+            // 就是注册 options({name, key, locale, inject})。
+            slotRegistrations.push({ options, component });
+            return () => undefined;
+          },
+        },
+      };
+      return { ctx, slotRegistrations, cleanups };
+    }
+
+    function configCardRegistration(
+      slotRegistrations: Array<{
+        options: { name: string; key?: string; locale?: string };
+        component: unknown;
+      }>,
+    ): { options: { name: string; key?: string; locale?: string } } {
+      const registration = slotRegistrations.find(
+        (r) => r.options.name === 'plugins.bundle.config',
+      );
+      expect(registration, 'plugins.bundle.config 插槽未注册').toBeDefined();
+      return registration!;
+    }
+
+    it('跟随 dsh 语言配置:注册 llm-fallback 命名空间,t 按激活语言即时解析', () => {
+      const { exports } = loadClientExports();
+      const locale = fakeLocale('zh');
+      const { ctx, slotRegistrations } = stubClientCtx(locale);
+      expect(() => exports.apply(ctx)).not.toThrow();
+      // 字典已注册进 locale 服务
+      expect(locale.registered.has('llm-fallback')).toBe(true);
+      // 配置卡挂在 keyed 插槽上,key = 包名、locale = 字典命名空间
+      const registration = configCardRegistration(slotRegistrations);
+      expect(registration.options.key).toBe('@zhidal/dsh-llm-fallback');
+      expect(registration.options.locale).toBe('llm-fallback');
+      // bind 按 ns 缓存:测试拿到的 t 与卡片内部用的同一实例
+      const t = locale.bind('llm-fallback');
+      expect(t('title')).toBe('模型回退');
+      // 模拟 设置 → 通用 → 语言 切到 English:同一 t 立即解析为英文
+      locale.switchTo('en');
+      expect(t('title')).toBe('Model fallback');
+      expect(t('save')).toBe('Save');
+    });
+
+    it('locale 服务缺失(组合未含 dsh-client-locale)时 apply 不抛,配置卡降级注册', () => {
+      const { exports } = loadClientExports();
+      const { ctx, slotRegistrations, cleanups } = stubClientCtx(null);
+      expect(() => exports.apply(ctx)).not.toThrow();
+      // 卡片仍注册(静态英文回退),只是没有字典注册副作用
+      configCardRegistration(slotRegistrations);
+      expect(cleanups.length).toBeGreaterThan(0);
+    });
+
+    it('卡片订阅 locale 快照(LocaleFace 契约),语言切换时重渲染', () => {
+      const client = readPackageFile('../client/index.js');
+      // 订阅 + revision 比较(bump 本地状态强制刷新)
+      expect(client).toContain('locale.subscribe(function () {');
+      expect(client).toContain('locale.getSnapshot().revision');
+      // locale 缺失守卫(静态英文回退路径)
+      expect(client).toContain('DICT.en[key]');
     });
   });
 });

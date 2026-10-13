@@ -49,6 +49,15 @@ describe('dsh-llm-fallback README', () => {
     expect(readme).toContain('`30000`');
   });
 
+  it('轨迹可见性小节锚定官方事件通道(llm/retry / retry-started / policyKey)', () => {
+    expect(readme).toContain('## 轨迹可见性');
+    expect(readme).toContain('`llm/retry`');
+    expect(readme).toContain('`llm/retry-started`');
+    expect(readme).toContain('llm-fallback'); // policyKey
+    // 文档必须说明这是官方已知事件类型,而非插件自创(ignorable 兼容机制)
+    expect(readme).toContain('官方已知事件类型');
+  });
+
   it('已按开源 README 结构收敛:不再包含版本历史 / 适配版本内部表', () => {
     expect(readme).not.toContain('## 版本历史');
     expect(readme).not.toContain('## 适配版本');

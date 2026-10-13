@@ -46,7 +46,7 @@
 
 ### @lzhida/dsh-taskboard
 
-任务看板插件(教学复刻自 [cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard#readme)):**人建卡 → agent 认领执行 → 人验收** 的核心契约层。10 个 `taskboard_*` agent 工具 + 代码级协议闸(agent 永远移不到 done、被持有时不可抢、跨项目不可认领、checklist 勾选必带 evidence note),ifVersion 乐观并发,DoD 验收清单(≤30 项),结构化执行报告,system-prompt section 写明认领纪律与 done-gate。台账落 `~/.dsh/dsh-taskboard.json` 原子写持久化。
+任务看板插件(源码同步自 [cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard#readme) **0.8.7**,Apache-2.0):**人建卡 → agent 认领执行 → 人验收** 的全功能任务看板。10 个 `taskboard_*` agent 工具 + 代码级协议闸,ifVersion 乐观并发,DoD 验收清单(≤30 项),结构化执行报告,SSE 实时看板 UI,宿主侧 cron / 一次性定时执行,按任务指定模型与 preset,可选 git worktree 隔离(任务分支 + 一键合并 + 多仓库整区镜像),外部会话自动同步,任务模板与图片附件。台账落 `~/.dsh/dsh-taskboard.json` 原子写持久化。
 
 **核心特性**
 
@@ -57,9 +57,13 @@
 - **结构化执行报告**:`taskboard_execution_report` 提交(摘要 / 改动文件 / 自验 / 产物 / 风险),待验收详情页分栏渲染;
 - **五列流转 + 软删除**:backlog / todo / in_progress / in_review / done + canceled / archived / trashed;状态机白名单限制非法转移;
 - **system-prompt section**:`tool:taskboard` order=2950 声明认领纪律、done-gate、retry 规则,模型在第一次调用前就知道协议;
+- **实时看板 UI**:SSE 刷新 + 官方 slot 双轨挂载(dsh ≥ 0.1.7 一等侧边栏面板,旧 shell 自动回落 DOM 注入),diff 查看器、筛选排序持久化、JSON 导入导出;
+- **执行编排**:手动 / 一次性定时 / cron 定期(host 侧调度,浏览器关了照跑);定时任务可复用既有会话,定期任务支持完成后「回到待办」或「新建下一轮待办」;
+- **Git worktree 隔离**:每次执行独立 worktree + 任务分支,验收一键合并;多仓库工作区整区镜像;非 git 项目自动降级原目录执行;
+- **任务模板与图片附件**:内置任务模板,内容寻址附件存储;
 - **零配置**:安装即用,无需 Token / API Key,数据本地。
 
-**主动排除的能力**(教学复刻范围,非完整 1:1 移植):Web UI 看板、cron 调度器、worktree 隔离执行、外部会话自动同步、多仓库镜像、任务模板、图片附件。详见[包 README](./packages/dsh-taskboard/README.md)。
+**与上游的差异**(monorepo 一致性重构,功能不变):包名 `@lzhida/dsh-taskboard`、TS 源码入口(`main: src/index.ts`,仅 link: 安装)、客户端预构建产物提交于 `client/index.js`、宿主半区构造器参数属性转显式字段(Node type-stripping 兼容)、`@deepseek-ai/*` 全部 devDependencies 且仅 type-only 引入。详见[包 README](./packages/dsh-taskboard/README.md)。
 
 ## 安装
 

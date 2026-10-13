@@ -14,6 +14,9 @@
  *     - afterRetry(默认):upstream={retry} → 透传不切换;upstream 无决策 → 切换;
  *     - immediately:白名单命中即切,忽略 upstream;
  *   - 链耗尽 / 失败码不在白名单 → 透传 upstream;
+ *   - 轨迹记录:切换时依次写官方 llm/retry + llm/retry-started(字段完整、
+ *     retryId 同链复用);agent 缺失不崩;append 抛错不阻断回退;abort 只写
+ *     scheduled;不切换时不写;
  *   - effect 卸载时 dispose 被收集。
  *
  * 风格沿用 dsh-obsidian 的 stubCtx + spyOn(console.log);用
@@ -32,6 +35,7 @@ import {
   isVolatileLike,
   unwrapVolatile,
   volatileField,
+  desc,
   DEFAULT_RETRYABLE_CODES,
   Config,
 } from './config.ts';
@@ -954,6 +958,237 @@ describe('agent/request-error listener', () => {
   });
 });
 
+// ── 5b. 轨迹记录(官方 llm/retry / llm/retry-started 事件) ─────────────
+
+/** 轨迹写入的最小 agent 假体:append 收集调用供断言。 */
+function stubAgent(): {
+  agent: { session: { append: ReturnType<typeof vi.fn> } };
+  appends: Array<{ type: string; data: Record<string, unknown> }>;
+} {
+  const appends: Array<{ type: string; data: Record<string, unknown> }> = [];
+  const agent = {
+    session: {
+      append: vi.fn((type: string, data: Record<string, unknown>) => {
+        appends.push({ type, data });
+        return undefined;
+      }),
+    },
+  };
+  return { agent, appends };
+}
+
+describe('轨迹记录(llm/retry 事件)', () => {
+  it('切换候选时依次写入 llm/retry 与 llm/retry-started,字段完整', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['deepseek/x', 'openai/y', 'anthropic/z'],
+      maxRetries: 2,
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const errListener = findListener(listeners, 'agent/request-error');
+    const { agent, appends } = stubAgent();
+    const failure = stubFailure('RATE_LIMIT');
+    const result = await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure,
+        signal: new AbortController().signal,
+        agent,
+      },
+      async () => undefined,
+    );
+    expect(result).toEqual({ kind: 'retry' });
+    // 两个事件,类型与顺序正确
+    expect(appends.map((a) => a.type)).toEqual([
+      'llm/retry',
+      'llm/retry-started',
+    ]);
+    const scheduled = appends[0]?.data;
+    const started = appends[1]?.data;
+    // scheduled(normal 形态):官方 payload shape 全字段 + 本插件追加的切换目标
+    expect(scheduled).toMatchObject({
+      turn: 1,
+      step: 1,
+      provider: 'deepseek', // 失败起点,非切换目标
+      mode: 'normal',
+      policyKey: 'llm-fallback',
+      retry: 1,
+      maxRetries: 2, // min(maxRetries=2, 链长-1=2)
+      delayMs: 0,
+      failure,
+      targetProvider: 'openai', // 切换目标:轨迹里直接可见"切到哪个模型继续跑"
+      targetModel: 'y',
+    });
+    expect(typeof scheduled?.retryId).toBe('string');
+    expect((scheduled?.retryId as string).length).toBeGreaterThan(0);
+    // started:同链复用同一 retryId
+    expect(started).toEqual({
+      retryId: scheduled?.retryId,
+      turn: 1,
+      step: 1,
+      retry: 1,
+    });
+  });
+
+  it('同 step 二次切换:retryId 复用,retry 递增到 2', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['deepseek/x', 'openai/y', 'anthropic/z'],
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const errListener = findListener(listeners, 'agent/request-error');
+    const { agent, appends } = stubAgent();
+    await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure: stubFailure('RATE_LIMIT'),
+        signal: new AbortController().signal,
+        agent,
+      },
+      async () => undefined,
+    );
+    await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'openai',
+        failure: stubFailure('QUOTA'),
+        signal: new AbortController().signal,
+        agent,
+      },
+      async () => undefined,
+    );
+    const scheduledList = appends.filter((a) => a.type === 'llm/retry');
+    expect(scheduledList).toHaveLength(2);
+    const first = scheduledList[0]?.data;
+    const second = scheduledList[1]?.data;
+    expect(second?.retryId).toBe(first?.retryId);
+    expect(second?.retry).toBe(2);
+    expect(second?.provider).toBe('openai');
+    expect(second?.failure).toMatchObject({ code: 'QUOTA' });
+    // 第二跳目标 = 链第三项(链上候选逐跳推进,目标随之更新)
+    expect(second?.targetProvider).toBe('anthropic');
+    expect(second?.targetModel).toBe('z');
+  });
+
+  it('payload 无 agent(旧宿主)→ 不写轨迹且回退不受影响', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['deepseek/x', 'openai/y'],
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const errListener = findListener(listeners, 'agent/request-error');
+    const result = await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure: stubFailure('RATE_LIMIT'),
+        signal: new AbortController().signal,
+      },
+      async () => undefined,
+    );
+    expect(result).toEqual({ kind: 'retry' });
+  });
+
+  it('session.append 抛错 → 轨迹写入被吞掉,回退照常返回 retry', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['deepseek/x', 'openai/y'],
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const errListener = findListener(listeners, 'agent/request-error');
+    const agent = {
+      session: {
+        append: vi.fn(() => {
+          throw new Error('session closed');
+        }),
+      },
+    };
+    const result = await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure: stubFailure('RATE_LIMIT'),
+        signal: new AbortController().signal,
+        agent,
+      },
+      async () => undefined,
+    );
+    expect(result).toEqual({ kind: 'retry' });
+    // scheduled 与 started 都尝试写、都被吞 → 共调用 2 次
+    expect(agent.session.append).toHaveBeenCalledTimes(2);
+  });
+
+  it('退避期间被 abort → 只写 llm/retry(已调度),不写 llm/retry-started', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['deepseek/x', 'openai/y'],
+      baseDelayMs: 60_000,
+      maxDelayMs: 60_000,
+    });
+    const errListener = findListener(listeners, 'agent/request-error');
+    const { agent, appends } = stubAgent();
+    const ctrl = new AbortController();
+    const result = await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure: stubFailure('RATE_LIMIT'),
+        signal: ctrl.signal,
+        agent,
+      },
+      async () => {
+        // 模拟退避等待期间 turn 被取消
+        ctrl.abort();
+        return undefined;
+      },
+    );
+    expect(result).toBeUndefined(); // 透传 upstream,不切换
+    expect(appends.map((a) => a.type)).toEqual(['llm/retry']);
+    expect(appends[0]?.data.delayMs).toBeGreaterThan(0);
+  });
+
+  it('白名单未命中(不切换)→ 不写任何轨迹事件', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['deepseek/x', 'openai/y'],
+    });
+    const errListener = findListener(listeners, 'agent/request-error');
+    const { agent, appends } = stubAgent();
+    const result = await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure: stubFailure('INVALID_CREDENTIAL'),
+        signal: new AbortController().signal,
+        agent,
+      },
+      async () => undefined,
+    );
+    expect(result).toBeUndefined();
+    expect(appends).toEqual([]);
+  });
+});
+
 // ── 6. Config schema(避免 loader 设置投影失败)──────────────────────
 
 describe('Config schema', () => {
@@ -1050,6 +1285,127 @@ describe('Config schema', () => {
       ? roleValue.join(',')
       : String(roleValue);
     expect(roleStr).toContain('modelChainMeta');
+  });
+});
+
+// ── 7. Config schema 国际化(desc i18n 映射)─────────────────────────
+
+/**
+ * 设置表单国际化的契约:所有字段描述都是 schemastery i18n 映射
+ * `{ '': 英文默认, zh, en }`——宿主 settings.describe 以 form.toJSON() 原样
+ * 下发该映射,前端按 dsh 语言配置(Host 偏好 → 浏览器 → en)解析。
+ * `''` 键 = 默认文案:不识别映射的旧渲染端原样显示英文,行为零回归。
+ */
+describe('Config schema 国际化(desc i18n 映射)', () => {
+  /** schemastery 节点里测试关心的最小形状。 */
+  interface SchemaNode {
+    meta?: { description?: unknown };
+  }
+
+  /** Config 顶层字段节点。 */
+  function fieldOf(fieldName: string): SchemaNode | undefined {
+    return (Config as unknown as { dict: Record<string, SchemaNode> }).dict?.[
+      fieldName
+    ];
+  }
+
+  /** fallbackChains 内层 ChainEntrySchema 的子字段表。 */
+  function chainEntryFields(): Record<string, SchemaNode> {
+    const chains = fieldOf('fallbackChains') as unknown as
+      { inner?: { dict?: Record<string, SchemaNode> } } | undefined;
+    return chains?.inner?.dict ?? {};
+  }
+
+  /** 断言一个 description 是形态完整的三键映射,且默认文案 = 英文。 */
+  function expectDescMap(raw: unknown, label: string): void {
+    expect(raw, `${label} 应为对象`).toBeTypeOf('object');
+    const map = raw as Record<string, unknown>;
+    for (const key of ['', 'en', 'zh'] as const) {
+      expect(
+        typeof map[key],
+        `${label}.${key === '' ? '""' : key} 应为 string`,
+      ).toBe('string');
+      expect(
+        (map[key] as string).length,
+        `${label}.${key === '' ? '""' : key} 应非空`,
+      ).toBeGreaterThan(0);
+    }
+    // '' 默认文案 = 英文:旧渲染端(只认字符串描述)回退显示英文,零回归
+    expect(map[''], `${label}."" 默认文案应与 en 一致`).toBe(map.en);
+  }
+
+  it("desc() helper 产出 {'': en, en, zh} 映射(默认文案为英文)", () => {
+    const map = desc('Hello world', '你好世界');
+    expect(map).toEqual({
+      '': 'Hello world',
+      en: 'Hello world',
+      zh: '你好世界',
+    });
+  });
+
+  it("每个 volatile 字段的 description 都是 {'', zh, en} 映射", () => {
+    const fields = [
+      'enabled',
+      'fallbackChains',
+      'fallbackWhen',
+      'maxRetries',
+      'baseDelayMs',
+      'maxDelayMs',
+      'retryableCodes',
+      'perTurn',
+    ];
+    for (const fieldName of fields) {
+      const node = fieldOf(fieldName);
+      expect(node, `missing field ${fieldName}`).toBeDefined();
+      expectDescMap(node?.meta?.description, fieldName);
+    }
+  });
+
+  it('fallbackChains 内层 ChainEntry 字段(provider/model/displayName/description)同样携带映射', () => {
+    const inner = chainEntryFields();
+    for (const fieldName of [
+      'provider',
+      'model',
+      'displayName',
+      'description',
+    ]) {
+      expect(
+        inner[fieldName],
+        `missing chain entry field ${fieldName}`,
+      ).toBeDefined();
+      expectDescMap(
+        inner[fieldName]?.meta?.description,
+        `fallbackChains.${fieldName}`,
+      );
+    }
+  });
+
+  it('中文文案覆盖关键字段语义(可读性抽查)', () => {
+    const enabled = fieldOf('enabled')?.meta?.description as Record<
+      string,
+      string
+    >;
+    expect(enabled.zh).toContain('模型回退');
+    const chains = fieldOf('fallbackChains')?.meta?.description as Record<
+      string,
+      string
+    >;
+    expect(chains.zh).toContain('主模型');
+    const when = fieldOf('fallbackWhen')?.meta?.description as Record<
+      string,
+      string
+    >;
+    expect(when.zh).toContain('afterRetry');
+    expect(when.zh).toContain('immediately');
+  });
+
+  it('description 映射可 JSON 序列化(settings.describe 的 form.toJSON 下发路径不炸)', () => {
+    // 宿主 SettingsForms.describe 用 JSON.stringify(schema.toJSON()) 计算
+    // revision 并下发;描述若含函数/循环会让该路径抛错——此断言防回归。
+    const serialized = JSON.stringify(Config.toJSON());
+    expect(typeof serialized).toBe('string');
+    expect(serialized).toContain('模型回退');
+    expect(JSON.parse(serialized)).toBeTypeOf('object');
   });
 });
 

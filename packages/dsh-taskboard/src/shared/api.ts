@@ -1,0 +1,398 @@
+/**
+ * Wire contract for the /taskboard host routes: the JSON envelope,
+ * request/response shapes, and SSE event payloads shared by the host routes
+ * and the browser client.
+ *
+ * @module dsh-taskboard/shared/api
+ */
+import type {
+  BoardSettings,
+  TaskLedger,
+  TaskModel,
+  TaskRecord,
+  TaskSummary,
+} from './protocol.ts';
+
+export type { TaskModel, TaskRecord };
+
+/** Route prefix on the shared DSH webserver (same origin as the GUI). */
+export const ROUTE_PREFIX = '/dsh-taskboard';
+
+/** SSE stream path (exact route; longest-prefix wins keep it disjoint). */
+export const SSE_PATH = '/dsh-taskboard/events';
+
+/** Stable error codes (mirror the tool-level codes plus HTTP mapping). */
+export type ApiErrorCode =
+  | 'invalid_input'
+  | 'not_found'
+  | 'version_conflict'
+  | 'invalid_transition'
+  | 'forbidden'
+  | 'internal';
+
+/** Success envelope. */
+export type ApiOk<T> = { ok: true; value: T };
+
+/** Failure envelope. */
+export type ApiFail = {
+  ok: false;
+  error: { code: ApiErrorCode; message: string };
+};
+
+/** The envelope either way. */
+export type ApiResult<T> = ApiOk<T> | ApiFail;
+
+// ---------------------------------------------------------------------------
+// payloads
+// ---------------------------------------------------------------------------
+
+/** Full-state response (the reconnect baseline after an SSE gap). */
+export type QueueSummary = {
+  depth: number;
+  dispatching: number;
+  oldestQueuedAt?: number;
+  oldestWaitMinutes?: number;
+  maxConcurrent: number;
+};
+
+export type StateResponse = TaskLedger & {
+  capabilities?: { archiveSessions: boolean };
+  queue?: QueueSummary;
+};
+
+/** Result of dropping every durable queue entry (board queue panel). */
+export type QueueClearResponse = { cleared: number };
+
+/**
+ * Workspace listing for the UI pickers. `repoCount` (0.6.3): how many repos a
+ * task mirror of this workspace would cover (root repo + nested) — the form's
+ * worktree option shows the mirror badge when it exceeds 1.
+ */
+export type WorkspaceView = {
+  id: string;
+  path: string;
+  title: string;
+  sessionCount: number;
+  gitAvailable?: boolean;
+  repoCount?: number;
+};
+/** Sessions currently owned by one project and eligible for explicit reuse. */
+export type ProjectSessionView = { id: string; title?: string };
+
+/** Create-task request body (actor is always the GUI user). */
+export type CreateTaskBody = {
+  title: string;
+  workspaceId: string;
+  urgency: string;
+  description?: string;
+  prompt?: string;
+  execution?: {
+    mode?: string;
+    cron?: string;
+    runAt?: string | number;
+    periodicCompletion?: 'rearm' | 'spawn';
+    reuseSessionId?: string;
+    sessionReuseMode?: 'fresh' | 'reuse';
+  };
+  /** Omitted = board default; null = follow the deployment default explicitly. */
+  model?: TaskModel | null;
+  /** Code isolation for executions ('worktree' | 'none'); omitted = default. */
+  isolation?: string;
+  /** Omitted = board default; null = follow the deployment default explicitly. */
+  presetId?: string | null;
+  /** Execution permission preset ('workspace-write' | 'read-only' | 'danger-full-access'); omitted = default. */
+  permission?: string;
+  /** Acceptance checklist item texts (host mints ids, all unchecked). */
+  checklist?: string[];
+};
+
+/** Update-task request body (ifVersion mandatory). */
+export type UpdateTaskBody = {
+  ifVersion: number;
+  title?: string;
+  description?: string;
+  prompt?: string;
+  urgency?: string;
+  blocked?: boolean;
+  /** Rebind the task to another project (GUI owner surface only). */
+  workspaceId?: string;
+  execution?: {
+    mode?: string;
+    cron?: string;
+    runAt?: string | number;
+    periodicCompletion?: 'rearm' | 'spawn';
+    reuseSessionId?: string;
+    sessionReuseMode?: 'fresh' | 'reuse';
+  };
+  model?: TaskModel | null;
+  /** Change isolation; locked once the task has execution history. */
+  isolation?: string;
+  /** Change the execution preset (takes effect on the next run). */
+  presetId?: string | null;
+  /** Change the execution permission (0.5.5; 'workspace-write' | 'read-only' | 'danger-full-access'). */
+  permission?: string | null;
+  /** Replace the whole checklist (GUI owner surface); null clears it. */
+  checklist?: unknown;
+};
+
+/** Move-task request body (ifVersion mandatory; the user MAY move to done). */
+export type MoveTaskBody = {
+  ifVersion: number;
+  status: string;
+  archiveSessions?: boolean;
+};
+
+export type SessionArchiveResult = {
+  archived: string[];
+  failed: Array<{ sessionId: string; error: string }>;
+  unsupported: string[];
+};
+export type MoveTaskResponse = TaskSummary & {
+  sessionArchive?: SessionArchiveResult;
+};
+
+/**
+ * Quick-reject request body (card ✗ button): move back to todo plus an
+ * optional user comment, committed as ONE ledger mutation so a failed move
+ * can never strand an orphan comment.
+ */
+export type RejectTaskBody = { ifVersion: number; body?: string };
+
+/** Comment request body. */
+export type CommentBody = { body: string };
+
+/** One content-addressed image uploaded outside the ledger. */
+export type AttachmentUpload = {
+  id: string;
+  name: string;
+  size: number;
+  url: string;
+  extension: 'png' | 'jpg' | 'gif' | 'webp';
+  mime: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+};
+
+/** Delete request body (purge=true physically removes a trashed task). */
+export type DeleteTaskBody = { ifVersion?: number; purge?: boolean };
+
+/** Run request body; `reuse: true` = 续跑 (keep a live worktree as-is). */
+export type RunTaskBody = { reuse?: boolean };
+
+/** One repo's merge outcome in a multi-repo merge (0.6.3; `repo: ''` = the workspace root repo). */
+export type MergeRepoResult = {
+  repo: string;
+  branch: string;
+  outcome: 'merged' | 'noop' | 'failed';
+  /** Failure reason (verbatim git message) when outcome = 'failed'. */
+  error?: string;
+};
+
+/**
+ * Merge outcome. Legacy single-repo tasks keep the flat shape; multi-repo
+ * mirror tasks (0.6.3) additionally return per-repo results — merges run
+ * sequentially and a failed repo does not block the others (plan §4.5).
+ */
+export type MergeBranchResponse = {
+  merged: boolean;
+  noop?: boolean;
+  /** The merged task branch (legacy single-repo shape; multi-repo responses omit it). */
+  branch?: string;
+  /** Present only on multi-repo mirror merges (0.6.3). */
+  results?: MergeRepoResult[];
+};
+
+/** Remove a task's worktree; optionally delete its branch too. */
+export type WorktreeRemoveBody = { deleteBranch?: boolean };
+
+/** One orphan worktree directory (exists on disk, owned by no live task). */
+export type OrphanWorktree = {
+  workspaceId: string;
+  workspacePath: string;
+  taskId: string;
+  path: string;
+};
+
+/** A git-enabled workspace whose .gitignore does not cover the worktree dir. */
+export type GitignoreSuggestion = {
+  workspaceId: string;
+  workspacePath: string;
+};
+
+/** Health-diagnostics response (⚙ panel). */
+export type DiagnosticsResponse = {
+  revision: number;
+  tasks: number;
+  /** Executions currently marked `running`. */
+  staleRunning: number;
+  queue: QueueSummary;
+  /** Worktree directories whose task no longer exists in the ledger. */
+  orphanWorktrees: OrphanWorktree[];
+  /** Git workspaces whose .gitignore does not ignore the worktree dir. */
+  gitIgnoreSuggestions: GitignoreSuggestion[];
+};
+
+/** Fields a task template may prefill (0.4.0). */
+export type TaskTemplateSpec = {
+  title?: string;
+  description?: string;
+  prompt?: string;
+  urgency?: string;
+  execution?: {
+    mode?: string;
+    cron?: string;
+    runAt?: string | number;
+    periodicCompletion?: 'rearm' | 'spawn';
+    reuseSessionId?: string;
+    sessionReuseMode?: 'fresh' | 'reuse';
+  };
+  model?: TaskModel;
+  isolation?: string;
+  presetId?: string;
+  /** Execution permission preset (0.5.5). */
+  permission?: string;
+  /** Checklist item texts (host mints ids at create time). */
+  checklist?: string[];
+};
+
+/** One reusable task template (0.4.0). */
+export type TaskTemplate = {
+  id: string;
+  name: string;
+  task: TaskTemplateSpec;
+  /** Seeded built-in templates (kept on load, deletable like any other). */
+  builtin?: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
+
+/** Templates listing response. */
+export type TemplatesResponse = { templates: TaskTemplate[] };
+
+/** Board-settings response (0.5.0; absent fields follow factory defaults). */
+export type SettingsResponse = BoardSettings;
+
+/** Current host-side location of all durable taskboard data. */
+export type StorageStatus = {
+  currentDirectory: string;
+  defaultDirectory: string;
+  isDefault: boolean;
+  configured: boolean;
+  writable: boolean;
+  assetCount: number;
+  assetBytes: number;
+  checkedDirectory?: string;
+  error?: string;
+};
+
+/** Completed storage relocation, including non-fatal old-file cleanup failures. */
+export type StorageMigrationResult = StorageStatus & {
+  migrated: boolean;
+  warnings: string[];
+};
+
+/** Update-board-settings request body (0.5.0; whole-object replace semantics). */
+export type UpdateSettingsBody = {
+  /** Default code isolation for NEW tasks ('worktree' | 'none'). */
+  defaultIsolation?: string;
+  /** Automatically capture external workspace sessions into the taskboard. */
+  syncExternalSessions?: boolean;
+  /** Default permission preset for NEW tasks ('workspace-write' | 'read-only' | 'danger-full-access'). */
+  defaultPermission?: string;
+  /** Default model and optional reasoning effort for NEW tasks; omitted = deployment default. */
+  defaultModel?: TaskModel;
+  /** Default agent preset for NEW tasks; omitted = deployment default. */
+  defaultPresetId?: string;
+  /** Global simultaneous execution cap (1–100). */
+  maxConcurrent?: number;
+  /** Offline missed-window threshold in whole minutes (1–1440). */
+  scheduleMissedAfterMinutes?: number;
+  /** Drop queued work after this many minutes; 0 retains it indefinitely. */
+  queueMaxAgeMinutes?: number;
+  /** Minimum milliseconds between scheduled session starts; defaults to 1000 and accepts 0 to disable throttling. */
+  dispatchIntervalMs?: number;
+};
+
+/** Prompt completion item for skills and slash commands (0.5.5). */
+export type PromptCompletionItem = {
+  name: string;
+  kind: 'skill' | 'command';
+  description?: string;
+  hint?: string;
+};
+
+/** Prompt completions response (0.5.5). */
+export type PromptCompletionsResponse = {
+  commands: PromptCompletionItem[];
+  skills: PromptCompletionItem[];
+};
+
+/** Model item in catalog (0.5.5). */
+export type CatalogModelItem = {
+  provider: string;
+  model: string;
+  name?: string;
+  description?: string;
+  reasoning?: {
+    efforts: Array<{ id: string; name: string; description?: string }>;
+    defaultEffort?: string;
+  };
+};
+
+/** Preset item in catalog (0.5.5). */
+export type CatalogPresetItem = {
+  id: string;
+  name?: string;
+};
+
+/** Model and preset catalog response (0.5.5). */
+export type ModelCatalogResponse = {
+  models: CatalogModelItem[];
+  presets: CatalogPresetItem[];
+  defaultPresetId?: string;
+};
+
+/** Import dry-run response (0.4.0): every task classified, nothing written. */
+export type ImportPreviewResponse = {
+  plan: {
+    create: Array<{ id: string; title: string; status: string }>;
+    overwrite: Array<{ id: string; title: string; status: string }>;
+    invalid: Array<{ id?: string; reason: string }>;
+  };
+};
+
+/** Import commit response. */
+export type ImportCommitResponse = {
+  mode: 'merge' | 'replace';
+  created: number;
+  overwritten: number;
+  replacedTotal?: number;
+  /** The backup file written BEFORE a replace wiped the live ledger. */
+  backupFile?: string;
+};
+
+/** Diff-viewer response (0.4.0). */
+export type DiffResponse = { diff: string; truncated: boolean };
+
+/** One task (full record) response. */
+export type TaskResponse = TaskRecord;
+
+/** Summary response used by list-ish endpoints. */
+export type SummaryResponse = { tasks: TaskSummary[] };
+
+// ---------------------------------------------------------------------------
+// SSE
+// ---------------------------------------------------------------------------
+
+/** Change frame pushed on every committed ledger mutation. */
+export type ChangeEvent = {
+  revision: number;
+  kind:
+    | 'task-created'
+    | 'task-updated'
+    | 'task-moved'
+    | 'task-deleted'
+    | 'comment-added'
+    | 'execution-recorded'
+    | 'settings-updated'
+    | 'ledger-replaced';
+  tasks: TaskSummary[];
+};

@@ -1,7 +1,7 @@
 {
   "name": "@zhidal/dsh-llm-fallback",
   "description": "dsh-llm-fallback 插件：拦截全局 LLM 调用，按 fallbackChains 在主模型失败时自动切换到下一个候选 provider/model。fallbackWhen=afterRetry(默认) 在官方 dsh-llm-retry 重试耗尽后才切换（对话不中断）；immediately 为一次失败即切。",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",

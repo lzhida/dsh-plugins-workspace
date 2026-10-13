@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as prettier from 'prettier';
 import { beforeAll, describe, expect, it } from 'vitest';
+import { blockOf, branchesOf, pnpmInvocationsOf } from './workflow-text.ts';
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const workflowPath = join(repoRoot, '.github', 'workflows', 'ci.yml');
@@ -35,52 +36,6 @@ const PNPM_BUILTIN_COMMANDS = new Set(['install']);
 interface RootPackage {
   scripts?: Record<string, string>;
   engines?: { node?: string };
-}
-
-/** 提取某个键（按 trim 后等于 `<key>:` 识别）之下缩进更深的连续文本块 */
-function blockOf(source: string, key: string): string {
-  const lines = source.split(/\r?\n/);
-  const idx = lines.findIndex((line) => line.trim() === `${key}:`);
-  if (idx < 0) {
-    throw new Error(`工作流缺少 ${key}: 块`);
-  }
-  const baseIndent = lines[idx].length - lines[idx].trimStart().length;
-  const collected: string[] = [];
-  for (let i = idx + 1; i < lines.length; i += 1) {
-    const line = lines[i];
-    if (line.trim() === '') {
-      collected.push(line);
-      continue;
-    }
-    const indent = line.length - line.trimStart().length;
-    if (indent <= baseIndent) break;
-    collected.push(line);
-  }
-  return collected.join('\n');
-}
-
-/** 从 `branches: [a, b]` 提取分支名列表 */
-function branchesOf(block: string, label: string): string[] {
-  const match = block.match(/branches:\s*\[([^\]]*)\]/);
-  if (!match) {
-    throw new Error(`${label} 缺少 branches 列表`);
-  }
-  return match[1]
-    .split(',')
-    .map((item) => item.trim().replace(/^['"]|['"]$/g, ''));
-}
-
-/** 收集 run 步骤中的 `pnpm <词>` 调用词（脚本名或内建命令） */
-function pnpmInvocationsOf(source: string): string[] {
-  const invocations: string[] = [];
-  for (const line of source.split(/\r?\n/)) {
-    if (!line.includes('run:')) continue;
-    for (const match of line.matchAll(/pnpm\s+([^\s]+)/g)) {
-      const name = match[1];
-      if (name) invocations.push(name);
-    }
-  }
-  return invocations;
 }
 
 describe('ci-workflow', () => {

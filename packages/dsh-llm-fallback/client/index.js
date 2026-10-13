@@ -24,6 +24,17 @@
  * 样式用内联样式,不依赖 dsh 的 CSS modules 哈希类名(版本升级不失效);
  * 颜色全部引用 dsh web 主题 token `--dsw-alias-*`(明/暗双模式各有定义,
  * 由客户端 Theme inspect 提供方列出),暗色模式下不再出现文字与背景混色。
+ *
+ * 国际化(0.3.3):文案字典 DICT(zh/en)经 `ctx.locale.register(DICT_NS, DICT)`
+ * 注册进 dsh 的 locale 服务——当前语言即 dsh 的语言配置(Host 偏好存于设置
+ * namespace `locale` 字段 `preference`,缺省回退浏览器语言,再回退 `en`,
+ * 与 dsh-client-locale 内置语言目录 LOCALE_IDS `['zh','en']` 对齐),`t` 在
+ * 每次渲染时按激活语言解析;卡片另订阅 locale 快照(LocaleFace 的
+ * getSnapshot/subscribe 契约),用户在 设置 → 通用 → 语言 切换语言时本卡
+ * 立即重渲染。locale 服务缺失(组合未含 dsh-client-locale)时回退英文字典,
+ * 配置卡降级可用、apply 不抛错。服务端 Config schema 的字段描述另经
+ * schemastery i18n 映射(`{ '': 英文默认, zh, en }`,见 src/config.ts 的
+ * desc())随 settings.describe 下发,由前端按同一语言配置解析。
  */
 globalThis.__ModuleLoader__.load({
   // id 必须与 package.json 包名一致,否则 boot graph arrive() 抛
@@ -294,10 +305,28 @@ globalThis.__ModuleLoader__.load({
     };
 
     function apply(ctx) {
-      var t = ctx.locale.bind(DICT_NS);
-      ctx.effect(function () {
-        return ctx.locale.register(DICT_NS, DICT);
-      }, 'llm-fallback: dictionaries');
+      // dsh 语言配置入口:ctx.locale 是宿主 locale 服务的 LocaleFace
+      // (bind/register/getSnapshot/subscribe)。缺失时(组合未含
+      // dsh-client-locale)回退英文字典的静态 t,配置卡降级可用。
+      var locale = ctx.locale;
+      var t;
+      if (
+        locale &&
+        typeof locale.bind === 'function' &&
+        typeof locale.register === 'function'
+      ) {
+        // bind 返回的 t 在每次调用时按当前激活语言解析(bind 按 ns 缓存,
+        // 与 LocaleRuntime 同一实例),配合下方快照订阅实现语言切换即时生效。
+        t = locale.bind(DICT_NS);
+        ctx.effect(function () {
+          return locale.register(DICT_NS, DICT);
+        }, 'llm-fallback: dictionaries');
+      } else {
+        t = function (key) {
+          var entry = DICT.en[key];
+          return entry === undefined ? String(key) : entry;
+        };
+      }
 
       // namespace = profile 条目 id;dsh-settings 按条目 id 索引 descriptor。
       var scope = ctx.configForms.get(ENTRY_NS);
@@ -347,6 +376,33 @@ globalThis.__ModuleLoader__.load({
         var searchState = useState('');
         var search = searchState[0];
         var setSearch = searchState[1];
+
+        // 语言联动:订阅 locale 快照(LocaleFace getSnapshot/subscribe 契约),
+        // revision 变化(切换语言 / 字典注册)时 bump 本地计数强制重渲染,
+        // 让本卡文案立即跟随 设置 → 通用 → 语言 的当前选择。
+        // locale 服务缺失时跳过订阅(静态英文回退,无需联动)。
+        var localeTickState = useState(0);
+        useEffect(
+          function () {
+            if (
+              !locale ||
+              typeof locale.subscribe !== 'function' ||
+              typeof locale.getSnapshot !== 'function'
+            ) {
+              return undefined;
+            }
+            var last = locale.getSnapshot().revision;
+            return locale.subscribe(function () {
+              var next = locale.getSnapshot().revision;
+              if (next === last) return;
+              last = next;
+              localeTickState[1](function (n) {
+                return n + 1;
+              });
+            });
+          },
+          [],
+        );
 
         useEffect(function () {
           return scope.subscribe(function () {
@@ -792,11 +848,12 @@ globalThis.__ModuleLoader__.load({
     exports.name = name;
     exports.inject = inject;
     exports.apply = apply;
-    // 纯函数一并导出:client-bundle.test.ts 在 vm 沙箱里执行 factory 后
-    // 直接对搜索过滤行为做单元断言(loader 只读 name/inject/apply,多余
-    // 导出对宿主无影响)。
+    // 纯函数与字典一并导出:client-bundle.test.ts 在 vm 沙箱里执行 factory 后
+    // 直接对搜索过滤 / 字典键集 / 语言跟随行为做单元断言(loader 只读
+    // name/inject/apply,多余导出对宿主无影响)。
     exports.modelMatches = modelMatches;
     exports.filteredCatalogGroups = filteredCatalogGroups;
+    exports.DICT = DICT;
     module.exports = exports;
     return module.exports;
   },

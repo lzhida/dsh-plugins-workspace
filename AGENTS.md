@@ -30,9 +30,24 @@ pnpm lint           # ESLint 检查（lint:fix 自动修）
 pnpm format         # Prettier 写入（format:check 只校验）
 pnpm typecheck      # 递归各包 tsc --noEmit
 pnpm test           # vitest run（集中在根，子包无 test 脚本）
+pnpm changeset       # 声明一次子包变更（选包、semver 档位、摘要 → .changeset/*.md）
+pnpm changeset:version   # 消费 changeset：写回版本号 + 生成各包 CHANGELOG.md
+pnpm changeset:publish   # 发布公开包到 npm（目前仅 @zhidal/dsh-llm-fallback）
+pnpm release list    # 列出子包版本与 tag 预览
+                     # tag <包名|--all>：为当前已提交版本补 {短名}-v{X.Y.Z} tag（--all 幂等批量）
+                     # publish <tag>：按 tag 决策并发布 npm（仅公开包正式版；prerelease/私有包跳过）
+                     # --dry-run 预览；永不自动 push
 ```
 
 新增插件的最小步骤：建 `packages/my-plugin/`，仿照 `packages/dsh-guided-goal/package.json`（`type: "module"`、`main: "src/index.ts"`、`devDependencies` 含 cordis、`scripts.typecheck`），tsconfig extends 根配置即可，无需其他注册动作。
+
+## Subpackage Versioning & Release
+
+- 子包版本管理走 **Changesets**（`.changeset/` + `@changesets/cli`，2026-10-12 由自研 CLI 切换而来）：`pnpm changeset` 声明变更 → `pnpm changeset:version` 写回版本号并生成各包 CHANGELOG.md（提交由人执行）→ `pnpm changeset:publish` 发布公开包到 npm（目前仅 `@zhidal/dsh-llm-fallback`）。`privatePackages: { version: true, tag: false }`——私有包同样参与版本递增与 CHANGELOG。
+- git tag 发布由 `scripts/pkg-release.ts`（jiti 直跑零构建）补足：tag 名固定 `{短包名}-v{X.Y.Z}`（如 `dsh-taskboard-v0.2.0`），与插件一一对应；`pnpm release tag --all` 幂等批量为当前版本补 tag。Changesets 原生 tag 硬编码 `pkg@version` 且格式不可配置，故全部关闭，tag 语义由本工具统一（该 `{pkg}-v{X.Y.Z}` 形态与 Tauri 官方插件 monorepo 实际 tag 约定一致）。
+- npm 发布流水线由 `.github/workflows/release.yml` 承担（2026-10-12 新增，2026-10-13 迁移 OIDC 暂存发布）：推送 `*-v*` tag 自动触发，先跑与 CI 相同的门禁链，再按 `scripts/release/publish.ts` 的三态决策执行——仅「公开包 + 正式版本」真正发布：CI 走 `--client npm-stage` 的 OIDC 暂存发布（免 token，`npm stage publish` 进暂存队列，维护者在 npm 后台或 `npm stage approve` 人工放行后才公开；前置是在 npm 包后台登记 trusted publisher；本地默认 `pnpm publish`）；`dsh-llm-fallback` 经 `prepack` 自动构建 dist；prerelease（如 `-rc.1`）与 private 包明确跳过（退出 0），tag 与清单版本不一致/短名无对应包直接失败。发布线守护（2026-10-13 起）：tag 必须存在且指向的提交可从 main 到达（`TAG_NOT_ON_MAIN`），发布 tag 一律在 dev 合入 main 后于 main 上打；工作流以 `fetch-depth: 0` 拉全量历史解析发布线（本地 `main` 优先，回退 `origin/main`）。备选 token 方案的 `NPM_TOKEN` 必须是 **Granular Access Token** 且创建时勾选 **Bypass 2FA**（npm 2025-12-09 起经典 token 已全部吊销、包默认强制 2FA，未勾选则发布被 OTP 验证码拦下）。
+- agent 只可跑 `--dry-run`、`list` 与 `changeset status`；实际 version 提交/tag/publish 属发布动作，须用户明确授意后由用户执行或经确认后代跑，push 一律留给用户。
+- 设计决策与语义边界见 `scripts/release/README.md` 与 `.changeset/README.md`。
 
 ## Code Conventions & Common Patterns
 

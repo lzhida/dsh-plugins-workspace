@@ -14,6 +14,7 @@ dsh 的模型回退插件：拦截全局 LLM 调用，主模型失败时按候�
 - [回退时机（fallbackWhen）](#回退时机fallbackwhen)
 - [失败码白名单](#失败码白名单)
 - [行为](#行为)
+- [轨迹可见性](#轨迹可见性)
 - [已知限制](#已知限制)
 - [故障排查](#故障排查)
 - [开发](#开发)
@@ -24,6 +25,7 @@ dsh 的模型回退插件：拦截全局 LLM 调用，主模型失败时按候�
 - 🔄 **自动回退**——失败码命中白名单且还有下一候选时，指数退避后切换并让 loop 重发请求，对 agent 完全透明
 - 🤝 **与官方重试正交**——默认先同 provider 重试（官方 `dsh-llm-retry`），预算耗尽再跨 provider 回退（本插件），两者可叠加
 - 🎛️ **可视化配置卡**——内嵌设置面板：勾选候选模型、排序队列、设置回退次数与时机，保存即生效，无需重载插件
+- 🌐 **中英双语设置表单**——配置卡文案与 schema 字段描述跟随 dsh 语言设置（设置 → 通用 → 语言）即时切换，无需重载插件
 - 🧩 **失败码路由**——只按宿主稳定失败码（`RATE_LIMIT` / `QUOTA` / `SERVER` / `TIMEOUT` / `TRANSPORT` …）决策，从不解析错误消息；鉴权类错误直接上抛、不做无谓切换
 - 🔙 **零成本升级**——旧 0.2.x `string[]` 链配置自动归一为对象数组，存量自定义白名单里的旧失败码自动别名兼容
 
@@ -84,12 +86,20 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 | `fallbackChains` | `Array<{provider, model, displayName?, description?}>` | `[]`                            | 候选列表，首项 = 主模型，逐个回退；旧 `string[]` 形态自动归一 |
 | `fallbackWhen`   | `'afterRetry' \| 'immediately'`                        | `'afterRetry'`                  | 回退时机，见[回退时机](#回退时机fallbackwhen)                 |
 | `maxRetries`     | `number`                                               | `0`（= 链长）                   | 单次请求最多**切换**次数，不含官方重试的同 provider 重试      |
-| `baseDelayMs`    | `number`                                               | `500`                           | 指数退避初值                                                  |
+| `baseDelayMs`    | `number`                                               | `500`                           | 指数退避初值；`0` = 禁用退避（失败后立即切换）                |
 | `maxDelayMs`     | `number`                                               | `30000`                         | 指数退避上限                                                  |
 | `retryableCodes` | `string[]`                                             | 见[失败码白名单](#失败码白名单) | 可触发切换的失败码白名单                                      |
 | `perTurn`        | `boolean`                                              | `true`                          | 预留字段，尚未参与回退判定，见[已知限制](#已知限制)           |
 
 配置卡功能：启用开关；从宿主模型目录（按 provider 分组）勾选候选模型，列表限高滚动并支持按 provider 分组名 / 模型 id / 显示名搜索过滤（大小写不敏感，无命中给空态）；上移 / 下移 / 移除调整回退优先级（顺序即回退顺序，首项 = 主模型）；设置最大回退次数与回退时机；保存 / 放弃，带 revision 冲突检测。所有改动保存后即时生效，无需重载插件。配色接入 dsh web 主题变量（`--dsw-alias-*`），明暗模式均保持文字可读。
+
+### 国际化（i18n）
+
+设置表单全程跟随 dsh 的语言配置（设置 → 通用 → 语言，偏好持久化在设置命名空间 `locale` 的 `preference` 字段，缺省依次回退浏览器语言、English）：
+
+- **配置卡文案**：中英字典经 `ctx.locale` 注册为 `llm-fallback` 命名空间，卡片订阅 locale 快照——切换语言后已打开的配置页**立即重渲染**，无需刷新或重载插件；
+- **schema 字段描述**：全部字段（含 `fallbackChains` 链项的 `provider` / `model` / `displayName` / `description`）的描述均为 schemastery i18n 映射 `{ '': 英文默认, zh, en }`，随宿主 `settings.describe()` 原样下发、由前端按当前语言解析；`''` 键保证不识别映射的旧渲染端原样显示英文，行为零回归；
+- **降级**：宿主组合未含 locale 服务时配置卡回退英文文案，功能不受影响。
 
 ## 回退时机（fallbackWhen）
 
@@ -118,8 +128,23 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 
 - 失败码在白名单 + 按时机判定可切 + 还有下一候选 → 退避 + 切下一候选 + 返回 `{kind: 'retry'}`，loop 重发请求（`agent/request` 监听器改写 `provider/model`）
 - 失败码不在白名单或链耗尽 → 透传上游决策（官方 retry 的 retry 也到此为止），错误正常上抛
+- 每次切换向会话轨迹写入官方 `llm/retry` / `llm/retry-started` 事件（见[轨迹可见性](#轨迹可见性)）；写轨迹失败不影响回退本体
+- 退避等待期间 turn 被取消 → 立即中止等待并透传上游，不写 `llm/retry-started`
 - 同时注册 system-prompt section，告知 agent 回退协议存在、无需自行"手加重试"
 - 配置非法时不阻塞宿主：报错并跳过装载；设置面板存入非法值时保留上一次成功配置
+
+## 轨迹可见性
+
+跨 provider 回退**不再是黑盒**。切换候选时，插件通过官方轨迹接口（`agent/request-error` payload 携带的 `agent.session.append`，与官方 `dsh-llm-retry` 同一通道）向会话日志写入两条 durable 事件：
+
+| 事件                | 时机                     | 内容                                                                                                                                                  |
+| ------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llm/retry`         | 切换调度时（退避等待前） | 失败 provider、失败详情（code/message）、`retry` 序号、`maxRetries`、退避 `delayMs`、**切换目标**（`targetProvider` / `targetModel`，本插件追加字段） |
+| `llm/retry-started` | 退避完成、切换生效前     | 同 `retryId`，标记重试真正开始                                                                                                                        |
+
+宿主轨迹 UI 对 `llm/retry` 有内置渲染：请求节点显示失败消息与错误码、重试进度（retry N/maxRetries）与退避时长。**切换到哪个模型**走双通道记录：① 本插件把 `targetProvider` / `targetModel` 直接写进 `llm/retry` payload（追加字段——format v4 读侧只校验已知字段的关系约束、data 整体透传，安全；当前宿主 UI 不渲染这两个字段，但在会话轨迹文件与导出数据里一眼可查）；② 宿主 loop 在切换生效后的下一次请求自动写入 `request/header` 与 `request/context`（provider/model），数据层同样留痕。同一步内多次切换复用同一 `retryId`，事件的 `policyKey` 固定为 `llm-fallback`，便于与官方同 provider 重试区分。
+
+两类事件都是 log-only（不进模型上下文、不消耗 token），且复用官方已知事件类型——`Session.append` 无法标注 `ignorable`，自创事件类型会导致会话日志在恢复时被格式校验拒绝，官方词汇表是插件写入轨迹的唯一安全通道。
 
 ## 已知限制
 

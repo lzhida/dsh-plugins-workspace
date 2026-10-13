@@ -10,7 +10,8 @@
  *   4. 监听 `agent/request` waterfall:每次 loop 准备发请求时,如果 state 要求
  *      换 model,则改写 proposedConfig 的 provider/model;
  *   5. 监听 `agent/request-error` waterfall:每次 LLM 请求失败,若在 retryable
- *      失败码白名单内且还有下一候选 → backoff + 切下一候选 + 返回 retry;
+ *      失败码白名单内且还有下一候选 → 写轨迹(llm/retry)+ backoff + 切下一候选
+ *      + 写轨迹(llm/retry-started)+ 返回 retry;
  *      否则透传上游决策(让同 provider 内重试或抛错);
  *   6. effect 卸载时一次性清理(disposeSection + disposeListeners)。
  *
@@ -38,8 +39,13 @@
  * 局限性:
  * - 不实现 provider/* 通配条目、role/specificity 分派链;
  * - 不实现"跨回合切回主 model"(本期仅在请求内回退);
- * - backoff 是简单指数退避 + 抖动 ±10%。
+ * - backoff 是简单指数退避 + 抖动 ±10%;
+ * - 轨迹复用官方 `llm/retry` / `llm/retry-started` 事件类型(policyKey='llm-fallback'
+ *   可辨识):`Session.append` 无法写 `ignorable` 标记,自创事件类型会在会话日志
+ *   恢复时被 format v4 读侧拒绝,官方已知类型是插件唯一的持久化安全通道。
  */
+
+import { randomUUID } from 'node:crypto';
 
 import type { Context } from '@deepseek-ai/cordis';
 import type {} from '@deepseek-ai/dsh-system-prompt';
@@ -55,6 +61,13 @@ import {
   nextCandidate,
   stateFor,
 } from './state.ts';
+import {
+  type TrajectoryAgent,
+  FALLBACK_RETRY_POLICY_KEY,
+  effectiveMaxSwitches,
+  recordFallbackScheduled,
+  recordFallbackStarted,
+} from './trajectory.ts';
 
 /** Cordis 插件名(loader 依赖);与 cordis.patch.yml 的 id 对齐。 */
 export const name = 'dsh-llm-fallback';
@@ -191,6 +204,8 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
           failure: LlmFailure;
           retryPolicy?: unknown;
           signal: AbortSignal;
+          /** fused dispatcher 注入的主体 agent;session 用于写轨迹(可选,防御旧宿主)。 */
+          agent?: TrajectoryAgent;
         },
         next: () => Promise<RequestErrorAction | undefined | void>,
       ): Promise<RequestErrorAction | undefined | void> => {
@@ -223,10 +238,41 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
           cfg.baseDelayMs,
           cfg.maxDelayMs,
         );
+        // 轨迹透明化:向会话日志写入官方 `llm/retry` 事件(normal 形态)——
+        // 宿主轨迹 UI 把它渲染为请求节点的重试状态(错误消息 + code +
+        // retry N/maxRetries + delayMs);targetProvider/targetModel(本插件
+        // 追加字段,读侧透传安全)让"切到哪个模型继续跑"在轨迹里直接可见,
+        // 与宿主 loop 自动记录的 request/header+context 数据层互补。
+        // durable 先于退避等待,与官方 dsh-llm-retry 的写入时机一致。
+        if (state.retryId === undefined) state.retryId = randomUUID();
+        const target = state.chain[advance.index];
+        recordFallbackScheduled(payload.agent?.session, {
+          retryId: state.retryId,
+          turn,
+          step,
+          provider: payload.provider,
+          mode: 'normal',
+          policyKey: FALLBACK_RETRY_POLICY_KEY,
+          retry: advance.retries,
+          maxRetries: effectiveMaxSwitches(state.chain.length, cfg.maxRetries),
+          delayMs: delay,
+          failure,
+          targetProvider: target?.provider,
+          targetModel: target?.model,
+        });
         if (delay > 0) {
-          await sleep(delay);
+          const completed = await sleep(delay, signal);
+          // 退避等待被取消(turn 中止)→ 透传上游,不写 started、不切换
+          if (!completed) return upstream;
         }
         if (signal.aborted) return upstream;
+        // 轨迹:退避完成,切换即将生效(loop 将用新候选重发请求)
+        recordFallbackStarted(payload.agent?.session, {
+          retryId: state.retryId,
+          turn,
+          step,
+          retry: advance.retries,
+        });
         state.index = advance.index;
         state.retries = advance.retries;
         // 返回 retry → loop 会重进 prepareRequest → 我们在 agent/request 里改写 provider/model
@@ -237,8 +283,23 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
   }, 'dsh-llm-fallback: agent/request-error listener');
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+/**
+ * 可取消的退避等待:signal 中止时立即 resolve(false)(不再傻等剩余延迟,
+ * loop 的 waterfall 不被已取消的 turn 拖住);正常到期 resolve(true)。
+ */
+function sleep(ms: number, signal: AbortSignal): Promise<boolean> {
+  if (signal.aborted) return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve(true);
+    }, ms);
+    function onAbort(): void {
+      clearTimeout(timer);
+      resolve(false);
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
 }
 
 // re-export 供测试使用
@@ -253,3 +314,15 @@ export {
   nextCandidate,
   stateFor,
 } from './state.ts';
+export type {
+  LlmRetryEventData,
+  LlmRetryStartedEventData,
+  TrajectoryAgent,
+  TrajectorySession,
+} from './trajectory.ts';
+export {
+  FALLBACK_RETRY_POLICY_KEY,
+  effectiveMaxSwitches,
+  recordFallbackScheduled,
+  recordFallbackStarted,
+} from './trajectory.ts';

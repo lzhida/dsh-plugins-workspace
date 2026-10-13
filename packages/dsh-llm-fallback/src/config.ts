@@ -27,6 +27,15 @@
  * 的 `Config` 导出契约);`fallbackChains` 挂 `role('modelList', ...)` 给 dsh
  * 前端 `SettingsValueField` 提供 picker 渲染提示(若前端不识别此 role,降级为
  * 默认对象数组输入框,功能不受影响)。
+ *
+ * 国际化(0.3.3):所有字段的 `meta.description` 均为 schemastery i18n 映射
+ * `{ '': 英文默认, zh: 中文, en: 英文 }`——与 schemastery 内置 `Schema.i18n()`
+ * /`mergeDesc` 的形态一致(`''` 键 = 不认识 i18n 映射的旧渲染端回退文案)。
+ * 宿主 `@deepseek-ai/dsh-settings` 的 `describe()` 以 `form.toJSON()` 原样下发
+ * 该映射,前端按当前激活语言(dsh 语言配置:Host 偏好 settings 命名空间
+ * `locale` 字段 `preference` → 浏览器语言 → en,与 dsh-client-locale 内置语言
+ * 目录 LOCALE_IDS `['zh','en']` 对齐)解析显示;语言键不与服务端绑定,换语言
+ * 无需重载插件。
  */
 
 import Schema from '@deepseek-ai/schemastery';
@@ -80,6 +89,51 @@ export const FALLBACK_WHEN_VALUES = ['afterRetry', 'immediately'] as const;
 
 /** 回退时机:afterRetry = 官方重试耗尽后才切;immediately = 一次失败即切。 */
 export type FallbackWhen = (typeof FALLBACK_WHEN_VALUES)[number];
+
+/**
+ * schemastery `meta.description` 的 i18n 映射形态。
+ * `''` 键 = 默认文案(英文;旧渲染端不识别映射时原样显示),其余键为
+ * BCP 47 语言 id(`zh` / `en` 与 dsh 客户端内置语言目录对齐)。
+ */
+export type SchemaDescription = { '': string } & Partial<
+  Record<string, string>
+>;
+
+/**
+ * 构造设置表单字段描述的 i18n 映射。
+ *
+ * - `en` 同时写入 `''` 与 `en` 键:`''` 是 schemastery `mergeDesc` 语义下的
+ *   默认回退文案,保证不识别映射的渲染端(旧宿主 / 纯文本投影)看到的仍是
+ *   改造前的英文描述,行为零回归;
+ * - `zh` 是中文文案,由前端 locale 服务按激活语言解析;
+ * - dsh 客户端当前内置语言只有 `zh` / `en`(dsh-client-locale 的
+ *   LOCALE_IDS),新增语言时宿主回退链会落到 `en`,无需本插件参与。
+ *
+ * @param en - 英文描述(默认文案)。
+ * @param zh - 中文描述。
+ * @returns 可 JSON 序列化的描述映射(经 settings.describe 的 toJSON 下发)。
+ */
+export function desc(en: string, zh: string): SchemaDescription {
+  return { '': en, en, zh };
+}
+
+/**
+ * 把 i18n 映射写入字段描述(schemastery 官方 Meta 类型允许
+ * `description?: string | Dict<string>`,见其类型声明 Schemastery.Meta;
+ * 但链式方法 `description(text: string)` 的参数声明滞后——方法体只是把值
+ * 原样写入 meta.description,运行时与宿主前端的 mergeDesc/resolveText 均
+ * 按映射处理)。全仓唯一断言点,收窄该声明滞后。
+ *
+ * @param field - 待描述的 schema 节点(链式构造中的当前值)。
+ * @param text - desc() 产出的 i18n 映射。
+ * @returns 同一 schema 节点(保持链式语义,meta.description 已写入映射)。
+ */
+function setDescription<F extends { description(text: string): F }>(
+  field: F,
+  text: SchemaDescription,
+): F {
+  return field.description(text as unknown as string);
+}
 
 /** 退避延迟的下限语义:0 = 禁用退避;负数/非有限数在 resolveConfig 中回落默认值。 */
 
@@ -264,14 +318,15 @@ export function resolveConfig(input: unknown): ResolvedConfig {
   const fallbackWhen = resolveFallbackWhen(raw.fallbackWhen);
   const maxRetriesRaw = Number(raw.maxRetries ?? 0);
   const maxRetries = maxRetriesRaw > 0 ? Math.floor(maxRetriesRaw) : chainLen;
+  // 0 = 禁用退避(失败后立即切换),与文件头文档一致;非法/负值回落默认。
   const baseDelayMsRaw = Number(raw.baseDelayMs ?? 500);
   const baseDelayMs =
-    Number.isFinite(baseDelayMsRaw) && baseDelayMsRaw > 0
+    Number.isFinite(baseDelayMsRaw) && baseDelayMsRaw >= 0
       ? Math.floor(baseDelayMsRaw)
       : 500;
   const maxDelayMsRaw = Number(raw.maxDelayMs ?? 30000);
   const maxDelayMs =
-    Number.isFinite(maxDelayMsRaw) && maxDelayMsRaw > 0
+    Number.isFinite(maxDelayMsRaw) && maxDelayMsRaw >= 0
       ? Math.floor(maxDelayMsRaw)
       : 30000;
   const codesRaw = Array.isArray(raw.retryableCodes)
@@ -301,19 +356,33 @@ export function resolveConfig(input: unknown): ResolvedConfig {
 
 /** 单条链项的 schemastery schema(供 Config 与未来 re-use)。 */
 const ChainEntrySchema = Schema.object({
-  provider: Schema.string()
-    .required()
-    .description('Provider route key (e.g. "deepseek", "openai", "anthropic")'),
-  model: Schema.string()
-    .required()
-    .description(
-      'Model id within the provider (e.g. "deepseek-chat", "gpt-4o")',
+  provider: setDescription(
+    Schema.string().required(),
+    desc(
+      'Provider route key (e.g. "deepseek", "openai", "anthropic")',
+      'Provider 路由键(如 "deepseek"、"openai"、"anthropic")',
     ),
-  displayName: Schema.string().description(
-    'Display label shown in the settings UI; defaults to "provider/model" if omitted',
   ),
-  description: Schema.string().description(
-    'Optional note shown as a subtitle or tooltip in the settings UI',
+  model: setDescription(
+    Schema.string().required(),
+    desc(
+      'Model id within the provider (e.g. "deepseek-chat", "gpt-4o")',
+      'provider 内的模型 id(如 "deepseek-chat"、"gpt-4o")',
+    ),
+  ),
+  displayName: setDescription(
+    Schema.string(),
+    desc(
+      'Display label shown in the settings UI; defaults to "provider/model" if omitted',
+      '设置界面里显示的名称;缺省回填 "provider/model"',
+    ),
+  ),
+  description: setDescription(
+    Schema.string(),
+    desc(
+      'Optional note shown as a subtitle or tooltip in the settings UI',
+      '可选备注,设置界面里作为副标题或提示展示',
+    ),
   ),
 });
 
@@ -323,66 +392,86 @@ const ChainEntrySchema = Schema.object({
  * 每个字段都经 `volatileField()` 包裹 → 宿主 `dsh-settings.describe()` 才认它
  * 是"可在设置面板里编辑的即时配置"(无 volatile 字段的条目会被整个丢弃)。
  * 运行时因此收到 `Volatile` 引用,`resolveConfig` 负责解包。
+ * 字段描述经 `setDescription(..., desc(en, zh))` 携带 i18n 映射(见文件头
+ * "国际化"注释),前端按 dsh 语言配置解析。
  */
 export const Config = Schema.object({
   enabled: volatileField(
-    Schema.boolean()
-      .default(true)
-      .description(
-        'Enable / disable the fallback interceptor / 是否启用模型回退',
+    setDescription(
+      Schema.boolean().default(true),
+      desc(
+        'Enable / disable the fallback interceptor',
+        '是否启用模型回退(关闭后不再拦截模型失败)',
       ),
+    ),
   ),
   // 设置面板里由本插件自带的 client 卡片渲染为"模型勾选 + 排序"队列
   // (候选池来自 ctx.remote.session.modelCatalog)。
   // 旧 0.2.x 的 `string[]` 形态(每项为 "provider/model")在 resolveConfig 端被兼容解析,
   // 持久化形态(写到 cordis.yml / settings)是 Object[]。
   fallbackChains: volatileField(
-    Schema.array(ChainEntrySchema)
-      .default([])
-      .role('modelList', { source: 'dsh-llm-runtime' })
-      .description(
+    setDescription(
+      Schema.array(ChainEntrySchema)
+        .default([])
+        .role('modelList', { source: 'dsh-llm-runtime' }),
+      desc(
         'Ordered fallback chain; first entry is the primary model; subsequent entries are tried in order when the current one fails',
+        '有序回退链:首项 = 主模型,当前模型失败时按顺序尝试后续候选',
       ),
+    ),
   ),
   fallbackWhen: volatileField(
-    Schema.union([...FALLBACK_WHEN_VALUES])
-      .default('afterRetry')
-      .description(
+    setDescription(
+      Schema.union([...FALLBACK_WHEN_VALUES]).default('afterRetry'),
+      desc(
         'When to switch to the next candidate: "afterRetry" (default) only falls back after the official dsh-llm-retry executor exhausts its budget; "immediately" switches on the first retryable failure',
+        '切换时机:"afterRetry"(默认)= 官方 dsh-llm-retry 重试预算耗尽后才切;"immediately" = 一次可重试失败立即切换',
       ),
+    ),
   ),
   maxRetries: volatileField(
-    Schema.number()
-      .default(0)
-      .role('modelChainMeta', { kind: 'retries' })
-      .description(
+    setDescription(
+      Schema.number().default(0).role('modelChainMeta', { kind: 'retries' }),
+      desc(
         'Max attempts per request (0 = chain length; i.e. try every configured model before erroring)',
+        '单次请求最多尝试次数(0 = 链长,即跑完所有候选才报错)',
       ),
+    ),
   ),
   baseDelayMs: volatileField(
-    Schema.number()
-      .default(500)
-      .description('Initial exponential-backoff delay between attempts (ms)'),
+    setDescription(
+      Schema.number().default(500),
+      desc(
+        'Initial exponential-backoff delay between attempts (ms)',
+        '两次尝试之间指数退避的初值(毫秒)',
+      ),
+    ),
   ),
   maxDelayMs: volatileField(
-    Schema.number()
-      .default(30000)
-      .description(
+    setDescription(
+      Schema.number().default(30000),
+      desc(
         'Upper bound on exponential-backoff delay between attempts (ms)',
+        '两次尝试之间指数退避的上限(毫秒)',
       ),
+    ),
   ),
   retryableCodes: volatileField(
-    Schema.array(Schema.string())
-      .default([...DEFAULT_RETRYABLE_CODES])
-      .description(
+    setDescription(
+      Schema.array(Schema.string()).default([...DEFAULT_RETRYABLE_CODES]),
+      desc(
         'Failure codes treated as retryable (whitelist); non-matching codes fall through unchanged',
+        '视为可重试的失败码白名单;未命中的失败码原样上抛',
       ),
+    ),
   ),
   perTurn: volatileField(
-    Schema.boolean()
-      .default(true)
-      .description(
+    setDescription(
+      Schema.boolean().default(true),
+      desc(
         'Within one llm/stream call, allow falling back to the next candidate; if false, fall back is one-shot per request',
+        '同一次 llm/stream 调用内允许多次切换;false = 每次请求至多切换一次',
       ),
+    ),
   ),
 });
