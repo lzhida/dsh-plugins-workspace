@@ -240,10 +240,12 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
         );
         // 轨迹透明化:向会话日志写入官方 `llm/retry` 事件(normal 形态)——
         // 宿主轨迹 UI 把它渲染为请求节点的重试状态(错误消息 + code +
-        // retry N/maxRetries + delayMs);切换目标 provider/model 由 loop 在
-        // 下一次请求时自动记录(request/header reason:'change')。
+        // retry N/maxRetries + delayMs);targetProvider/targetModel(本插件
+        // 追加字段,读侧透传安全)让"切到哪个模型继续跑"在轨迹里直接可见,
+        // 与宿主 loop 自动记录的 request/header+context 数据层互补。
         // durable 先于退避等待,与官方 dsh-llm-retry 的写入时机一致。
         if (state.retryId === undefined) state.retryId = randomUUID();
+        const target = state.chain[advance.index];
         recordFallbackScheduled(payload.agent?.session, {
           retryId: state.retryId,
           turn,
@@ -255,6 +257,8 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
           maxRetries: effectiveMaxSwitches(state.chain.length, cfg.maxRetries),
           delayMs: delay,
           failure,
+          targetProvider: target?.provider,
+          targetModel: target?.model,
         });
         if (delay > 0) {
           const completed = await sleep(delay, signal);

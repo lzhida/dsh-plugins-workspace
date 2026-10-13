@@ -1009,7 +1009,7 @@ describe('轨迹记录(llm/retry 事件)', () => {
     ]);
     const scheduled = appends[0]?.data;
     const started = appends[1]?.data;
-    // scheduled(normal 形态):官方 payload shape 全字段
+    // scheduled(normal 形态):官方 payload shape 全字段 + 本插件追加的切换目标
     expect(scheduled).toMatchObject({
       turn: 1,
       step: 1,
@@ -1020,6 +1020,8 @@ describe('轨迹记录(llm/retry 事件)', () => {
       maxRetries: 2, // min(maxRetries=2, 链长-1=2)
       delayMs: 0,
       failure,
+      targetProvider: 'openai', // 切换目标:轨迹里直接可见"切到哪个模型继续跑"
+      targetModel: 'y',
     });
     expect(typeof scheduled?.retryId).toBe('string');
     expect((scheduled?.retryId as string).length).toBeGreaterThan(0);
@@ -1073,6 +1075,9 @@ describe('轨迹记录(llm/retry 事件)', () => {
     expect(second?.retry).toBe(2);
     expect(second?.provider).toBe('openai');
     expect(second?.failure).toMatchObject({ code: 'QUOTA' });
+    // 第二跳目标 = 链第三项(链上候选逐跳推进,目标随之更新)
+    expect(second?.targetProvider).toBe('anthropic');
+    expect(second?.targetModel).toBe('z');
   });
 
   it('payload 无 agent(旧宿主)→ 不写轨迹且回退不受影响', async () => {

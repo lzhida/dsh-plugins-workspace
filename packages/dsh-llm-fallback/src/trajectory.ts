@@ -19,9 +19,14 @@
  * - 因此插件事件必须落在宿主已知词汇表内。`llm/retry`(normal 形态)与
  *   `llm/retry-started` 语义精确吻合跨 provider 回退——"失败后调度一次带退避
  *   的 provider 路由重试",且轨迹 UI 无需任何 client 侧开发即可见。
- * - 「切换到哪个模型」由宿主 loop 自动记录:切换生效后的下一次请求会 append
- *   `request/header`(reason:'change')与 `request/context`(provider/model),
- *   轨迹请求节点的 requestConfig 随之更新,本模块无需重复记录。
+ * - 「切换到哪个模型」**双通道记录**：
+ *   ① 本插件在 `llm/retry` payload 里追加 `targetProvider` / `targetModel`
+ *   （读侧校验只检查已知字段的关系约束、data 整体透传,追加字段安全——实测
+ *   dsh-session-format v3-to-v4 迁移器与恢复读侧均不裁剪；官方 payload 无
+ *   此字段,宿主轨迹 UI 现有渲染忽略之,不会崩）；
+ *   ② 宿主 loop 在切换生效后的下一次请求自动 append `request/header` 与
+ *   `request/context`（provider/model）——数据层完整,但当前轨迹 UI 不渲染
+ *   该字段,故 ① 是"轨迹里一眼可见"的保障。
  *
  * 失败安全:append 的任何异常都被吞掉并只打日志——写轨迹失败绝不允许阻断
  * 回退本体(监听器抛错会中断 loop 的恢复链)。
@@ -51,6 +56,10 @@ export interface LlmRetryEventData {
   delayMs: number;
   /** 触发切换的失败(透传,不加工)。 */
   failure: LlmFailure;
+  /** 切换目标的 provider(本插件追加字段,官方 payload 无;读侧透传安全)。 */
+  targetProvider?: string;
+  /** 切换目标的 model(本插件追加字段,官方 payload 无;读侧透传安全)。 */
+  targetModel?: string;
 }
 
 /** 官方 `llm/retry-started` 事件的 payload:退避完成、切换即将生效。 */

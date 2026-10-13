@@ -137,12 +137,12 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 
 跨 provider 回退**不再是黑盒**。切换候选时，插件通过官方轨迹接口（`agent/request-error` payload 携带的 `agent.session.append`，与官方 `dsh-llm-retry` 同一通道）向会话日志写入两条 durable 事件：
 
-| 事件                | 时机                     | 内容                                                                                |
-| ------------------- | ------------------------ | ----------------------------------------------------------------------------------- |
-| `llm/retry`         | 切换调度时（退避等待前） | 失败 provider、失败详情（code/message）、`retry` 序号、`maxRetries`、退避 `delayMs` |
-| `llm/retry-started` | 退避完成、切换生效前     | 同 `retryId`，标记重试真正开始                                                      |
+| 事件                | 时机                     | 内容                                                                                                                                                  |
+| ------------------- | ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `llm/retry`         | 切换调度时（退避等待前） | 失败 provider、失败详情（code/message）、`retry` 序号、`maxRetries`、退避 `delayMs`、**切换目标**（`targetProvider` / `targetModel`，本插件追加字段） |
+| `llm/retry-started` | 退避完成、切换生效前     | 同 `retryId`，标记重试真正开始                                                                                                                        |
 
-宿主轨迹 UI 对 `llm/retry` 有内置渲染：请求节点显示失败消息与错误码、重试进度（retry N/maxRetries）与退避时长。**切换到哪个模型**由宿主 loop 自动记录——切换生效后的下一次请求会写入 `request/header`（reason: `change`）与 `request/context`（provider/model），轨迹上该请求的配置随之显示新模型。同一步内多次切换复用同一 `retryId`，事件的 `policyKey` 固定为 `llm-fallback`，便于与官方同 provider 重试区分。
+宿主轨迹 UI 对 `llm/retry` 有内置渲染：请求节点显示失败消息与错误码、重试进度（retry N/maxRetries）与退避时长。**切换到哪个模型**走双通道记录：① 本插件把 `targetProvider` / `targetModel` 直接写进 `llm/retry` payload（追加字段——format v4 读侧只校验已知字段的关系约束、data 整体透传，安全；当前宿主 UI 不渲染这两个字段，但在会话轨迹文件与导出数据里一眼可查）；② 宿主 loop 在切换生效后的下一次请求自动写入 `request/header` 与 `request/context`（provider/model），数据层同样留痕。同一步内多次切换复用同一 `retryId`，事件的 `policyKey` 固定为 `llm-fallback`，便于与官方同 provider 重试区分。
 
 两类事件都是 log-only（不进模型上下文、不消耗 token），且复用官方已知事件类型——`Session.append` 无法标注 `ignorable`，自创事件类型会导致会话日志在恢复时被格式校验拒绝，官方词汇表是插件写入轨迹的唯一安全通道。
 
