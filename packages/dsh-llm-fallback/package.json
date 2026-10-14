@@ -18,6 +18,7 @@
     "cordis.patch.yml",
     "README.md"
   ],
+  "homepage": "https://github.com/lzhida/dsh-plugins-workspace/tree/main/packages/dsh-llm-fallback#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lzhida/dsh-plugins-workspace.git",
