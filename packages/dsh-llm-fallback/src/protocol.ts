@@ -40,6 +40,7 @@ const MODEL_FALLBACK_PROTOCOL_TEXT = `A host-level plugin (\`dsh-llm-fallback\`)
 ## Limits
 
 - Within one step (turn+step), fallback is bounded by \`maxRetries\` (default = queue length; this bounds candidate switches, not same-candidate retries — the per-candidate retry count is \`retriesBeforeSwitch\`). Once every candidate has been tried, the error surfaces; the next step starts from the session-selected model again.
+- **Recently failed models enter a short cooldown.** After a model (the session-selected primary or a chain candidate) has exhausted its retry budget and the chain switched away, subsequent steps skip it for a configurable window (default 5 minutes) and start directly from the next healthy candidate instead of re-paying the same failure. When the window expires, the model automatically returns to its priority position and is re-verified on the next request. Cooldown is an efficiency optimization only: if every candidate is cooling, the chain falls back to its normal order rather than giving up.
 - The plugin never modifies the request contents, only the \`provider\` and \`model\` fields. Token budgets, tools, and prompts are preserved across the fallback.
 - Backoff between attempts is exponential (base × 2^attempt, capped at \`maxDelayMs\`) with ±10% jitter.
 - Every fallback switch is recorded to the session trajectory as durable \`llm/retry\` events, so the user can see the failure and the retry progress in the UI. The new provider/model shows up in the next request's recorded config on its own.

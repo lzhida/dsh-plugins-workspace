@@ -26,6 +26,12 @@
  * - `maxRetries`:单次请求最多**切换候选**次数(不含同候选重试);
  *   `0` = 链长(会话模型失败后可依次切完整个队列才报错)
  * - `baseDelayMs` / `maxDelayMs`:指数退避的初值与上界;`0` = 禁用退避(失败后立即重试/切换)
+ * - `cooldownEnabled` / `cooldownMs`:失败候选冷却跳过(默认开,300000ms = 5 分钟)——
+ *   白名单失败耗尽每候选重试预算并切换后,失败方(provider+model)进入冷却窗:
+ *   窗口内后续 step 不再从它开始(`agent/request` 直接改写为链上第一个可用候选,
+ *   即"从下一个回退模型或此前验证可用的候选开始"),窗口期满自动恢复优先级并
+ *   重新验证是否恢复;剩余候选全部在冷却中时退回原语义(冷却绝不吞掉全部候选);
+ *   非白名单失败与预算内的同候选重试不记冷却
  * - `retryableCodes`:视为可重试的失败码(白名单;默认对齐 dsh 宿主官方重试码
  *   `dsh-llm` 的 DEFAULT_RETRYABLE_CODES,并保留配额/上下文类超集)
  * - `perTurn`:同一 step(`turn:step`)内是否允许多次切换;`false` = 至多切换一次(one-shot)
@@ -103,6 +109,14 @@ export function volatileField<T extends { volatile?: unknown }>(field: T): T {
 
 /** `retriesBeforeSwitch` 的默认值:0 = 自动跟随官方重试预算(见文件头语义说明)。 */
 export const DEFAULT_RETRIES_BEFORE_SWITCH = 0;
+
+/**
+ * `cooldownMs` 的默认值:失败候选的冷却窗口,5 分钟。
+ * 窗口内后续 step 不再从该模型开始(直接用下一个可用候选),窗口期满
+ * 自动恢复其优先级并重新验证是否恢复——额度按时间周期重置的套餐
+ * (如每 5 小时重置)通常在分钟级内不会恢复,5 分钟兼顾效率与优先级。
+ */
+export const DEFAULT_COOLDOWN_MS = 300_000;
 
 /**
  * schemastery `meta.description` 的 i18n 映射形态。
@@ -293,6 +307,15 @@ export interface ResolvedConfig {
   maxRetries: number;
   baseDelayMs: number;
   maxDelayMs: number;
+  /**
+   * 失败候选冷却跳过总开关(默认开):白名单失败耗尽每候选重试预算并
+   * 切换后,失败方在 cooldownMs 内不再作为后续 step 的起点或推进目标,
+   * 直接从下一个可用候选开始;窗口期满自动恢复优先级(重新验证)。
+   * 关闭后行为与旧版完全一致(每 step 都从会话指定模型重新开始)。
+   */
+  cooldownEnabled: boolean;
+  /** 冷却窗口时长(毫秒);`0` = 立即过期(等效禁用)。 */
+  cooldownMs: number;
   retryableCodes: ReadonlySet<string>;
   perTurn: boolean;
 }
@@ -323,6 +346,8 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     maxRetries?: unknown;
     baseDelayMs?: unknown;
     maxDelayMs?: unknown;
+    cooldownEnabled?: unknown;
+    cooldownMs?: unknown;
     retryableCodes?: unknown;
     perTurn?: unknown;
   };
@@ -361,6 +386,14 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     Number.isFinite(maxDelayMsRaw) && maxDelayMsRaw >= 0
       ? Math.floor(maxDelayMsRaw)
       : 30000;
+  // 冷却跳过:默认启用;时长非法(负数/非有限)回落默认,0 = 立即过期
+  // (等效禁用,合法值——用户显式选择"每次都重新验证")。
+  const cooldownEnabled = raw.cooldownEnabled !== false; // 默认 true
+  const cooldownMsRaw = Number(raw.cooldownMs ?? DEFAULT_COOLDOWN_MS);
+  const cooldownMs =
+    Number.isFinite(cooldownMsRaw) && cooldownMsRaw >= 0
+      ? Math.floor(cooldownMsRaw)
+      : DEFAULT_COOLDOWN_MS;
   const codesRaw = Array.isArray(raw.retryableCodes)
     ? (raw.retryableCodes as unknown[]).map((c) => String(c))
     : [...DEFAULT_RETRYABLE_CODES];
@@ -381,6 +414,8 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     maxRetries: Math.max(maxRetries, 1), // 至少 1(否则什么都做不了)
     baseDelayMs,
     maxDelayMs,
+    cooldownEnabled,
+    cooldownMs,
     retryableCodes,
     perTurn,
   };
@@ -487,6 +522,24 @@ export const Config = Schema.object({
       desc(
         'Upper bound on exponential-backoff delay between attempts (ms)',
         '两次尝试之间指数退避的上限(毫秒)',
+      ),
+    ),
+  ),
+  cooldownEnabled: volatileField(
+    setDescription(
+      Schema.boolean().default(true),
+      desc(
+        'Cooldown skip for recently failed models: after a candidate exhausts its retry budget and the chain switches away, subsequent requests skip it for a short window and start from the next healthy candidate instead; when the window expires the model automatically returns to its priority position and is re-verified (balances priority vs efficiency)',
+        '失败候选冷却跳过:候选重试预算耗尽切换后,短时间内后续请求不再从它开始,直接改用链上下一个可用候选;窗口期满该模型自动恢复优先级并重新验证是否恢复(平衡优先级与效率,避免每次都从头试错拉长对话)',
+      ),
+    ),
+  ),
+  cooldownMs: volatileField(
+    setDescription(
+      Schema.number().default(DEFAULT_COOLDOWN_MS),
+      desc(
+        'Cooldown window in ms for a failed model before it is re-verified and restored to its priority position (0 = expire immediately, i.e. disabled)',
+        '失败模型的冷却窗口时长(毫秒),窗口过后自动重新验证并恢复其优先级(0 = 立即过期,等效禁用)',
       ),
     ),
   ),

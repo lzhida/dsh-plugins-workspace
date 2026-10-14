@@ -10,6 +10,8 @@
  *   4. 监听 `agent/request` waterfall:每次 loop 准备发请求时——尚未切换
  *      (index<0)则把会话页面指定的模型捕获为 pageModel(事实主模型,配置
  *      链不含主模型),已切换(index>=0)则改写 proposedConfig 为链上候选;
+ *      冷却跳过启用时,若会话指定模型仍在冷却窗内,直接推进到链上第一个
+ *      可用候选(见 4b);
  *   5. 监听 `agent/request-error` waterfall:每次 LLM 请求失败,若在 retryable
  *      失败码白名单内,按"每候选重试预算"(retriesBeforeSwitch × provider
  *      retryPolicy 合成,见 state.ts resolveCandidateRetryPlan)三分支决策:
@@ -18,8 +20,20 @@
  *        (写轨迹(llm/retry)+ backoff + 返回 retry,不推进 index);
  *      - 预算耗尽 → 写轨迹(llm/retry)+ backoff + 切下一候选
  *        + 写轨迹(llm/retry-started)+ 返回 retry(即使上游仍想重试也覆盖);
+ *      预算耗尽(切换或链耗尽)时把失败方记入冷却表(见 4b);
  *      否则(白名单外/链耗尽)透传上游决策(让同 provider 内重试或抛错)。
  *   6. effect 卸载时一次性清理(disposeSection + disposeListeners)。
+ *
+ * 4b. 失败候选冷却(cooldown,跨 step):白名单失败耗尽每候选重试预算并
+ *     切换(或链耗尽)后,失败方(provider+model)记入冷却表,cooldownMs
+ *     (默认 5 分钟)内不再作为后续 step 的起点或推进目标——下一个 step
+ *     的首个请求在 agent/request 里直接改写为链上第一个可用候选("从下一
+ *     个回退模型或此前验证可用的候选开始"),避免每个 step 都重复支付同一
+ *     故障模型的失败成本、把对话时间拉长;窗口期满该模型自动恢复优先级,
+ *     下次请求按正常顺序重新验证是否恢复(恢复则继续优先使用,未恢复则
+ *     再次冷却)。冷却只是效率优化:剩余候选全部在冷却中时退回原语义,
+ *     绝不让冷却吞掉全部候选;非白名单失败与预算内的同候选重试不记冷却;
+ *     cooldownEnabled=false 时表保持为空,行为与旧版完全一致。
  *
  * 主模型语义(0.5.0 起):会话页面指定的模型就是事实主模型;配置的
  * fallbackChains 是纯回退候选队列,会话模型失败后按队列顺序切换(首失败
@@ -56,7 +70,11 @@
  * 局限性:
  * - 不实现 provider/* 通配条目、role/specificity 分派链;
  * - 不实现"跨回合切回会话指定模型"(回退状态以 turn:step 为 key,新 step
- *   天然从会话指定模型重新开始;同一 step 内链耗尽后不再回头);
+ *   天然从会话指定模型重新开始;同一 step 内链耗尽后不再回头);冷却跳过
+ *   在此之上做跨 step 优化:冷却中的模型被跳过、窗口期满自动恢复优先级,
+ *   不改变"新 step 从会话指定模型重新开始"的基准语义;
+ * - 冷却表存于插件进程内存:宿主重启 / 插件重载后清零(重启后首轮请求会
+ *   重新验证全部模型);
  * - backoff 是简单指数退避 + 抖动 ±10%;
  * - 轨迹复用官方 `llm/retry` / `llm/retry-started` 事件类型(policyKey='llm-fallback'
  *   可辨识):`Session.append` 无法写 `ignorable` 标记,自创事件类型会在会话日志
@@ -75,7 +93,11 @@ import {
   type FallbackState,
   type StepKey,
   backoffDelayMs,
+  currentEffectiveCandidate,
+  firstAvailableCandidateIndex,
+  isCoolingDown,
   isFailureRetryable,
+  markCooldown,
   nextCandidate,
   ourRetryChain,
   resolveCandidateRetryPlan,
@@ -178,13 +200,21 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
   // 4. per-step 回退状态:`turn:step` 当 key
   const states = new Map<StepKey, FallbackState>();
 
+  // 4b. 失败候选冷却表(key = 'provider/model',value = 冷却到期毫秒时间戳)。
+  //     跨 step 共享:白名单失败耗尽预算切换(或链耗尽)后,失败方在窗口内
+  //     不再作为后续 step 的起点或推进目标;过期条目在标记时惰性清理。
+  //     cooldownEnabled=false 时表保持为空、查询短路,行为与旧版完全一致。
+  const cooldowns = new Map<string, number>();
+
   /** 取出或惰性初始化该 step 的回退状态(从当前 chain 开始)。 */
   const getState = (key: StepKey): FallbackState =>
     stateFor(states, key, current().chain);
 
   // 5. 监听 agent/request:每次 loop 准备发请求时——
   //    - 尚未切换(index<0):当前就是会话页面指定的模型(事实主模型),
-  //      捕获为 pageModel(回退时永不切向它),不改写 seed;
+  //      捕获为 pageModel(回退时永不切向它);冷却跳过启用且它在冷却窗内
+  //      时,直接推进到链上第一个可用候选(下一候选或此前验证可用的候选),
+  //      该 step 不再从已知故障模型开始;
   //    - 已切换(index>=0):改写 proposedConfig 为链上当前候选。
   ctx.effect(() => {
     const dispose = ctx.on(
@@ -197,7 +227,8 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
         const key: StepKey = `${payload.turn}:${payload.step}`;
         // 惰性创建/取出该 step 的状态(此前仅在失败时创建;现在请求阶段就建,
         // 以便在首次失败前捕获会话指定模型——error payload 不带 model)
-        const state = stateFor(states, key, current().chain);
+        const cfg = current();
+        const state = stateFor(states, key, cfg.chain);
         if (state.index < 0) {
           if (!state.pageModel) {
             state.pageModel = {
@@ -205,7 +236,29 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
               model: seed.model,
             };
           }
-          return seed;
+          // 冷却跳过:会话指定模型在冷却窗内 → 该 step 直接从链上第一个
+          // 可用候选开始;无可用候选(全链冷却/链空)→ 保持 -1,按原语义
+          // 从会话模型开始(冷却绝不吞掉全部候选)。
+          if (cfg.cooldownEnabled) {
+            const now = Date.now();
+            if (isCoolingDown(cooldowns, state.pageModel, now)) {
+              const available = firstAvailableCandidateIndex(
+                state.chain,
+                cooldowns,
+                { pageModel: state.pageModel, now },
+              );
+              if (available >= 0) {
+                state.index = available;
+                state.retries = 0;
+                state.candidateFailures = 0;
+                const target = state.chain[available];
+                console.log(
+                  `[${name}] cooldown skip: ${seed.provider}/${seed.model} is cooling down, starting from ${String(target?.provider)}/${String(target?.model)}`,
+                );
+              }
+            }
+          }
+          if (state.index < 0) return seed;
         }
         const expected = state.chain[state.index];
         if (!expected) return seed;
@@ -322,8 +375,25 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
           // 落到切换分支(等价旧 afterRetry 在未装官方插件时的语义)。
         }
 
-        // 预算耗尽 → 切下一候选(即使上游仍想重试也按配置覆盖)
-        const advance = nextCandidate(state, cfg.maxRetries);
+        // 预算耗尽 → 切下一候选(即使上游仍想重试也按配置覆盖)。
+        // 冷却感知扫描:跳过仍在冷却窗内的候选(它们在此前 step 失败过且
+        // 未到期),剩余候选全部在冷却中时降级回原顺序(见 nextCandidate)。
+        const advance = nextCandidate(
+          state,
+          cfg.maxRetries,
+          cfg.cooldownEnabled ? cooldowns : undefined,
+          Date.now(),
+        );
+        // 冷却标记:预算耗尽即认定失败方暂时不可用(无论随后是切换成功、
+        // 退避被 abort 还是链耗尽)——白名单失败是既成事实,冷却窗内不再
+        // 从它开始,窗口期满自动恢复优先级重新验证。失败方未知(极端时序
+        // pageModel 缺失)或冷却禁用时不标记。
+        if (cfg.cooldownEnabled) {
+          const failed = currentEffectiveCandidate(state);
+          if (failed) {
+            markCooldown(cooldowns, failed, Date.now(), cfg.cooldownMs);
+          }
+        }
         if (!advance) {
           state.exhausted = true;
           return upstream;
@@ -412,9 +482,15 @@ export { resolveConfig, Config } from './config.ts';
 export type { FallbackState, StepKey } from './state.ts';
 export {
   backoffDelayMs,
+  cooldownKey,
+  currentEffectiveCandidate,
+  firstAvailableCandidateIndex,
+  isCoolingDown,
   isFailureRetryable,
+  markCooldown,
   nextCandidate,
   ourRetryChain,
+  purgeExpiredCooldowns,
   resolveCandidateRetryPlan,
   stateFor,
 } from './state.ts';
