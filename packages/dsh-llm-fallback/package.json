@@ -1,6 +1,6 @@
 {
   "name": "@zhidal/dsh-llm-fallback",
-  "description": "dsh-llm-fallback 插件：拦截全局 LLM 调用，按 fallbackChains 在主模型失败时自动切换到下一个候选 provider/model。fallbackWhen=afterRetry(默认) 在官方 dsh-llm-retry 重试耗尽后才切换（对话不中断）；immediately 为一次失败即切。",
+  "description": "dsh-llm-fallback 插件：拦截全局 LLM 调用，会话指定的模型（事实主模型）失败时按 fallbackChains 纯回退队列自动切换到下一个候选 provider/model。retriesBeforeSwitch 控制每候选切换前的同 provider 重试次数（默认 0=跟随官方 dsh-llm-retry 预算；N>0=以插件为准，超出官方预算部分由插件代执行），对话不中断。",
   "version": "0.4.0",
   "license": "MIT",
   "type": "module",
@@ -18,6 +18,7 @@
     "cordis.patch.yml",
     "README.md"
   ],
+  "homepage": "https://github.com/lzhida/dsh-plugins-workspace/tree/main/packages/dsh-llm-fallback#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/lzhida/dsh-plugins-workspace.git",

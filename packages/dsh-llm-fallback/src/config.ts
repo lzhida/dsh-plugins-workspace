@@ -3,24 +3,47 @@
  *
  * 命名/默认值对齐 oh-my-pi 的 `retry.*` 子树:
  * - `enabled`: 总开关
- * - `fallbackChains`:候选列表(首项=主模型);数组项可为
+ * - `fallbackChains`:纯回退候选队列(**不含主模型**——会话页面指定的
+ *     provider/model 就是事实主模型,失败后按队列顺序切换);数组项可为
  *     - `string`(旧 0.2.x 形态,`'provider/model'`,自动归一化为对象)或
  *     - `object`(`{provider, model, displayName?, description?}`,可在 dsh 设置
  *       面板里展示为可读条目;若 dsh 前端支持 `modelList` role 则渲染为模型
  *       复选框 + 拖拽排序的 picker)
- * - `fallbackWhen`:回退时机——`afterRetry`(默认)= 官方 dsh-llm-retry 等上游
- *   恢复器仍在预算内决定同 provider 重试时透传其决策,耗尽/委派后才切下一候选;
- *   `immediately` = 一次失败立即切换,不等上游
- * - `maxRetries`:单次请求最多**切换**次数(链上换候选的次数,不含同 provider 重试);
- *   `0` = 等于链长(全跑完才报错,与 omp 默认行为一致)
- * - `baseDelayMs` / `maxDelayMs`:指数退避的初值与上界;`0` = 禁用退避(失败后立即切换)
+ * - `retriesBeforeSwitch`:每候选重试次数——当前候选(含会话指定模型)在切换到
+ *   下一候选前允许的同 provider 重试次数(0.5.0 起取代旧 fallbackWhen 两档):
+ *   - `0`(默认)= 自动跟随官方 `dsh-llm-retry` 预算(provider retryPolicy 的
+ *     `maxRetries`,宿主默认 5);预算内透传官方决策,耗尽后切换。无预算信息
+ *     (policy 缺失)时视为 0——首失败即切,与旧 afterRetry 在未装官方插件时
+ *     的语义一致;
+ *   - `N > 0` = **以插件配置为准**:重试 N 次后才切,不再被 provider 预算封顶。
+ *     N 大于官方预算时,预算内由官方 `dsh-llm-retry` 执行重试(本插件透传其
+ *     决策),超出的部分由本插件代执行(自带退避 + 官方 `llm/retry` 轨迹事件),
+ *     直到 N 用满才切下一候选。provider retryPolicy 本身可编辑(llm-deepseek
+ *     顶层 volatile 字段 / llm-pi-ai 的 providers.<id>.retryPolicy,保存即经
+ *     loader/volatile-update 热更新),自动档因此天然跟随 provider 侧调整;
+ *   - `always` 模式策略(无限重试、无 maxRetries):自动档整体透传官方决策
+ *     (永不提前切),自定义档按 N 切(超出 N 后覆盖官方 retry)。
+ * - `maxRetries`:单次请求最多**切换候选**次数(不含同候选重试);
+ *   `0` = 链长(会话模型失败后可依次切完整个队列才报错)
+ * - `baseDelayMs` / `maxDelayMs`:指数退避的初值与上界;`0` = 禁用退避(失败后立即重试/切换)
+ * - `cooldownEnabled` / `cooldownMs`:失败候选冷却跳过(默认开,300000ms = 5 分钟)——
+ *   白名单失败耗尽每候选重试预算并切换后,失败方(provider+model)进入冷却窗:
+ *   窗口内后续 step 不再从它开始(`agent/request` 直接改写为链上第一个可用候选,
+ *   即"从下一个回退模型或此前验证可用的候选开始"),窗口期满自动恢复优先级并
+ *   重新验证是否恢复;剩余候选全部在冷却中时退回原语义(冷却绝不吞掉全部候选);
+ *   非白名单失败与预算内的同候选重试不记冷却
  * - `retryableCodes`:视为可重试的失败码(白名单;默认对齐 dsh 宿主官方重试码
  *   `dsh-llm` 的 DEFAULT_RETRYABLE_CODES,并保留配额/上下文类超集)
  * - `perTurn`:同一 step(`turn:step`)内是否允许多次切换;`false` = 至多切换一次(one-shot)
  *
+ * 主模型语义(0.5.0 起):插件配置里没有"主模型"——dsh 会话页面指定的模型
+ * 就是事实主模型。回退推进时自动跳过与会话模型相同的队列项(用户把会话模型
+ * 也勾进队列的防呆),旧"首项=主模型"的存量配置因此零迁移、行为不劣化。
+ *
  * 设计简化(本期不做):
  * - 不区分 role/specificity 的多链(`retry.fallbackChains.<role>`);本期就是"按 provider/model 串行"
- * - 不实现 `fallbackRevertPolicy`(跨回合切回主模型);本期仅在请求内回退
+ * - 不实现 `fallbackRevertPolicy`(同一 step 链耗尽后切回会话指定模型);回退状态
+ *   以 `turn:step` 为 key,新 step 天然从会话指定模型重新开始
  * - 不实现 provider/* 通配条目;链中每项就是字面 `provider/model`
  *
  * 渲染设置表单:loader 用 schemastery 把本 schema 投影成 GUI(参见 dsh-guided-goal
@@ -84,11 +107,16 @@ export function volatileField<T extends { volatile?: unknown }>(field: T): T {
     : field;
 }
 
-/** `fallbackWhen` 的合法取值。 */
-export const FALLBACK_WHEN_VALUES = ['afterRetry', 'immediately'] as const;
+/** `retriesBeforeSwitch` 的默认值:0 = 自动跟随官方重试预算(见文件头语义说明)。 */
+export const DEFAULT_RETRIES_BEFORE_SWITCH = 0;
 
-/** 回退时机:afterRetry = 官方重试耗尽后才切;immediately = 一次失败即切。 */
-export type FallbackWhen = (typeof FALLBACK_WHEN_VALUES)[number];
+/**
+ * `cooldownMs` 的默认值:失败候选的冷却窗口,5 分钟。
+ * 窗口内后续 step 不再从该模型开始(直接用下一个可用候选),窗口期满
+ * 自动恢复其优先级并重新验证是否恢复——额度按时间周期重置的套餐
+ * (如每 5 小时重置)通常在分钟级内不会恢复,5 分钟兼顾效率与优先级。
+ */
+export const DEFAULT_COOLDOWN_MS = 300_000;
 
 /**
  * schemastery `meta.description` 的 i18n 映射形态。
@@ -147,12 +175,17 @@ function setDescription<F extends { description(text: string): F }>(
  *   `dsh-llm/lib/types/retry-policy.js` 的默认重试码含 `SERVER` 与 `TRANSPORT`;
  * - 相比宿主官方默认(EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT)
  *   额外保留 QUOTA / ACCOUNT_QUOTA / CONTEXT_WINDOW_EXCEEDED——切模型是配额类
- *   失败的本职出路,属本插件的有意超集。
+ *   失败的本职出路,属本插件的有意超集;
+ * - `UNSUPPORTED_REASONING_EFFORT`——deepseek Messages 与 pi-ai 适配器在请求
+ *   构建期(网络 I/O 之前)校验 reasoning effort,模型不支持时抛出(消息形如
+ *   `provider "X" model "Y" does not support reasoning effort "Z"`)。该失败
+ *   对同一模型是确定性的——同 provider 重试必然复现(宿主官方重试码表因此
+ *   不含它),切到可能支持该 effort 的下一候选是唯一有意义的恢复路径。
  *
  * 历史:0.3.1 及之前默认含 omp 系码 `NETWORK` / `SERVER_ERROR`,宿主两套适配器
  * 均不产出这两个码,导致 "Connection error."(`TRANSPORT`)与 5xx(`SERVER`)
  * 不触发切换;0.3.2 起修正,并对存量用户配置做旧码→新码的并集别名
- * (见 RETRYABLE_CODE_ALIASES)。
+ * (见 RETRYABLE_CODE_ALIASES)。0.4.1 补入 `UNSUPPORTED_REASONING_EFFORT`。
  */
 export const DEFAULT_RETRYABLE_CODES: readonly string[] = [
   'RATE_LIMIT',
@@ -163,6 +196,7 @@ export const DEFAULT_RETRYABLE_CODES: readonly string[] = [
   'SERVER',
   'TIMEOUT',
   'TRANSPORT',
+  'UNSUPPORTED_REASONING_EFFORT',
 ] as const;
 
 /**
@@ -259,23 +293,42 @@ export function normalizeChainEntry(
 /** 解析用户配置:返回最终规整后的可执行结构;非法输入 → 抛出 schema 错误。 */
 export interface ResolvedConfig {
   enabled: boolean;
-  /** 链中每项的 (provider, model)。首项为主模型;空链=插件不做事。 */
+  /** 纯回退候选队列(不含主模型——会话页面指定的模型即事实主模型);空链=插件不做事。 */
   chain: ReadonlyArray<{ provider: string; model: string }>;
   /** 链中每项的规整形态(含 displayName / description);state 不直接用,留作未来扩展。 */
   entries: ReadonlyArray<ChainEntry>;
-  /** 回退时机;默认 afterRetry(官方重试耗尽后再切)。 */
-  fallbackWhen: FallbackWhen;
-  /** 最大尝试次数;0 = 链长(默认行为) */
+  /**
+   * 每候选重试次数(切换前允许的同 provider 重试数);`0` = 自动跟随官方
+   * dsh-llm-retry 预算;`>0` 以插件配置为准。运行时与 provider retryPolicy
+   * 的合成(谁执行/代执行判定)见 state.ts 的 resolveCandidateRetryPlan。
+   */
+  retriesBeforeSwitch: number;
+  /** 单次请求最多切换候选次数;0 = 链长(默认行为) */
   maxRetries: number;
   baseDelayMs: number;
   maxDelayMs: number;
+  /**
+   * 失败候选冷却跳过总开关(默认开):白名单失败耗尽每候选重试预算并
+   * 切换后,失败方在 cooldownMs 内不再作为后续 step 的起点或推进目标,
+   * 直接从下一个可用候选开始;窗口期满自动恢复优先级(重新验证)。
+   * 关闭后行为与旧版完全一致(每 step 都从会话指定模型重新开始)。
+   */
+  cooldownEnabled: boolean;
+  /** 冷却窗口时长(毫秒);`0` = 立即过期(等效禁用)。 */
+  cooldownMs: number;
   retryableCodes: ReadonlySet<string>;
   perTurn: boolean;
 }
 
-/** 规整 fallbackWhen:仅接受字面 'immediately',其余(含非法值)回落 afterRetry。 */
-export function resolveFallbackWhen(input: unknown): FallbackWhen {
-  return input === 'immediately' ? 'immediately' : 'afterRetry';
+/**
+ * 规整 retriesBeforeSwitch:仅接受非负有限数(向下取整);负数/非有限数/NaN
+ * 一律回落 0(自动跟随官方预算)。运行时预算的执行者/代执行判定见 state.ts
+ * 的 resolveCandidateRetryPlan(N>0 时以本值为准),此处只做输入防御。
+ */
+export function resolveRetriesBeforeSwitch(input: unknown): number {
+  const raw = Number(input ?? DEFAULT_RETRIES_BEFORE_SWITCH);
+  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_RETRIES_BEFORE_SWITCH;
+  return Math.floor(raw);
 }
 
 export function resolveConfig(input: unknown): ResolvedConfig {
@@ -289,10 +342,12 @@ export function resolveConfig(input: unknown): ResolvedConfig {
   const raw = (unwrapVolatile(input) ?? {}) as {
     enabled?: unknown;
     fallbackChains?: unknown;
-    fallbackWhen?: unknown;
+    retriesBeforeSwitch?: unknown;
     maxRetries?: unknown;
     baseDelayMs?: unknown;
     maxDelayMs?: unknown;
+    cooldownEnabled?: unknown;
+    cooldownMs?: unknown;
     retryableCodes?: unknown;
     perTurn?: unknown;
   };
@@ -315,7 +370,9 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     (e) => ({ provider: e.provider, model: e.model }),
   );
   const chainLen = chain.length;
-  const fallbackWhen = resolveFallbackWhen(raw.fallbackWhen);
+  const retriesBeforeSwitch = resolveRetriesBeforeSwitch(
+    raw.retriesBeforeSwitch,
+  );
   const maxRetriesRaw = Number(raw.maxRetries ?? 0);
   const maxRetries = maxRetriesRaw > 0 ? Math.floor(maxRetriesRaw) : chainLen;
   // 0 = 禁用退避(失败后立即切换),与文件头文档一致;非法/负值回落默认。
@@ -329,6 +386,14 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     Number.isFinite(maxDelayMsRaw) && maxDelayMsRaw >= 0
       ? Math.floor(maxDelayMsRaw)
       : 30000;
+  // 冷却跳过:默认启用;时长非法(负数/非有限)回落默认,0 = 立即过期
+  // (等效禁用,合法值——用户显式选择"每次都重新验证")。
+  const cooldownEnabled = raw.cooldownEnabled !== false; // 默认 true
+  const cooldownMsRaw = Number(raw.cooldownMs ?? DEFAULT_COOLDOWN_MS);
+  const cooldownMs =
+    Number.isFinite(cooldownMsRaw) && cooldownMsRaw >= 0
+      ? Math.floor(cooldownMsRaw)
+      : DEFAULT_COOLDOWN_MS;
   const codesRaw = Array.isArray(raw.retryableCodes)
     ? (raw.retryableCodes as unknown[]).map((c) => String(c))
     : [...DEFAULT_RETRYABLE_CODES];
@@ -345,10 +410,12 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     enabled,
     chain,
     entries,
-    fallbackWhen,
+    retriesBeforeSwitch,
     maxRetries: Math.max(maxRetries, 1), // 至少 1(否则什么都做不了)
     baseDelayMs,
     maxDelayMs,
+    cooldownEnabled,
+    cooldownMs,
     retryableCodes,
     perTurn,
   };
@@ -415,17 +482,19 @@ export const Config = Schema.object({
         .default([])
         .role('modelList', { source: 'dsh-llm-runtime' }),
       desc(
-        'Ordered fallback chain; first entry is the primary model; subsequent entries are tried in order when the current one fails',
-        '有序回退链:首项 = 主模型,当前模型失败时按顺序尝试后续候选',
+        'Ordered fallback candidates — the model selected in the session UI is the primary and is not configured here; tried in order when the session model fails',
+        '回退候选队列(不含主模型——会话页面指定的模型即事实主模型),失败后按顺序切换',
       ),
     ),
   ),
-  fallbackWhen: volatileField(
+  retriesBeforeSwitch: volatileField(
     setDescription(
-      Schema.union([...FALLBACK_WHEN_VALUES]).default('afterRetry'),
+      Schema.number()
+        .default(DEFAULT_RETRIES_BEFORE_SWITCH)
+        .role('modelChainMeta', { kind: 'retries' }),
       desc(
-        'When to switch to the next candidate: "afterRetry" (default) only falls back after the official dsh-llm-retry executor exhausts its budget; "immediately" switches on the first retryable failure',
-        '切换时机:"afterRetry"(默认)= 官方 dsh-llm-retry 重试预算耗尽后才切;"immediately" = 一次可重试失败立即切换',
+        'Same-provider retries allowed per candidate before switching to the next: 0 (default) follows the official dsh-llm-retry budget (provider retryPolicy.maxRetries, host default 5); N > 0 is authoritative — retry the current candidate N times first, the plugin performs any retries beyond the official budget itself',
+        '每个候选在切换前允许的同 provider 重试次数:0(默认)= 跟随官方 dsh-llm-retry 重试预算(provider retryPolicy.maxRetries,宿主默认 5);N>0 = 以插件配置为准,当前候选重试 N 次后才切换,超出官方预算的部分由本插件代执行重试',
       ),
     ),
   ),
@@ -433,8 +502,8 @@ export const Config = Schema.object({
     setDescription(
       Schema.number().default(0).role('modelChainMeta', { kind: 'retries' }),
       desc(
-        'Max attempts per request (0 = chain length; i.e. try every configured model before erroring)',
-        '单次请求最多尝试次数(0 = 链长,即跑完所有候选才报错)',
+        'Max candidate switches per request (0 = queue length; i.e. try every candidate before erroring). Bounds chain switches only — same-candidate retries are governed by retriesBeforeSwitch',
+        '单次请求最多切换候选次数(0 = 队列长度,即切完所有候选才报错);只限切换次数,同候选重试次数由 retriesBeforeSwitch 控制',
       ),
     ),
   ),
@@ -453,6 +522,24 @@ export const Config = Schema.object({
       desc(
         'Upper bound on exponential-backoff delay between attempts (ms)',
         '两次尝试之间指数退避的上限(毫秒)',
+      ),
+    ),
+  ),
+  cooldownEnabled: volatileField(
+    setDescription(
+      Schema.boolean().default(true),
+      desc(
+        'Cooldown skip for recently failed models: after a candidate exhausts its retry budget and the chain switches away, subsequent requests skip it for a short window and start from the next healthy candidate instead; when the window expires the model automatically returns to its priority position and is re-verified (balances priority vs efficiency)',
+        '失败候选冷却跳过:候选重试预算耗尽切换后,短时间内后续请求不再从它开始,直接改用链上下一个可用候选;窗口期满该模型自动恢复优先级并重新验证是否恢复(平衡优先级与效率,避免每次都从头试错拉长对话)',
+      ),
+    ),
+  ),
+  cooldownMs: volatileField(
+    setDescription(
+      Schema.number().default(DEFAULT_COOLDOWN_MS),
+      desc(
+        'Cooldown window in ms for a failed model before it is re-verified and restored to its priority position (0 = expire immediately, i.e. disabled)',
+        '失败模型的冷却窗口时长(毫秒),窗口过后自动重新验证并恢复其优先级(0 = 立即过期,等效禁用)',
       ),
     ),
   ),

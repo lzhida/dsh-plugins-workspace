@@ -1,0 +1,9 @@
+# dsh-open-in-zed bundle 层：dsh plugin add 安装本包时自动激活的插件行。
+# name 用包名（profile 依赖树已 link 安装），格式对齐官方 dsh-acp-app。
+# node 半区（exports "."）跑在宿主进程（/dsh-open-in-zed 路由 + open_in_zed
+# 工具）；package.json 的 dsh.client 声明让浏览器半区（exports "./client"，
+# 服务路径 /plugins/<id>/client.js）加载进 Web GUI，向会话 "..." 菜单注入
+# 「用 Zed 打开」项。
+- insert:
+    - id: dsh-open-in-zed
+      name: '@lzhida/dsh-open-in-zed'

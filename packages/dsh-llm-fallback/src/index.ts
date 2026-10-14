@@ -7,21 +7,52 @@
  *   1. 打印 `[dsh-llm-fallback] plugin loaded`(e2e 契约);
  *   2. 解析 config(loader 已把 settings 投影成普通值,直接读取);
  *   3. 注册 system-prompt section(对 agent 的协议说明);
- *   4. 监听 `agent/request` waterfall:每次 loop 准备发请求时,如果 state 要求
- *      换 model,则改写 proposedConfig 的 provider/model;
+ *   4. 监听 `agent/request` waterfall:每次 loop 准备发请求时——尚未切换
+ *      (index<0)则把会话页面指定的模型捕获为 pageModel(事实主模型,配置
+ *      链不含主模型),已切换(index>=0)则改写 proposedConfig 为链上候选;
+ *      冷却跳过启用时,若会话指定模型仍在冷却窗内,直接推进到链上第一个
+ *      可用候选(见 4b);
  *   5. 监听 `agent/request-error` waterfall:每次 LLM 请求失败,若在 retryable
- *      失败码白名单内且还有下一候选 → 写轨迹(llm/retry)+ backoff + 切下一候选
- *      + 写轨迹(llm/retry-started)+ 返回 retry;
- *      否则透传上游决策(让同 provider 内重试或抛错);
+ *      失败码白名单内,按"每候选重试预算"(retriesBeforeSwitch × provider
+ *      retryPolicy 合成,见 state.ts resolveCandidateRetryPlan)三分支决策:
+ *      - 预算内 + 官方 dsh-llm-retry 有 retry 决策 → 透传(官方执行同候选重试);
+ *      - 预算内 + 官方无决策(未装官方插件/无策略)→ 本插件代执行同候选重试
+ *        (写轨迹(llm/retry)+ backoff + 返回 retry,不推进 index);
+ *      - 预算耗尽 → 写轨迹(llm/retry)+ backoff + 切下一候选
+ *        + 写轨迹(llm/retry-started)+ 返回 retry(即使上游仍想重试也覆盖);
+ *      预算耗尽(切换或链耗尽)时把失败方记入冷却表(见 4b);
+ *      否则(白名单外/链耗尽)透传上游决策(让同 provider 内重试或抛错)。
  *   6. effect 卸载时一次性清理(disposeSection + disposeListeners)。
  *
- * 回退时机(fallbackWhen):
- * - `afterRetry`(默认):先 `await next()` 观察上游决策。官方 `dsh-llm-retry`
- *   执行器(normal mode 预算内,或 always mode)返回 `{kind:'retry'}` 时透传之,
- *   **不在本次失败上切换候选**;只有上游无决策(预算耗尽 / 委派下游 / 未装载
- *   官方插件)时才切换——这正是官方行为"重试之后直接中断"的位置,本插件在那里
- *   接手,把中断变成跨 provider 的继续运行。
- * - `immediately`:白名单命中即切,不等上游(兼容 dsh-llm-fallback 0.1.x 语义)。
+ * 4b. 失败候选冷却(cooldown,跨 step):白名单失败耗尽每候选重试预算并
+ *     切换(或链耗尽)后,失败方(provider+model)记入冷却表,cooldownMs
+ *     (默认 5 分钟)内不再作为后续 step 的起点或推进目标——下一个 step
+ *     的首个请求在 agent/request 里直接改写为链上第一个可用候选("从下一
+ *     个回退模型或此前验证可用的候选开始"),避免每个 step 都重复支付同一
+ *     故障模型的失败成本、把对话时间拉长;窗口期满该模型自动恢复优先级,
+ *     下次请求按正常顺序重新验证是否恢复(恢复则继续优先使用,未恢复则
+ *     再次冷却)。冷却只是效率优化:剩余候选全部在冷却中时退回原语义,
+ *     绝不让冷却吞掉全部候选;非白名单失败与预算内的同候选重试不记冷却;
+ *     cooldownEnabled=false 时表保持为空,行为与旧版完全一致。
+ *
+ * 主模型语义(0.5.0 起):会话页面指定的模型就是事实主模型;配置的
+ * fallbackChains 是纯回退候选队列,会话模型失败后按队列顺序切换(首失败
+ * → chain[0]),推进时自动跳过与 pageModel 相同的候选(用户把会话模型
+ * 也配进队列的防呆,同时让旧"首项=主模型"配置零迁移)。
+ *
+ * 每候选重试次数(retriesBeforeSwitch,0.5.0 起取代旧 fallbackWhen 两档):
+ * - `0`(默认)= 自动跟随 provider retryPolicy 的 `maxRetries`(宿主默认 5):
+ *   预算内透传官方 retry,耗尽后切换——正是旧 afterRetry 语义;policy 缺失时
+ *   预算 0,首失败即切;
+ * - `N > 0` = **以插件配置为准**:当前候选重试 N 次后才切,不被 provider
+ *   预算封顶。N 大于官方预算时,预算内由官方 `dsh-llm-retry` 执行重试(透传
+ *   其决策),超出的部分由本插件代执行(自带退避 + 轨迹事件),直到 N 用满。
+ *   (provider retryPolicy 本身可编辑:llm-deepseek 顶层 volatile 字段 /
+ *   llm-pi-ai 的 providers.<id>.retryPolicy,保存即经 loader/volatile-update
+ *   热更新;自动档因此天然跟随用户在 provider 侧的调整。)
+ * - `always` 模式策略:自动档整体透传官方无限重试;自定义档按 N 覆盖切换。
+ * - 同一 step 内逐候选计数:candidateFailures 随切换清零,每个候选(含会话
+ *   指定模型)都获得完整预算。
  *
  * 扩展点选择:
  * - `llm/stream` waterfall(stream-level)只允许在适配器流上叠加监听,不允许
@@ -38,7 +69,12 @@
  *
  * 局限性:
  * - 不实现 provider/* 通配条目、role/specificity 分派链;
- * - 不实现"跨回合切回主 model"(本期仅在请求内回退);
+ * - 不实现"跨回合切回会话指定模型"(回退状态以 turn:step 为 key,新 step
+ *   天然从会话指定模型重新开始;同一 step 内链耗尽后不再回头);冷却跳过
+ *   在此之上做跨 step 优化:冷却中的模型被跳过、窗口期满自动恢复优先级,
+ *   不改变"新 step 从会话指定模型重新开始"的基准语义;
+ * - 冷却表存于插件进程内存:宿主重启 / 插件重载后清零(重启后首轮请求会
+ *   重新验证全部模型);
  * - backoff 是简单指数退避 + 抖动 ±10%;
  * - 轨迹复用官方 `llm/retry` / `llm/retry-started` 事件类型(policyKey='llm-fallback'
  *   可辨识):`Session.append` 无法写 `ignorable` 标记,自创事件类型会在会话日志
@@ -57,8 +93,14 @@ import {
   type FallbackState,
   type StepKey,
   backoffDelayMs,
+  currentEffectiveCandidate,
+  firstAvailableCandidateIndex,
+  isCoolingDown,
   isFailureRetryable,
+  markCooldown,
   nextCandidate,
+  ourRetryChain,
+  resolveCandidateRetryPlan,
   stateFor,
 } from './state.ts';
 import {
@@ -158,12 +200,22 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
   // 4. per-step 回退状态:`turn:step` 当 key
   const states = new Map<StepKey, FallbackState>();
 
+  // 4b. 失败候选冷却表(key = 'provider/model',value = 冷却到期毫秒时间戳)。
+  //     跨 step 共享:白名单失败耗尽预算切换(或链耗尽)后,失败方在窗口内
+  //     不再作为后续 step 的起点或推进目标;过期条目在标记时惰性清理。
+  //     cooldownEnabled=false 时表保持为空、查询短路,行为与旧版完全一致。
+  const cooldowns = new Map<string, number>();
+
   /** 取出或惰性初始化该 step 的回退状态(从当前 chain 开始)。 */
   const getState = (key: StepKey): FallbackState =>
     stateFor(states, key, current().chain);
 
-  // 5. 监听 agent/request:每次 loop 准备发请求时,若 state 要求换 model,
-  //    则改写 proposedConfig 的 provider/model。
+  // 5. 监听 agent/request:每次 loop 准备发请求时——
+  //    - 尚未切换(index<0):当前就是会话页面指定的模型(事实主模型),
+  //      捕获为 pageModel(回退时永不切向它);冷却跳过启用且它在冷却窗内
+  //      时,直接推进到链上第一个可用候选(下一候选或此前验证可用的候选),
+  //      该 step 不再从已知故障模型开始;
+  //    - 已切换(index>=0):改写 proposedConfig 为链上当前候选。
   ctx.effect(() => {
     const dispose = ctx.on(
       'agent/request',
@@ -173,9 +225,41 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
       ): Promise<RequestConfig> => {
         const seed = await next();
         const key: StepKey = `${payload.turn}:${payload.step}`;
-        const state = states.get(key);
-        // 没有 state = 首次进入,或从未失败过 → 不动 seed
-        if (!state || state.index === 0) return seed;
+        // 惰性创建/取出该 step 的状态(此前仅在失败时创建;现在请求阶段就建,
+        // 以便在首次失败前捕获会话指定模型——error payload 不带 model)
+        const cfg = current();
+        const state = stateFor(states, key, cfg.chain);
+        if (state.index < 0) {
+          if (!state.pageModel) {
+            state.pageModel = {
+              provider: seed.provider,
+              model: seed.model,
+            };
+          }
+          // 冷却跳过:会话指定模型在冷却窗内 → 该 step 直接从链上第一个
+          // 可用候选开始;无可用候选(全链冷却/链空)→ 保持 -1,按原语义
+          // 从会话模型开始(冷却绝不吞掉全部候选)。
+          if (cfg.cooldownEnabled) {
+            const now = Date.now();
+            if (isCoolingDown(cooldowns, state.pageModel, now)) {
+              const available = firstAvailableCandidateIndex(
+                state.chain,
+                cooldowns,
+                { pageModel: state.pageModel, now },
+              );
+              if (available >= 0) {
+                state.index = available;
+                state.retries = 0;
+                state.candidateFailures = 0;
+                const target = state.chain[available];
+                console.log(
+                  `[${name}] cooldown skip: ${seed.provider}/${seed.model} is cooling down, starting from ${String(target?.provider)}/${String(target?.model)}`,
+                );
+              }
+            }
+          }
+          if (state.index < 0) return seed;
+        }
         const expected = state.chain[state.index];
         if (!expected) return seed;
         // 若 seed 已是 state 期望值(其他 listener 也已切),不动
@@ -192,7 +276,8 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
     return () => dispose();
   }, 'dsh-llm-fallback: agent/request listener');
 
-  // 6. 监听 agent/request-error:失败时按 fallbackWhen 决定是否切下一候选
+  // 6. 监听 agent/request-error:失败时按每候选重试预算决定
+  //    "再试当前候选"(透传官方 / 代执行)还是"切下一候选"
   ctx.effect(() => {
     const dispose = ctx.on(
       'agent/request-error',
@@ -216,23 +301,104 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
 
         // 观察上游决策(dsh-llm-retry 若装载,其 retry 决策从这里返回)
         const upstream = await next();
-        // 不可重试的失败码 → 透传上游决策(可能 throw)
+        // 不可重试的失败码 → 透传上游决策(可能 throw);不计入候选失败数
         if (!isFailureRetryable(failure, cfg.retryableCodes)) {
           return upstream;
         }
-        // afterRetry(默认):上游仍在预算内决定同 provider 重试 → 透传,
-        // 不在本次失败上切换;等上游耗尽(无决策)才由本插件接手。
-        if (cfg.fallbackWhen === 'afterRetry' && isRetryAction(upstream)) {
-          return upstream;
-        }
         const state = getState(key);
-        // 链耗尽 → 透传上游决策(上游的 retry 也到此为止)
-        const advance = nextCandidate(state, cfg.maxRetries);
+        // 每候选重试预算 = 用户 retriesBeforeSwitch(>0 时为准;=0 自动跟随
+        // provider retryPolicy)。防御:payload.retryPolicy 形态异常时按缺失处理,
+        // 见 resolveCandidateRetryPlan。
+        const plan = resolveCandidateRetryPlan(
+          cfg.retriesBeforeSwitch,
+          payload.retryPolicy as Parameters<
+            typeof resolveCandidateRetryPlan
+          >[1],
+        );
+        state.candidateFailures += 1;
+        // 首次失败不算重试:已重试次数 = 失败数 - 1
+        const candidateRetries = state.candidateFailures - 1;
+
+        // 预算内:让当前候选继续重试,不切换
+        if (candidateRetries < plan.maxRetries) {
+          // 官方 retry 有决策 → 透传(它执行同候选重试,预算由它记)
+          if (isRetryAction(upstream)) return upstream;
+          // 官方无决策(未装官方插件/provider 无策略,或自定义 N 已超出官方
+          // 预算)且计划允许 → 本插件代执行同候选重试:不推进 index,loop
+          // 重发时 agent/request 不改写候选
+          if (plan.selfRetry) {
+            // 官方 format v4 读侧按 (turn, step, provider, policyKey) 校验
+            // retry 序列从 1 起严格连续、retryId 链内恒定——故轨迹链按
+            // provider 维护(见 state.ts ourRetryChain),代执行与该 provider
+            // 上的切换事件共用同一链、序号接续。
+            const chain = ourRetryChain(state, payload.provider, randomUUID);
+            const target =
+              state.index >= 0 ? state.chain[state.index] : state.pageModel;
+            const delay = backoffDelayMs(
+              candidateRetries,
+              cfg.baseDelayMs,
+              cfg.maxDelayMs,
+            );
+            // 轨迹透明化:同候选代重试也写官方 `llm/retry` 形态事件——retry 记
+            // provider 链内序号(1 起连续),maxRetries 记有效预算,target 是
+            // 被重试的候选自身(轨迹里"同一模型第 N 次重试"直接可见)。
+            // durable 先于退避等待。
+            recordFallbackScheduled(payload.agent?.session, {
+              retryId: chain.retryId,
+              turn,
+              step,
+              provider: payload.provider,
+              mode: 'normal',
+              policyKey: FALLBACK_RETRY_POLICY_KEY,
+              retry: chain.attempt,
+              maxRetries: Math.min(plan.maxRetries, Number.MAX_SAFE_INTEGER),
+              delayMs: delay,
+              failure,
+              targetProvider: target?.provider,
+              targetModel: target?.model,
+            });
+            if (delay > 0) {
+              const completed = await sleep(delay, signal);
+              // 退避等待被取消(turn 中止)→ 透传上游,不写 started、不重试
+              if (!completed) return upstream;
+            }
+            if (signal.aborted) return upstream;
+            recordFallbackStarted(payload.agent?.session, {
+              retryId: chain.retryId,
+              turn,
+              step,
+              retry: chain.attempt,
+            });
+            return { kind: 'retry' };
+          }
+          // always 策略(无预算可比)但官方无决策:没有可依赖的同候选执行器,
+          // 落到切换分支(等价旧 afterRetry 在未装官方插件时的语义)。
+        }
+
+        // 预算耗尽 → 切下一候选(即使上游仍想重试也按配置覆盖)。
+        // 冷却感知扫描:跳过仍在冷却窗内的候选(它们在此前 step 失败过且
+        // 未到期),剩余候选全部在冷却中时降级回原顺序(见 nextCandidate)。
+        const advance = nextCandidate(
+          state,
+          cfg.maxRetries,
+          cfg.cooldownEnabled ? cooldowns : undefined,
+          Date.now(),
+        );
+        // 冷却标记:预算耗尽即认定失败方暂时不可用(无论随后是切换成功、
+        // 退避被 abort 还是链耗尽)——白名单失败是既成事实,冷却窗内不再
+        // 从它开始,窗口期满自动恢复优先级重新验证。失败方未知(极端时序
+        // pageModel 缺失)或冷却禁用时不标记。
+        if (cfg.cooldownEnabled) {
+          const failed = currentEffectiveCandidate(state);
+          if (failed) {
+            markCooldown(cooldowns, failed, Date.now(), cfg.cooldownMs);
+          }
+        }
         if (!advance) {
           state.exhausted = true;
           return upstream;
         }
-        // backoff(按当前 attempt 数)+ 切下一候选
+        // backoff(按当前切换次数)+ 切下一候选
         const delay = backoffDelayMs(
           state.retries,
           cfg.baseDelayMs,
@@ -244,16 +410,20 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
         // 追加字段,读侧透传安全)让"切到哪个模型继续跑"在轨迹里直接可见,
         // 与宿主 loop 自动记录的 request/header+context 数据层互补。
         // durable 先于退避等待,与官方 dsh-llm-retry 的写入时机一致。
-        if (state.retryId === undefined) state.retryId = randomUUID();
+        // retry 记 provider 链内序号(format v4 校验:同一 (turn, step,
+        // provider, policyKey) 内从 1 起严格连续)——与该 provider 上的代执行
+        // 事件共链接续,不再是"step 内切换序号"(旧编号跨 provider 多跳时
+        // 会写出非法序列,导致会话日志恢复被拒)。
+        const chain = ourRetryChain(state, payload.provider, randomUUID);
         const target = state.chain[advance.index];
         recordFallbackScheduled(payload.agent?.session, {
-          retryId: state.retryId,
+          retryId: chain.retryId,
           turn,
           step,
           provider: payload.provider,
           mode: 'normal',
           policyKey: FALLBACK_RETRY_POLICY_KEY,
-          retry: advance.retries,
+          retry: chain.attempt,
           maxRetries: effectiveMaxSwitches(state.chain.length, cfg.maxRetries),
           delayMs: delay,
           failure,
@@ -268,13 +438,15 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
         if (signal.aborted) return upstream;
         // 轨迹:退避完成,切换即将生效(loop 将用新候选重发请求)
         recordFallbackStarted(payload.agent?.session, {
-          retryId: state.retryId,
+          retryId: chain.retryId,
           turn,
           step,
-          retry: advance.retries,
+          retry: chain.attempt,
         });
         state.index = advance.index;
         state.retries = advance.retries;
+        // 新候选获得完整预算:候选失败计数清零
+        state.candidateFailures = 0;
         // 返回 retry → loop 会重进 prepareRequest → 我们在 agent/request 里改写 provider/model
         return { kind: 'retry' };
       },
@@ -310,9 +482,22 @@ export { resolveConfig, Config } from './config.ts';
 export type { FallbackState, StepKey } from './state.ts';
 export {
   backoffDelayMs,
+  cooldownKey,
+  currentEffectiveCandidate,
+  firstAvailableCandidateIndex,
+  isCoolingDown,
   isFailureRetryable,
+  markCooldown,
   nextCandidate,
+  ourRetryChain,
+  purgeExpiredCooldowns,
+  resolveCandidateRetryPlan,
   stateFor,
+} from './state.ts';
+export type {
+  CandidateRetryPlan,
+  ProviderRetryChain,
+  RetryPolicyLike,
 } from './state.ts';
 export type {
   LlmRetryEventData,

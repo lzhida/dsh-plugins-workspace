@@ -42,11 +42,29 @@ describe('dsh-llm-fallback README', () => {
     }
   });
 
-  it('默认配置值与代码一致(maxRetries 0=链长 / 退避 500-30000ms / afterRetry)', () => {
-    expect(readme).toContain("'afterRetry'");
+  it('默认配置值与代码一致(retriesBeforeSwitch 0=跟随预算 / maxRetries 0=链长 / 退避 500-30000ms)', () => {
+    expect(readme).toContain('`retriesBeforeSwitch`');
+    expect(readme).toContain('`maxRetries`');
     expect(readme).toContain('`0`（= 链长');
     expect(readme).toContain('`500`');
     expect(readme).toContain('`30000`');
+  });
+
+  it('配置表不再包含旧回退时机配置 fallbackWhen(0.5.0 起改为每候选重试次数)', () => {
+    // 0.5.0 移除 fallbackWhen(afterRetry/immediately 两档),配置面统一为
+    // 数值化 retriesBeforeSwitch。配置表/配置值层面若再出现旧字段即为文档
+    // 漂移(升级说明语境的"旧字段被忽略"提示除外)。
+    expect(readme).not.toContain('| `fallbackWhen`');
+    expect(readme).not.toContain("'afterRetry'");
+  });
+
+  it('每候选重试次数小节锚定核心语义(自动档跟随官方预算 / 自定义档以插件为准 / 代执行)', () => {
+    expect(readme).toContain('## 每候选重试次数（retriesBeforeSwitch）');
+    // 自定义档以插件配置为准,不再被 provider 预算封顶
+    expect(readme).toContain('以插件为准');
+    expect(readme).not.toContain('min(N, retryPolicy.maxRetries)');
+    expect(readme).toContain('代执行');
+    expect(readme).toContain('dsh-llm-retry');
   });
 
   it('轨迹可见性小节锚定官方事件通道(llm/retry / retry-started / policyKey)', () => {
@@ -56,6 +74,10 @@ describe('dsh-llm-fallback README', () => {
     expect(readme).toContain('llm-fallback'); // policyKey
     // 文档必须说明这是官方已知事件类型,而非插件自创(ignorable 兼容机制)
     expect(readme).toContain('官方已知事件类型');
+    // 轨迹编号契约:按 provider 建链、retry 链内连续(format v4 读侧校验),
+    // 旧的"每 step 一个 retryId + 切换序号"编号会写出非法序列导致会话无法恢复
+    expect(readme).toContain('按**失败 provider** 建链');
+    expect(readme).toContain('从 1 起严格连续');
   });
 
   it('已按开源 README 结构收敛:不再包含版本历史 / 适配版本内部表', () => {

@@ -40,7 +40,11 @@ export const FALLBACK_RETRY_POLICY_KEY = 'llm-fallback';
 
 /** 官方 `llm/retry` 事件的 payload(normal 形态,对齐 dsh-llm-retry 类型)。 */
 export interface LlmRetryEventData {
-  /** 一次回退链的稳定标识:同 step 链上多次切换复用同一 id。 */
+  /**
+   * 轨迹链标识:同一 (turn, step, provider) 的本插件事件(代执行重试 + 切换)
+   * 复用同一 id——format v4 读侧要求同 (turn, step, provider, policyKey) 链内
+   * retryId 恒定,且 (retryId, retry) 对全局唯一,故按 provider 建链。
+   */
   retryId: string;
   turn: number;
   step: number;
@@ -48,9 +52,13 @@ export interface LlmRetryEventData {
   provider: string;
   mode: 'normal';
   policyKey: string;
-  /** 本次切换的序号(1 起)。 */
+  /**
+   * provider 链内尝试序号(1 起严格连续)——format v4 读侧校验:同一
+   * (turn, step, provider, policyKey) 内必须 1,2,3… 连续。代执行重试与
+   * 切换事件共链接续,不再是"step 内切换序号"。
+   */
   retry: number;
-  /** 本 step 最多可切换次数(min(链长-1, maxRetries))。 */
+  /** 自重试事件=有效预算;切换事件=min(链长, maxRetries) 展示上限。 */
   maxRetries: number;
   /** 实际退避毫秒数。 */
   delayMs: number;
@@ -87,7 +95,8 @@ export interface TrajectoryAgent {
 
 /**
  * 本 step 的有效最大切换次数:链长上限与用户 maxRetries 上限取小者。
- * 链长 1(无备选)时为 0;防御非法负值。
+ * 0.5.0 起配置链是纯回退候选队列:会话指定模型失败后可依次切完整个队列,
+ * 故上限为 min(maxRetries, 链长)(单项链也有 1 次切换机会);防御非法负值。
  */
 export function effectiveMaxSwitches(
   chainLength: number,
@@ -95,7 +104,7 @@ export function effectiveMaxSwitches(
 ): number {
   if (!Number.isFinite(chainLength) || chainLength < 1) return 0;
   if (!Number.isFinite(maxRetries) || maxRetries < 0) return 0;
-  return Math.min(Math.floor(maxRetries), Math.floor(chainLength) - 1);
+  return Math.min(Math.floor(maxRetries), Math.floor(chainLength));
 }
 
 /**

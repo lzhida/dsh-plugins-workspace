@@ -39,31 +39,10 @@ Wraps the [Obsidian built-in CLI](https://obsidian.md/help/cli) (`obsidian <comm
 - **Error normalisation**: every failure becomes a `[CODE] message` text (`OBSIDIAN_CLI_NOT_FOUND` / `OBSIDIAN_INVALID_INPUT` / `OBSIDIAN_SPAWN_FAILED` / `OBSIDIAN_TIMEOUT` / `OBSIDIAN_NONZERO_EXIT` / `OBSIDIAN_PROTOCOL_ERROR`) so the model can match by code; the Obsidian-specific `Error:` stdout prefix is detected and surfaced as `OBSIDIAN_PROTOCOL_ERROR`;
 - **stdio truncation**: stdout 20k / stderr 4k; overflows gain a `[truncated to N chars]` marker;
 - **No bundled binary**: the `obsidian` command is provided by the Obsidian app and must be on `PATH`; the first call surfaces `OBSIDIAN_CLI_NOT_FOUND` with a clear recovery hint when missing;
-- **system-prompt section**: `tool:obsidian` at order 2960 (sits next to `tool:taskboard` 2950, ordered after by name); injects the 35+ command table and the safety contract at load time;
+- **system-prompt section**: `tool:obsidian` at order 2960; injects the 35+ command table and the safety contract at load time;
 - **Zero configuration**: install and use; defaults to the active vault; multi-vault callers pass `vault=<name>` per call.
 
 **Prerequisite**: Obsidian installed locally (≥ 1.4, which ships the CLI). If `obsidian --version` fails, fix the PATH first.
-
-### @lzhida/dsh-taskboard
-
-Task board plugin (source synced from [cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard#readme) **0.8.7**, Apache-2.0): the full-featured board for **human creates card → agent claims and executes → human accepts**. Ten `taskboard_*` agent tools plus code-level protocol gates, ifVersion optimistic concurrency, DoD checklist (≤30 items), structured execution report, a live SSE kanban UI, host-side cron / one-shot scheduling, per-task model & preset pinning, optional git worktree isolation (task branches + one-click merge + multi-repo mirror), external-session autosync, task templates and image attachments. Ledger persisted to `~/.dsh/dsh-taskboard.json` via atomic write.
-
-**Highlights**
-
-- **10 `taskboard_*` tools**: `taskboard_list` / `get` / `comments` / `create` / `update` / `move` / `comment_add` / `delete` / `checklist` / `execution_report` — available in any session, scoped by the `workspaceId` project boundary;
-- **Code-level protocol gates**: four failure paths are rejected by code, not by prompt convention — `DONE_FORBIDDEN` / `TASK_HELD` / `CROSS_PROJECT_FORBIDDEN` / `CHECKLIST_NOTE_REQUIRED`;
-- **ifVersion optimistic concurrency**: `update` / `move` / `checklist` / `trash` all require matching `ifVersion`; stale versions raise `VERSION_CONFLICT`;
-- **DoD checklist**: acceptance criteria set at creation (≤30 items, each ≤200 chars); agent check must include an evidence note (command / file / test); the user can check independently on the detail panel; even with every item checked, the task is not auto-`done`;
-- **Structured execution report**: `taskboard_execution_report` submits (summary / changed files / checks / artifacts / risk), rendered column-wise in the in-review detail panel;
-- **Five-column flow + soft delete**: `backlog` / `todo` / `in_progress` / `in_review` / `done` plus `canceled` / `archived` / `trashed`; the state-machine whitelist forbids illegal transitions;
-- **system-prompt section**: `tool:taskboard` at order 2950 spells out the claim discipline, the done-gate, and retry rules — the model learns the contract before its first call;
-- **Live kanban UI**: SSE refresh + dual-track official slot mounting (a first-class sidebar panel on dsh ≥ 0.1.7, automatic DOM-injection fallback on older shells), a diff viewer, persisted filters/sorting, and JSON import/export;
-- **Execution orchestration**: manual / one-shot / cron recurring (host-side scheduling — runs even with the browser closed); scheduled tasks can reuse an existing session; recurring tasks can return to `todo` or spawn the next round on completion;
-- **Git worktree isolation**: each execution gets its own worktree + task branch with one-click merge at review; whole-area mirroring for multi-repo workspaces; automatic fallback to in-place execution for non-git projects;
-- **Task templates & image attachments**: built-in templates, content-addressed attachment storage;
-- **Zero configuration**: install and use; no token / API key needed; data stays local.
-
-**Differences from upstream** (monorepo-conformance refactoring, functionality unchanged): package name `@lzhida/dsh-taskboard`, TS-source entry (`main: src/index.ts`, `link:` install only), the prebuilt client bundle committed at `client/index.js`, constructor parameter properties rewritten as explicit fields (Node type-stripping compatibility), and all `@deepseek-ai/*` kept as type-only devDependencies. See the [package README](./packages/dsh-taskboard/README.md).
 
 ## Installation
 
@@ -75,10 +54,9 @@ Prerequisites: Node ≥ 22, pnpm 11, dsh installed.
 # Run from the repository root (PowerShell). Git Bash: swap the path expression for "$(pwd -W)"; POSIX: "$(pwd)"
 pnpm dsh plugin --profile default add "link:$($PWD.Path -replace '\\','/')/packages/dsh-guided-goal"   # the guided goal command (independent, no executor dependency)
 pnpm dsh plugin --profile default add "link:$($PWD.Path -replace '\\','/')/packages/dsh-obsidian"      # Obsidian operations (independent — 9 obsidian_* tools + a generic entry, wraps Obsidian's built-in CLI)
-pnpm dsh plugin --profile default add "link:$($PWD.Path -replace '\\','/')/packages/dsh-taskboard"     # the task board (independent — 10 taskboard_* tools + code-level protocol gates)
 ```
 
-After installation, confirm the target plugins are enabled under dsh Web UI Settings → Plugins: use `/guided-goal` from the chat input for guided-goal; the task-board agent uses the `taskboard_*` tool set collaboratively from any session.
+After installation, confirm the target plugins are enabled under dsh Web UI Settings → Plugins: use `/guided-goal` from the chat input for guided-goal; the obsidian agent uses the `obsidian_*` tool set collaboratively from any session.
 
 ## Development
 

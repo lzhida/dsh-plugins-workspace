@@ -7,9 +7,13 @@
  *   provider 的模型目录,按 provider 分组),勾选即加入回退队列;列表限高
  *   滚动(280px 内部滚动,不再撑长设置页外层滚动条),并提供搜索框
  *   (provider 分组名 / 模型 id / 显示名,大小写不敏感子串过滤,无命中给空态);
- * - **排序**:已选队列可上移/下移/移除,顺序即回退优先级(首项=主模型);
- * - **最大回退次数**(maxRetries,0 = 链长);
- * - 回退时机(fallbackWhen)。
+ * - **排序**:已选队列可上移/下移/移除,顺序即回退优先级(纯回退候选,
+ *   不含会话指定的模型——它失败后从队列第 1 项开始切);
+ * - **最大回退次数**(maxRetries,0 = 链长;只限切换候选次数);
+ * - **每候选重试次数**(retriesBeforeSwitch,0 = 跟随官方重试预算;
+ *   0.5.0 起取代旧 fallbackWhen 回退时机下拉);
+ * - **失败候选冷却跳过**(cooldownEnabled 开关 + cooldownMs 窗口时长,
+ *   毫秒):失败模型短窗内不再作为后续请求起点,窗口期满自动恢复优先级。
  *
  * 为什么需要客户端包:宿主 `@deepseek-ai/dsh-settings` 的 `describe()` 只投影
  * `.volatile()` 字段给"自带页面的客户端",而 dsh 0.2.0-rc.2 **没有**通用的
@@ -60,12 +64,11 @@ globalThis.__ModuleLoader__.load({
       zh: {
         title: '模型回退',
         intro:
-          '主模型失败时按队列顺序自动切换到下一个模型(对话不中断)。队列首项 = 主模型。',
+          '会话指定的模型失败时,自动按队列顺序切换到下一个模型(对话不中断)。本队列是纯回退候选,不含会话指定的模型。',
         enabled: '启用',
         enabledDesc: '关闭后不再拦截模型失败',
         queue: '回退队列(可上移/下移调整顺序)',
         queueEmpty: '尚未选择模型;请在下方勾选可用模型。',
-        primary: '主模型',
         fallbackN: '回退',
         moveUp: '上移',
         moveDown: '下移',
@@ -79,11 +82,18 @@ globalThis.__ModuleLoader__.load({
         catalogSearch: '搜索模型(provider / 模型 id / 名称)…',
         searchAria: '搜索模型',
         catalogNoMatch: '没有匹配的模型',
-        maxRetries: '最大回退次数',
-        maxRetriesHint: '0 = 按队列长度(跑完全部候选才报错)',
-        fallbackWhen: '回退时机',
-        afterRetry: '官方重试耗尽后(afterRetry)',
-        immediately: '一次失败立即切换(immediately)',
+        maxRetries: '最多切换候选数',
+        maxRetriesHint:
+          '0 = 按队列长度(切完所有候选才报错);只限切换次数,同候选重试由下方次数控制',
+        retriesBeforeSwitch: '每候选重试次数',
+        retriesHint:
+          '0 = 跟随官方重试预算(provider 重试策略,默认 5);N = 以插件配置为准,当前候选重试 N 次后才切换(超出官方预算的部分由插件代执行)',
+        cooldownEnabled: '失败候选冷却跳过',
+        cooldownEnabledHint:
+          '候选重试预算耗尽切换后,短时间内后续请求不再从它开始,直接用下一个可用候选;窗口期满自动恢复优先级并重新验证',
+        cooldownMs: '冷却窗口时长(毫秒)',
+        cooldownMsHint:
+          '失败模型保持跳过的时长,窗口过后重新验证并恢复其优先级;0 = 立即过期(等效禁用)',
         save: '保存',
         discard: '放弃修改',
         saving: '保存中…',
@@ -98,12 +108,11 @@ globalThis.__ModuleLoader__.load({
       en: {
         title: 'Model fallback',
         intro:
-          'When the primary model fails, the next model in the queue is tried automatically (the conversation is not interrupted). The first entry is the primary model.',
+          'When the model selected in the session fails, the next model in the queue is tried automatically (the conversation is not interrupted). This queue holds pure fallback candidates — the session-selected primary is not configured here.',
         enabled: 'Enabled',
         enabledDesc: 'When off, model failures are no longer intercepted',
         queue: 'Fallback queue (move up/down to reorder)',
         queueEmpty: 'No model selected yet — check models below.',
-        primary: 'Primary',
         fallbackN: 'Fallback',
         moveUp: 'Move up',
         moveDown: 'Move down',
@@ -117,11 +126,18 @@ globalThis.__ModuleLoader__.load({
         catalogSearch: 'Search models (provider / id / name)…',
         searchAria: 'Search models',
         catalogNoMatch: 'No matching models',
-        maxRetries: 'Max fallbacks',
-        maxRetriesHint: '0 = queue length (try every candidate before failing)',
-        fallbackWhen: 'Fallback timing',
-        afterRetry: 'After official retry budget (afterRetry)',
-        immediately: 'Switch on first failure (immediately)',
+        maxRetries: 'Max switches',
+        maxRetriesHint:
+          '0 = queue length (try every candidate before failing); bounds candidate switches, not same-candidate retries',
+        retriesBeforeSwitch: 'Retries before switch',
+        retriesHint:
+          '0 = follow the official retry budget (provider retry policy, default 5); N = authoritative — retry the current candidate N times before switching (the plugin performs retries beyond the official budget itself)',
+        cooldownEnabled: 'Cooldown skip for failed models',
+        cooldownEnabledHint:
+          'After a candidate exhausts its retry budget and the chain switches away, subsequent requests skip it for a short window and start from the next healthy candidate; it is re-verified when the window expires',
+        cooldownMs: 'Cooldown window (ms)',
+        cooldownMsHint:
+          'How long a failed model stays skipped before being re-verified and restored to its priority position; 0 = expire immediately (disabled)',
         save: 'Save',
         discard: 'Discard',
         saving: 'Saving…',
@@ -301,7 +317,6 @@ globalThis.__ModuleLoader__.load({
       },
       noMatch: { fontSize: 12, color: T.textSecondary, padding: '8px 2px' },
       notice: { fontSize: 13, color: T.textSecondary },
-      option: { background: T.surface, color: T.text },
     };
 
     function apply(ctx) {
@@ -353,9 +368,15 @@ globalThis.__ModuleLoader__.load({
         var draftRetriesState = useState(null);
         var draftRetries = draftRetriesState[0];
         var setDraftRetries = draftRetriesState[1];
-        var draftWhenState = useState(null);
-        var draftWhen = draftWhenState[0];
-        var setDraftWhen = draftWhenState[1];
+        var draftRetriesBeforeState = useState(null);
+        var draftRetriesBefore = draftRetriesBeforeState[0];
+        var setDraftRetriesBefore = draftRetriesBeforeState[1];
+        var draftCooldownEnabledState = useState(null);
+        var draftCooldownEnabled = draftCooldownEnabledState[0];
+        var setDraftCooldownEnabled = draftCooldownEnabledState[1];
+        var draftCooldownMsState = useState(null);
+        var draftCooldownMs = draftCooldownMsState[0];
+        var setDraftCooldownMs = draftCooldownMsState[1];
         var draftRevState = useState(null);
         var draftRev = draftRevState[0];
         var setDraftRev = draftRevState[1];
@@ -463,20 +484,42 @@ globalThis.__ModuleLoader__.load({
         var queue = draftQueue === null ? currentQueue : draftQueue;
         var retries =
           draftRetries === null ? Number(value.maxRetries || 0) : draftRetries;
-        var when =
-          draftWhen === null ? value.fallbackWhen || 'afterRetry' : draftWhen;
+        var retriesBefore =
+          draftRetriesBefore === null
+            ? Number(value.retriesBeforeSwitch || 0)
+            : draftRetriesBefore;
+        // 冷却跳过:enabled 默认 true;窗口默认 300000ms(schema 默认值,
+        // 存储里未写过该键时显示默认而非 0,避免误导为"已禁用")。
+        var DEFAULT_COOLDOWN_MS = 300000;
+        var savedCooldownMs =
+          value.cooldownMs === undefined || value.cooldownMs === null
+            ? DEFAULT_COOLDOWN_MS
+            : Number(value.cooldownMs);
+        if (!Number.isFinite(savedCooldownMs) || savedCooldownMs < 0) {
+          savedCooldownMs = DEFAULT_COOLDOWN_MS;
+        }
+        var cooldownEnabled =
+          draftCooldownEnabled === null
+            ? value.cooldownEnabled !== false
+            : draftCooldownEnabled;
+        var cooldownMs =
+          draftCooldownMs === null ? savedCooldownMs : draftCooldownMs;
         var dirty =
           enabled !== (value.enabled !== false) ||
           !sameQueue(queue, currentQueue) ||
           retries !== Number(value.maxRetries || 0) ||
-          when !== (value.fallbackWhen || 'afterRetry');
+          retriesBefore !== Number(value.retriesBeforeSwitch || 0) ||
+          cooldownEnabled !== (value.cooldownEnabled !== false) ||
+          cooldownMs !== savedCooldownMs;
 
         function beginDraft() {
           if (draftQueue === null) {
             setDraftEnabled(value.enabled !== false);
             setDraftQueue(currentQueue.map(function (r) { return { provider: r.provider, model: r.model }; }));
             setDraftRetries(Number(value.maxRetries || 0));
-            setDraftWhen(value.fallbackWhen || 'afterRetry');
+            setDraftRetriesBefore(Number(value.retriesBeforeSwitch || 0));
+            setDraftCooldownEnabled(value.cooldownEnabled !== false);
+            setDraftCooldownMs(savedCooldownMs);
             setDraftRev(snap.revision);
           }
         }
@@ -518,7 +561,9 @@ globalThis.__ModuleLoader__.load({
           setDraftEnabled(null);
           setDraftQueue(null);
           setDraftRetries(null);
-          setDraftWhen(null);
+          setDraftRetriesBefore(null);
+          setDraftCooldownEnabled(null);
+          setDraftCooldownMs(null);
           setDraftRev(null);
           setError(null);
         }
@@ -544,7 +589,17 @@ globalThis.__ModuleLoader__.load({
                   }),
                 },
                 { op: 'set', path: ['maxRetries'], value: retries },
-                { op: 'set', path: ['fallbackWhen'], value: when },
+                {
+                  op: 'set',
+                  path: ['retriesBeforeSwitch'],
+                  value: retriesBefore,
+                },
+                {
+                  op: 'set',
+                  path: ['cooldownEnabled'],
+                  value: cooldownEnabled,
+                },
+                { op: 'set', path: ['cooldownMs'], value: cooldownMs },
               ],
               revision,
             )
@@ -600,7 +655,7 @@ globalThis.__ModuleLoader__.load({
           return h(
             'div',
             { key: routeKey(r), style: S.queueRow },
-            h('span', { style: S.badge }, index === 0 ? t('primary') : t('fallbackN') + ' ' + index),
+            h('span', { style: S.badge }, t('fallbackN') + ' ' + (index + 1)),
             h(
               'span',
               { style: { flex: 1, fontSize: 13 } },
@@ -724,7 +779,37 @@ globalThis.__ModuleLoader__.load({
           ),
         );
 
-        // 最大回退次数
+        // 每候选重试次数(0 = 跟随官方重试预算)
+        children.push(
+          h(
+            'div',
+            { key: 'retriesBeforeSwitch', style: S.row },
+            h(
+              'div',
+              null,
+              h('div', { style: S.label }, t('retriesBeforeSwitch')),
+              h('div', { style: S.hint }, t('retriesHint')),
+            ),
+            h('input', {
+              type: 'number',
+              min: 0,
+              style: S.input,
+              value: String(retriesBefore),
+              disabled: !writable || busy,
+              onChange: function (event) {
+                beginDraft();
+                var parsed = Number(event.target.value);
+                setDraftRetriesBefore(
+                  Number.isFinite(parsed) && parsed >= 0
+                    ? Math.floor(parsed)
+                    : 0,
+                );
+              },
+            }),
+          ),
+        );
+
+        // 最大切换候选数
         children.push(
           h(
             'div',
@@ -750,26 +835,50 @@ globalThis.__ModuleLoader__.load({
           ),
         );
 
-        // 回退时机
+        // 失败候选冷却跳过(开关 + 窗口时长)
+        children.push(
+          h(
+            'label',
+            { key: 'cooldownEnabled', style: S.check },
+            h('input', {
+              type: 'checkbox',
+              checked: cooldownEnabled,
+              disabled: !writable || busy,
+              onChange: function () {
+                beginDraft();
+                setDraftCooldownEnabled(!cooldownEnabled);
+              },
+            }),
+            h('span', { style: S.label }, t('cooldownEnabled')),
+            h('span', { style: S.hint }, t('cooldownEnabledHint')),
+          ),
+        );
         children.push(
           h(
             'div',
-            { key: 'when', style: S.row },
-            h('div', { style: S.label }, t('fallbackWhen')),
+            { key: 'cooldownMs', style: S.row },
             h(
-              'select',
-              {
-                style: S.input,
-                value: when,
-                disabled: !writable || busy,
-                onChange: function (event) {
-                  beginDraft();
-                  setDraftWhen(event.target.value);
-                },
-              },
-              h('option', { value: 'afterRetry', style: S.option }, t('afterRetry')),
-              h('option', { value: 'immediately', style: S.option }, t('immediately')),
+              'div',
+              null,
+              h('div', { style: S.label }, t('cooldownMs')),
+              h('div', { style: S.hint }, t('cooldownMsHint')),
             ),
+            h('input', {
+              type: 'number',
+              min: 0,
+              style: S.input,
+              value: String(cooldownMs),
+              disabled: !writable || busy,
+              onChange: function (event) {
+                beginDraft();
+                var parsed = Number(event.target.value);
+                setDraftCooldownMs(
+                  Number.isFinite(parsed) && parsed >= 0
+                    ? Math.floor(parsed)
+                    : 0,
+                );
+              },
+            }),
           ),
         );
 
