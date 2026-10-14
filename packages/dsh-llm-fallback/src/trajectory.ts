@@ -40,7 +40,11 @@ export const FALLBACK_RETRY_POLICY_KEY = 'llm-fallback';
 
 /** 官方 `llm/retry` 事件的 payload(normal 形态,对齐 dsh-llm-retry 类型)。 */
 export interface LlmRetryEventData {
-  /** 一次回退链的稳定标识:同 step 链上多次切换复用同一 id。 */
+  /**
+   * 轨迹链标识:同一 (turn, step, provider) 的本插件事件(代执行重试 + 切换)
+   * 复用同一 id——format v4 读侧要求同 (turn, step, provider, policyKey) 链内
+   * retryId 恒定,且 (retryId, retry) 对全局唯一,故按 provider 建链。
+   */
   retryId: string;
   turn: number;
   step: number;
@@ -48,9 +52,13 @@ export interface LlmRetryEventData {
   provider: string;
   mode: 'normal';
   policyKey: string;
-  /** 本次切换的序号(1 起)。 */
+  /**
+   * provider 链内尝试序号(1 起严格连续)——format v4 读侧校验:同一
+   * (turn, step, provider, policyKey) 内必须 1,2,3… 连续。代执行重试与
+   * 切换事件共链接续,不再是"step 内切换序号"。
+   */
   retry: number;
-  /** 本 step 最多可切换次数(min(链长, maxRetries))。 */
+  /** 自重试事件=有效预算;切换事件=min(链长, maxRetries) 展示上限。 */
   maxRetries: number;
   /** 实际退避毫秒数。 */
   delayMs: number;

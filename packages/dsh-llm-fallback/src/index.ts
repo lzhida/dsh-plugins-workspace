@@ -11,9 +11,14 @@
  *      (index<0)则把会话页面指定的模型捕获为 pageModel(事实主模型,配置
  *      链不含主模型),已切换(index>=0)则改写 proposedConfig 为链上候选;
  *   5. 监听 `agent/request-error` waterfall:每次 LLM 请求失败,若在 retryable
- *      失败码白名单内且还有下一候选 → 写轨迹(llm/retry)+ backoff + 切下一候选
- *      + 写轨迹(llm/retry-started)+ 返回 retry;
- *      否则透传上游决策(让同 provider 内重试或抛错);
+ *      失败码白名单内,按"每候选重试预算"(retriesBeforeSwitch × provider
+ *      retryPolicy 合成,见 state.ts resolveCandidateRetryPlan)三分支决策:
+ *      - 预算内 + 官方 dsh-llm-retry 有 retry 决策 → 透传(官方执行同候选重试);
+ *      - 预算内 + 官方无决策(未装官方插件/无策略)→ 本插件代执行同候选重试
+ *        (写轨迹(llm/retry)+ backoff + 返回 retry,不推进 index);
+ *      - 预算耗尽 → 写轨迹(llm/retry)+ backoff + 切下一候选
+ *        + 写轨迹(llm/retry-started)+ 返回 retry(即使上游仍想重试也覆盖);
+ *      否则(白名单外/链耗尽)透传上游决策(让同 provider 内重试或抛错)。
  *   6. effect 卸载时一次性清理(disposeSection + disposeListeners)。
  *
  * 主模型语义(0.5.0 起):会话页面指定的模型就是事实主模型;配置的
@@ -21,13 +26,19 @@
  * → chain[0]),推进时自动跳过与 pageModel 相同的候选(用户把会话模型
  * 也配进队列的防呆,同时让旧"首项=主模型"配置零迁移)。
  *
- * 回退时机(fallbackWhen):
- * - `afterRetry`(默认):先 `await next()` 观察上游决策。官方 `dsh-llm-retry`
- *   执行器(normal mode 预算内,或 always mode)返回 `{kind:'retry'}` 时透传之,
- *   **不在本次失败上切换候选**;只有上游无决策(预算耗尽 / 委派下游 / 未装载
- *   官方插件)时才切换——这正是官方行为"重试之后直接中断"的位置,本插件在那里
- *   接手,把中断变成跨 provider 的继续运行。
- * - `immediately`:白名单命中即切,不等上游(兼容 dsh-llm-fallback 0.1.x 语义)。
+ * 每候选重试次数(retriesBeforeSwitch,0.5.0 起取代旧 fallbackWhen 两档):
+ * - `0`(默认)= 自动跟随 provider retryPolicy 的 `maxRetries`(宿主默认 5):
+ *   预算内透传官方 retry,耗尽后切换——正是旧 afterRetry 语义;policy 缺失时
+ *   预算 0,首失败即切;
+ * - `N > 0` = **以插件配置为准**:当前候选重试 N 次后才切,不被 provider
+ *   预算封顶。N 大于官方预算时,预算内由官方 `dsh-llm-retry` 执行重试(透传
+ *   其决策),超出的部分由本插件代执行(自带退避 + 轨迹事件),直到 N 用满。
+ *   (provider retryPolicy 本身可编辑:llm-deepseek 顶层 volatile 字段 /
+ *   llm-pi-ai 的 providers.<id>.retryPolicy,保存即经 loader/volatile-update
+ *   热更新;自动档因此天然跟随用户在 provider 侧的调整。)
+ * - `always` 模式策略:自动档整体透传官方无限重试;自定义档按 N 覆盖切换。
+ * - 同一 step 内逐候选计数:candidateFailures 随切换清零,每个候选(含会话
+ *   指定模型)都获得完整预算。
  *
  * 扩展点选择:
  * - `llm/stream` waterfall(stream-level)只允许在适配器流上叠加监听,不允许
@@ -66,6 +77,8 @@ import {
   backoffDelayMs,
   isFailureRetryable,
   nextCandidate,
+  ourRetryChain,
+  resolveCandidateRetryPlan,
   stateFor,
 } from './state.ts';
 import {
@@ -210,7 +223,8 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
     return () => dispose();
   }, 'dsh-llm-fallback: agent/request listener');
 
-  // 6. 监听 agent/request-error:失败时按 fallbackWhen 决定是否切下一候选
+  // 6. 监听 agent/request-error:失败时按每候选重试预算决定
+  //    "再试当前候选"(透传官方 / 代执行)还是"切下一候选"
   ctx.effect(() => {
     const dispose = ctx.on(
       'agent/request-error',
@@ -234,23 +248,87 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
 
         // 观察上游决策(dsh-llm-retry 若装载,其 retry 决策从这里返回)
         const upstream = await next();
-        // 不可重试的失败码 → 透传上游决策(可能 throw)
+        // 不可重试的失败码 → 透传上游决策(可能 throw);不计入候选失败数
         if (!isFailureRetryable(failure, cfg.retryableCodes)) {
           return upstream;
         }
-        // afterRetry(默认):上游仍在预算内决定同 provider 重试 → 透传,
-        // 不在本次失败上切换;等上游耗尽(无决策)才由本插件接手。
-        if (cfg.fallbackWhen === 'afterRetry' && isRetryAction(upstream)) {
-          return upstream;
-        }
         const state = getState(key);
-        // 链耗尽 → 透传上游决策(上游的 retry 也到此为止)
+        // 每候选重试预算 = 用户 retriesBeforeSwitch(>0 时为准;=0 自动跟随
+        // provider retryPolicy)。防御:payload.retryPolicy 形态异常时按缺失处理,
+        // 见 resolveCandidateRetryPlan。
+        const plan = resolveCandidateRetryPlan(
+          cfg.retriesBeforeSwitch,
+          payload.retryPolicy as Parameters<
+            typeof resolveCandidateRetryPlan
+          >[1],
+        );
+        state.candidateFailures += 1;
+        // 首次失败不算重试:已重试次数 = 失败数 - 1
+        const candidateRetries = state.candidateFailures - 1;
+
+        // 预算内:让当前候选继续重试,不切换
+        if (candidateRetries < plan.maxRetries) {
+          // 官方 retry 有决策 → 透传(它执行同候选重试,预算由它记)
+          if (isRetryAction(upstream)) return upstream;
+          // 官方无决策(未装官方插件/provider 无策略,或自定义 N 已超出官方
+          // 预算)且计划允许 → 本插件代执行同候选重试:不推进 index,loop
+          // 重发时 agent/request 不改写候选
+          if (plan.selfRetry) {
+            // 官方 format v4 读侧按 (turn, step, provider, policyKey) 校验
+            // retry 序列从 1 起严格连续、retryId 链内恒定——故轨迹链按
+            // provider 维护(见 state.ts ourRetryChain),代执行与该 provider
+            // 上的切换事件共用同一链、序号接续。
+            const chain = ourRetryChain(state, payload.provider, randomUUID);
+            const target =
+              state.index >= 0 ? state.chain[state.index] : state.pageModel;
+            const delay = backoffDelayMs(
+              candidateRetries,
+              cfg.baseDelayMs,
+              cfg.maxDelayMs,
+            );
+            // 轨迹透明化:同候选代重试也写官方 `llm/retry` 形态事件——retry 记
+            // provider 链内序号(1 起连续),maxRetries 记有效预算,target 是
+            // 被重试的候选自身(轨迹里"同一模型第 N 次重试"直接可见)。
+            // durable 先于退避等待。
+            recordFallbackScheduled(payload.agent?.session, {
+              retryId: chain.retryId,
+              turn,
+              step,
+              provider: payload.provider,
+              mode: 'normal',
+              policyKey: FALLBACK_RETRY_POLICY_KEY,
+              retry: chain.attempt,
+              maxRetries: Math.min(plan.maxRetries, Number.MAX_SAFE_INTEGER),
+              delayMs: delay,
+              failure,
+              targetProvider: target?.provider,
+              targetModel: target?.model,
+            });
+            if (delay > 0) {
+              const completed = await sleep(delay, signal);
+              // 退避等待被取消(turn 中止)→ 透传上游,不写 started、不重试
+              if (!completed) return upstream;
+            }
+            if (signal.aborted) return upstream;
+            recordFallbackStarted(payload.agent?.session, {
+              retryId: chain.retryId,
+              turn,
+              step,
+              retry: chain.attempt,
+            });
+            return { kind: 'retry' };
+          }
+          // always 策略(无预算可比)但官方无决策:没有可依赖的同候选执行器,
+          // 落到切换分支(等价旧 afterRetry 在未装官方插件时的语义)。
+        }
+
+        // 预算耗尽 → 切下一候选(即使上游仍想重试也按配置覆盖)
         const advance = nextCandidate(state, cfg.maxRetries);
         if (!advance) {
           state.exhausted = true;
           return upstream;
         }
-        // backoff(按当前 attempt 数)+ 切下一候选
+        // backoff(按当前切换次数)+ 切下一候选
         const delay = backoffDelayMs(
           state.retries,
           cfg.baseDelayMs,
@@ -262,16 +340,20 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
         // 追加字段,读侧透传安全)让"切到哪个模型继续跑"在轨迹里直接可见,
         // 与宿主 loop 自动记录的 request/header+context 数据层互补。
         // durable 先于退避等待,与官方 dsh-llm-retry 的写入时机一致。
-        if (state.retryId === undefined) state.retryId = randomUUID();
+        // retry 记 provider 链内序号(format v4 校验:同一 (turn, step,
+        // provider, policyKey) 内从 1 起严格连续)——与该 provider 上的代执行
+        // 事件共链接续,不再是"step 内切换序号"(旧编号跨 provider 多跳时
+        // 会写出非法序列,导致会话日志恢复被拒)。
+        const chain = ourRetryChain(state, payload.provider, randomUUID);
         const target = state.chain[advance.index];
         recordFallbackScheduled(payload.agent?.session, {
-          retryId: state.retryId,
+          retryId: chain.retryId,
           turn,
           step,
           provider: payload.provider,
           mode: 'normal',
           policyKey: FALLBACK_RETRY_POLICY_KEY,
-          retry: advance.retries,
+          retry: chain.attempt,
           maxRetries: effectiveMaxSwitches(state.chain.length, cfg.maxRetries),
           delayMs: delay,
           failure,
@@ -286,13 +368,15 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
         if (signal.aborted) return upstream;
         // 轨迹:退避完成,切换即将生效(loop 将用新候选重发请求)
         recordFallbackStarted(payload.agent?.session, {
-          retryId: state.retryId,
+          retryId: chain.retryId,
           turn,
           step,
-          retry: advance.retries,
+          retry: chain.attempt,
         });
         state.index = advance.index;
         state.retries = advance.retries;
+        // 新候选获得完整预算:候选失败计数清零
+        state.candidateFailures = 0;
         // 返回 retry → loop 会重进 prepareRequest → 我们在 agent/request 里改写 provider/model
         return { kind: 'retry' };
       },
@@ -330,7 +414,14 @@ export {
   backoffDelayMs,
   isFailureRetryable,
   nextCandidate,
+  ourRetryChain,
+  resolveCandidateRetryPlan,
   stateFor,
+} from './state.ts';
+export type {
+  CandidateRetryPlan,
+  ProviderRetryChain,
+  RetryPolicyLike,
 } from './state.ts';
 export type {
   LlmRetryEventData,
