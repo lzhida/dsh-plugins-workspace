@@ -2,7 +2,8 @@
  * dsh-llm-fallback system-prompt section。
  *
  * 给 agent 看的协议说明:
- * - 何时会触发回退(可识别失败码 RATE_LIMIT / QUOTA / CONTEXT_WINDOW_EXCEEDED 等);
+ * - 何时会触发回退(可识别失败码 RATE_LIMIT / QUOTA / CONTEXT_WINDOW_EXCEEDED /
+ *   UNSUPPORTED_REASONING_EFFORT 等);
  * - 回退是 loop-level 的:同 step 内失败 → 按配置时机切下一候选;agent 不会察觉;
  * - 默认在官方 dsh-llm-retry 重试耗尽后才切换(afterRetry);
  * - 如果所有候选都失败,用户会看到错误信息(代码级契约,与 prompt 无关);
@@ -24,7 +25,7 @@ const MODEL_FALLBACK_PROTOCOL_TEXT = `A host-level plugin (\`dsh-llm-fallback\`)
 
 ## What this means for you
 
-- **You do not need to handle transient model failures.** RATE_LIMIT, QUOTA, ACCOUNT_QUOTA, CONTEXT_WINDOW_EXCEEDED, EMPTY_RESPONSE, SERVER, TIMEOUT, TRANSPORT (connection failures such as "Connection error.") — all of these are recovered within the same turn by switching to the next configured model. Treat them as if they did not happen.
+- **You do not need to handle transient model failures.** RATE_LIMIT, QUOTA, ACCOUNT_QUOTA, CONTEXT_WINDOW_EXCEEDED, EMPTY_RESPONSE, SERVER, TIMEOUT, TRANSPORT (connection failures such as "Connection error."), UNSUPPORTED_REASONING_EFFORT (the current model cannot run the requested reasoning effort) — all of these are recovered within the same turn by switching to the next configured model. Treat them as if they did not happen.
 - **You do not pick the model.** The model selected in the session UI is the primary; the user additionally configures a pure fallback candidate list at the host level. You do not call any tool to switch models, and there is no tool exposed by this plugin.
 - **By default the chain engages only after the host's built-in retry executor (\`dsh-llm-retry\`) has exhausted its budget on the current provider.** Same-provider retries happen first; cross-provider fallback is the second line of defense.
 - **If every model in the chain fails**, the error reaches the loop normally. Report it to the user as you would any other terminal error — the chain has been exhausted; there is nothing more to retry.

@@ -153,12 +153,17 @@ function setDescription<F extends { description(text: string): F }>(
  *   `dsh-llm/lib/types/retry-policy.js` 的默认重试码含 `SERVER` 与 `TRANSPORT`;
  * - 相比宿主官方默认(EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT)
  *   额外保留 QUOTA / ACCOUNT_QUOTA / CONTEXT_WINDOW_EXCEEDED——切模型是配额类
- *   失败的本职出路,属本插件的有意超集。
+ *   失败的本职出路,属本插件的有意超集;
+ * - `UNSUPPORTED_REASONING_EFFORT`——deepseek Messages 与 pi-ai 适配器在请求
+ *   构建期(网络 I/O 之前)校验 reasoning effort,模型不支持时抛出(消息形如
+ *   `provider "X" model "Y" does not support reasoning effort "Z"`)。该失败
+ *   对同一模型是确定性的——同 provider 重试必然复现(宿主官方重试码表因此
+ *   不含它),切到可能支持该 effort 的下一候选是唯一有意义的恢复路径。
  *
  * 历史:0.3.1 及之前默认含 omp 系码 `NETWORK` / `SERVER_ERROR`,宿主两套适配器
  * 均不产出这两个码,导致 "Connection error."(`TRANSPORT`)与 5xx(`SERVER`)
  * 不触发切换;0.3.2 起修正,并对存量用户配置做旧码→新码的并集别名
- * (见 RETRYABLE_CODE_ALIASES)。
+ * (见 RETRYABLE_CODE_ALIASES)。0.4.1 补入 `UNSUPPORTED_REASONING_EFFORT`。
  */
 export const DEFAULT_RETRYABLE_CODES: readonly string[] = [
   'RATE_LIMIT',
@@ -169,6 +174,7 @@ export const DEFAULT_RETRYABLE_CODES: readonly string[] = [
   'SERVER',
   'TIMEOUT',
   'TRANSPORT',
+  'UNSUPPORTED_REASONING_EFFORT',
 ] as const;
 
 /**
