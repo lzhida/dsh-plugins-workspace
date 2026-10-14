@@ -440,6 +440,9 @@ describe('resolveConfig', () => {
     expect(c.retryableCodes.has('QUOTA')).toBe(true);
     expect(c.retryableCodes.has('ACCOUNT_QUOTA')).toBe(true);
     expect(c.retryableCodes.has('CONTEXT_WINDOW_EXCEEDED')).toBe(true);
+    // 本插件有意超集:reasoning effort 不被当前模型支持(请求构建期确定性
+    // 失败,同 provider 重试必复现)——切下一候选是唯一有意义的恢复路径
+    expect(c.retryableCodes.has('UNSUPPORTED_REASONING_EFFORT')).toBe(true);
     // 旧错码不应再出现在默认白名单
     expect(c.retryableCodes.has('NETWORK')).toBe(false);
     expect(c.retryableCodes.has('SERVER_ERROR')).toBe(false);
@@ -635,6 +638,20 @@ describe('isFailureRetryable', () => {
       ),
     ).toBe(false);
   });
+
+  it('默认码表命中 UNSUPPORTED_REASONING_EFFORT(真实失败消息)', () => {
+    // 回归:宿主 pi-ai / deepseek 适配器对不支持 reasoning effort 的模型
+    // 抛此码(请求构建期、网络 I/O 之前),须按默认白名单切换候选。
+    expect(
+      isFailureRetryable(
+        stubFailure(
+          'UNSUPPORTED_REASONING_EFFORT',
+          'provider "e2e-broken" model "broken-model" does not support reasoning effort "high"',
+        ),
+        new Set(DEFAULT_RETRYABLE_CODES),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('stateFor', () => {
@@ -679,6 +696,7 @@ describe('modelFallbackSection', () => {
     expect(s.text).toContain('RATE_LIMIT');
     expect(s.text).toContain('QUOTA');
     expect(s.text).toContain('CONTEXT_WINDOW_EXCEEDED');
+    expect(s.text).toContain('UNSUPPORTED_REASONING_EFFORT');
   });
 
   it('文本说明默认回退时机为官方 retry 耗尽后(afterRetry)', () => {
@@ -990,6 +1008,52 @@ describe('agent/request-error listener', () => {
       reqListener,
       { turn: 2, step: 3, signal: new AbortController().signal },
       async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    expect(nextSeed).toEqual({ provider: 'openai', model: 'gpt-4o' });
+  });
+
+  it('afterRetry + UNSUPPORTED_REASONING_EFFORT(模型不支持 reasoning effort)→ 切下一候选', async () => {
+    // 核心回归:宿主两套适配器(deepseek Messages / pi-ai)在请求构建期(
+    // pre-network)校验 reasoning effort,模型不支持时抛
+    // LlmError(`provider "X" model "Y" does not support reasoning effort "Z"`,
+    // 'UNSUPPORTED_REASONING_EFFORT')。该失败对同一模型是确定性的——同 provider
+    // 重试毫无意义(宿主官方重试码表也不含它),唯一出路就是切下一个候选;
+    // 默认白名单若不含此码,error payload 原样上抛,对话以此终态中断。
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['openai/gpt-4o', 'anthropic/claude-sonnet-4'],
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const reqListener = findListener(listeners, 'agent/request');
+    const errListener = findListener(listeners, 'agent/request-error');
+    await callListener(
+      reqListener,
+      { turn: 3, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'e2e-broken', model: 'broken-model' }),
+    );
+    // upstream=undefined:官方 dsh-llm-retry 不重试此码,决策权落到本插件
+    const result = await callListener(
+      errListener,
+      {
+        turn: 3,
+        step: 1,
+        provider: 'e2e-broken',
+        failure: stubFailure(
+          'UNSUPPORTED_REASONING_EFFORT',
+          'provider "e2e-broken" model "broken-model" does not support reasoning effort "high"',
+        ),
+        signal: new AbortController().signal,
+      },
+      async () => undefined,
+    );
+    expect(result).toEqual({ kind: 'retry' });
+
+    // 状态已推进:下一请求的 seed 被改写为队列第 1 项
+    const nextSeed = await callListener(
+      reqListener,
+      { turn: 3, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'e2e-broken', model: 'broken-model' }),
     );
     expect(nextSeed).toEqual({ provider: 'openai', model: 'gpt-4o' });
   });

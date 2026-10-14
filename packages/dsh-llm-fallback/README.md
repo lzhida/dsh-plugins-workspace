@@ -108,19 +108,20 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 
 ## 失败码白名单
 
-插件只按 `LlmFailure.code` 路由（宿主约定：route on code, never parse message）。默认白名单是宿主官方重试码（`EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT`）的超集——多出配额与上下文类，切模型正是这些失败的本职出路。
+插件只按 `LlmFailure.code` 路由（宿主约定：route on code, never parse message）。默认白名单是宿主官方重试码（`EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT`）的超集——多出配额与上下文类，切模型正是这些失败的本职出路；另含 `UNSUPPORTED_REASONING_EFFORT`（模型不支持所请求的 reasoning effort），该失败对同一模型是确定性的、同 provider 重试必复现，切下一候选是唯一有意义的恢复路径。
 
-| 失败场景                                         | 宿主 `code`                                       | 默认可切换              |
-| ------------------------------------------------ | ------------------------------------------------- | ----------------------- |
-| 连接类传输失败（"Connection error." / 网络中断） | `TRANSPORT`                                       | ✅                      |
-| 5xx 服务器错误                                   | `SERVER`                                          | ✅                      |
-| 429 限流                                         | `RATE_LIMIT`                                      | ✅                      |
-| 配额 / 余额耗尽                                  | `QUOTA`、`ACCOUNT_QUOTA`                          | ✅                      |
-| 上下文超限                                       | `CONTEXT_WINDOW_EXCEEDED`                         | ✅                      |
-| 空响应（正常结束但零内容块）                     | `EMPTY_RESPONSE`                                  | ✅                      |
-| 流空闲 / 请求超时                                | `TIMEOUT`                                         | ✅                      |
-| 鉴权 / 请求构造 / 凭据错误                       | `AUTH` / `INVALID_REQUEST` / `INVALID_CREDENTIAL` | ❌ 换模型无解，立即上抛 |
-| 其他 HTTP 状态                                   | `HTTP_<status>`（如 `HTTP_502`）                  | ❌ 可自行加入白名单     |
+| 失败场景                                         | 宿主 `code`                                       | 默认可切换                            |
+| ------------------------------------------------ | ------------------------------------------------- | ------------------------------------- |
+| 连接类传输失败（"Connection error." / 网络中断） | `TRANSPORT`                                       | ✅                                    |
+| 5xx 服务器错误                                   | `SERVER`                                          | ✅                                    |
+| 429 限流                                         | `RATE_LIMIT`                                      | ✅                                    |
+| 配额 / 余额耗尽                                  | `QUOTA`、`ACCOUNT_QUOTA`                          | ✅                                    |
+| 上下文超限                                       | `CONTEXT_WINDOW_EXCEEDED`                         | ✅                                    |
+| 空响应（正常结束但零内容块）                     | `EMPTY_RESPONSE`                                  | ✅                                    |
+| 流空闲 / 请求超时                                | `TIMEOUT`                                         | ✅                                    |
+| 模型不支持所请求的 reasoning effort              | `UNSUPPORTED_REASONING_EFFORT`                    | ✅ 同模型重试必复现，切可能支持的候选 |
+| 鉴权 / 请求构造 / 凭据错误                       | `AUTH` / `INVALID_REQUEST` / `INVALID_CREDENTIAL` | ❌ 换模型无解，立即上抛               |
+| 其他 HTTP 状态                                   | `HTTP_<status>`（如 `HTTP_502`）                  | ❌ 可自行加入白名单                   |
 
 存量配置兼容：0.3.1 及之前版本的默认白名单误含宿主不产出的 `NETWORK` / `SERVER_ERROR`，导致连接类与 5xx 失败不触发切换；升级到 0.3.2+ 后，运行时会对你已保存的自定义白名单按并集自动补入 `TRANSPORT` / `SERVER`（旧码保留无害），无需手动改配置。
 
