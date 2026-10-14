@@ -40,6 +40,7 @@ import {
   volatileField,
   desc,
   DEFAULT_RETRYABLE_CODES,
+  DEFAULT_COOLDOWN_MS,
   Config,
 } from './config.ts';
 import { Config as ConfigFromIndex } from './index.ts';
@@ -300,6 +301,29 @@ describe('resolveConfig', () => {
     expect(resolveRetriesBeforeSwitch(null)).toBe(0);
     expect(resolveRetriesBeforeSwitch(5)).toBe(5);
     expect(resolveRetriesBeforeSwitch(-2)).toBe(0);
+  });
+
+  it('冷却配置:cooldownEnabled 默认 true;cooldownMs 默认 300000,负数/非有限回落默认,0 合法(立即过期)', () => {
+    const d = resolveConfig({});
+    expect(d.cooldownEnabled).toBe(true);
+    expect(d.cooldownMs).toBe(DEFAULT_COOLDOWN_MS);
+    expect(d.cooldownMs).toBe(300_000);
+    expect(resolveConfig({ cooldownEnabled: false }).cooldownEnabled).toBe(
+      false,
+    );
+    expect(resolveConfig({ cooldownMs: 1000 }).cooldownMs).toBe(1000);
+    expect(resolveConfig({ cooldownMs: 0 }).cooldownMs).toBe(0);
+    expect(resolveConfig({ cooldownMs: 2.9 }).cooldownMs).toBe(2); // 向下取整
+    expect(resolveConfig({ cooldownMs: '1500' }).cooldownMs).toBe(1500);
+    expect(resolveConfig({ cooldownMs: -5 }).cooldownMs).toBe(
+      DEFAULT_COOLDOWN_MS,
+    );
+    expect(resolveConfig({ cooldownMs: Number.NaN }).cooldownMs).toBe(
+      DEFAULT_COOLDOWN_MS,
+    );
+    expect(
+      resolveConfig({ cooldownMs: Number.POSITIVE_INFINITY }).cooldownMs,
+    ).toBe(DEFAULT_COOLDOWN_MS);
   });
 
   // ── 0.2.x → 0.3.0 schema 迁移(向后兼容) ─────────────────────────
@@ -2076,6 +2100,8 @@ describe('Config schema', () => {
       'maxRetries',
       'baseDelayMs',
       'maxDelayMs',
+      'cooldownEnabled',
+      'cooldownMs',
       'retryableCodes',
       'perTurn',
     ];
@@ -2164,6 +2190,8 @@ describe('Config schema 国际化(desc i18n 映射)', () => {
       'maxRetries',
       'baseDelayMs',
       'maxDelayMs',
+      'cooldownEnabled',
+      'cooldownMs',
       'retryableCodes',
       'perTurn',
     ];
@@ -2222,6 +2250,20 @@ describe('Config schema 国际化(desc i18n 映射)', () => {
     >;
     // 两个数字字段语义互斥可辨:maxRetries 限切换,retriesBeforeSwitch 限同候选重试
     expect(maxSwitches.zh).toContain('retriesBeforeSwitch');
+    const cooldownOn = fieldOf('cooldownEnabled')?.meta?.description as Record<
+      string,
+      string
+    >;
+    // 冷却跳过:失败模型短窗内不再作为起点,窗口期满恢复优先级
+    expect(cooldownOn.zh).toContain('冷却');
+    expect(cooldownOn.zh).toContain('优先级');
+    expect(cooldownOn.en.toLowerCase()).toContain('cooldown');
+    const cooldownMs = fieldOf('cooldownMs')?.meta?.description as Record<
+      string,
+      string
+    >;
+    expect(cooldownMs.zh).toContain('窗口');
+    expect(cooldownMs.en.toLowerCase()).toContain('window');
   });
 
   it('description 映射可 JSON 序列化(settings.describe 的 form.toJSON 下发路径不炸)', () => {

@@ -181,6 +181,10 @@ export function resolveCandidateRetryPlan(
  * 队列第 1 项,再失败切第 2 项,依此推进。扫描时跳过与 `state.pageModel`
  * (会话指定模型)相同的候选——它刚失败过,切回去没有意义(用户把会话
  * 模型也配进队列时的防呆)。
+ * 传入 `cooldowns` 时(失败冷却启用)再跳过仍在冷却窗内的候选——它们
+ * 在此前的 step 里失败过且尚未到期,先试排在后面的可用候选效率更高;
+ * 若冷却吞掉了全部剩余候选,降级回原语义(忽略冷却只跳 pageModel):
+ * 冷却只是效率优化,绝不能让链失去全部候选而提前报错。
  * - 扫完无候选(或已达最后一项)→ 返回 null(链耗尽);
  * - 若 state.retries >= maxRetries → 返回 null(达到上限);
  * - 否则返回新 { index, retries }。
@@ -188,23 +192,137 @@ export function resolveCandidateRetryPlan(
 export function nextCandidate(
   state: FallbackState,
   maxRetries: number,
+  cooldowns?: ReadonlyMap<string, number>,
+  now: number = 0,
 ): { index: number; retries: number } | null {
   if (state.exhausted) return null;
   if (state.retries >= maxRetries) return null;
+  const page = state.pageModel;
+  const sameAsPage = (candidate: Candidate): boolean =>
+    page !== undefined &&
+    candidate.provider === page.provider &&
+    candidate.model === page.model;
+  let skippedCooling = false;
   for (let i = state.index + 1; i < state.chain.length; i++) {
     const candidate = state.chain[i];
     if (!candidate) return null;
-    const page = state.pageModel;
+    if (sameAsPage(candidate)) continue;
+    if (cooldowns !== undefined && isCoolingDown(cooldowns, candidate, now)) {
+      skippedCooling = true;
+      continue;
+    }
+    return { index: i, retries: state.retries + 1 };
+  }
+  if (skippedCooling) {
+    // 降级扫描:剩余候选全部在冷却中 → 忽略冷却,回到只跳 pageModel 的
+    // 原语义。被跳过的候选仍值得再试(总比报错中断对话好),到期与否由
+    // 下次 step 起点的冷却判定重新评估。
+    for (let i = state.index + 1; i < state.chain.length; i++) {
+      const candidate = state.chain[i];
+      if (!candidate) return null;
+      if (sameAsPage(candidate)) continue;
+      return { index: i, retries: state.retries + 1 };
+    }
+  }
+  return null;
+}
+
+// ── 失败冷却(failure cooldown)───────────────────────────────────────
+//
+// 跨 step 的"优先级 × 效率"平衡:白名单失败耗尽每候选重试预算并切换后,
+// 失败方(provider/model)进入短冷却窗——窗口内后续 step 不再从它开始
+// (agent/request 直接改写为链上第一个可用候选),避免每个 step 都重复
+// 支付同一故障模型的失败成本;窗口期满自动恢复其优先级,下次请求按正常
+// 顺序重新验证是否恢复(恢复则继续优先使用,未恢复则再次冷却)。
+// 表结构:key = cooldownKey(candidate),value = 冷却到期毫秒时间戳。
+// 存于插件进程内存(apply 闭包),跨 step/对话共享;宿主重启即清零。
+
+/**
+ * 冷却表的键:`provider/model`。
+ * parseChainEntry 以首个 `/` 分割,provider 段不含 `/` 而 model 段可含
+ * (如 openrouter 风格 id),故该拼接无歧义。
+ */
+export function cooldownKey(candidate: Candidate): string {
+  return `${candidate.provider}/${candidate.model}`;
+}
+
+/** 该候选是否仍在冷却期内(到期时间戳 > now)。过期条目由写入侧惰性清理。 */
+export function isCoolingDown(
+  table: ReadonlyMap<string, number>,
+  candidate: Candidate,
+  now: number,
+): boolean {
+  const until = table.get(cooldownKey(candidate));
+  return until !== undefined && until > now;
+}
+
+/** 清理已过期的冷却条目(惰性,防表随时间无限增长)。 */
+export function purgeExpiredCooldowns(
+  table: Map<string, number>,
+  now: number,
+): void {
+  for (const [key, until] of table) {
+    if (until <= now) table.delete(key);
+  }
+}
+
+/**
+ * 把刚失败并切换离开的候选记入冷却表:`now + cooldownMs` 前不再作为
+ * step 起点或推进目标;到期后自动恢复优先级(下次请求重新验证)。
+ * cooldownMs <= 0 视为立即过期(等效不冷却);写入前顺带惰性清理过期条目。
+ */
+export function markCooldown(
+  table: Map<string, number>,
+  candidate: Candidate,
+  now: number,
+  cooldownMs: number,
+): void {
+  purgeExpiredCooldowns(table, now);
+  table.set(cooldownKey(candidate), now + Math.max(0, cooldownMs));
+}
+
+/**
+ * 当前生效的候选(即失败方):index >= 0 → 链上候选;index = -1 →
+ * 会话指定模型。agent/request-error 的 payload 只带 provider 不带 model,
+ * 失败方只能由回退状态推出(发请求前 agent/request 已把 provider/model
+ * 改写为该候选)。极端时序下 pageModel 缺失 → undefined(调用方跳过
+ * 冷却标记,优雅降级)。
+ */
+export function currentEffectiveCandidate(
+  state: FallbackState,
+): Candidate | undefined {
+  if (state.index >= 0) return state.chain[state.index];
+  return state.pageModel;
+}
+
+/**
+ * step 起点的冷却跳过:会话指定模型(种子)在冷却中时,从链首找出第一个
+ * 「不在冷却中且 ≠ pageModel」的候选下标,让该 step 直接从它开始——
+ * 即"从下一个回退模型或此前验证可用的候选开始"。
+ * - 无可用候选(链空 / 剩余全部在冷却中)→ 返回 -1:调用方保持 index=-1,
+ *   按原语义从会话模型开始——冷却绝不吞掉全部候选;
+ * - 既有防呆保持:与 pageModel 相同的队列项照旧跳过。
+ */
+export function firstAvailableCandidateIndex(
+  chain: ReadonlyArray<Candidate>,
+  table: ReadonlyMap<string, number>,
+  options: { pageModel?: Candidate; now: number },
+): number {
+  const page = options.pageModel;
+  for (let i = 0; i < chain.length; i++) {
+    const candidate = chain[i];
+    if (!candidate) break;
     if (
       page &&
       candidate.provider === page.provider &&
       candidate.model === page.model
     ) {
-      continue; // 跳过会话指定模型:它已失败,不作为回退目标
+      continue;
     }
-    return { index: i, retries: state.retries + 1 };
+    if (isCoolingDown(table, candidate, options.now)) continue;
+    return i;
   }
-  return null;
+  return -1;
 }
 
 /**
