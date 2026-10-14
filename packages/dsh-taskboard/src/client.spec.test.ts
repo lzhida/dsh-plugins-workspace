@@ -2732,7 +2732,7 @@ describe('client half', () => {
         task: mkTask() as never,
       }),
     );
-    await new Promise((r) => setTimeout(r, 30));
+    await waitFor(() => presetSelectOf(host) !== undefined);
     expect(presetSelectOf(host).value).toBe('');
     // Saving keeps following the deployment default (presetId: null).
     Array.from(
@@ -2758,7 +2758,10 @@ describe('client half', () => {
         task: mkTask('liangshen') as never,
       }),
     );
-    await new Promise((r) => setTimeout(r, 30));
+    // Poll for the preset select's async mount instead of a fixed sleep —
+    // a bare 30ms guess raced under pre-push load and read `.value` of an
+    // unmounted select.
+    await waitFor(() => presetSelectOf(host) !== undefined);
     expect(presetSelectOf(host).value).toBe('liangshen');
     root.unmount();
     host.remove();
