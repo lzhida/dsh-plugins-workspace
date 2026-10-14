@@ -9,8 +9,9 @@
  *   (provider 分组名 / 模型 id / 显示名,大小写不敏感子串过滤,无命中给空态);
  * - **排序**:已选队列可上移/下移/移除,顺序即回退优先级(纯回退候选,
  *   不含会话指定的模型——它失败后从队列第 1 项开始切);
- * - **最大回退次数**(maxRetries,0 = 链长);
- * - 回退时机(fallbackWhen)。
+ * - **最大回退次数**(maxRetries,0 = 链长;只限切换候选次数);
+ * - **每候选重试次数**(retriesBeforeSwitch,0 = 跟随官方重试预算;
+ *   0.5.0 起取代旧 fallbackWhen 回退时机下拉)。
  *
  * 为什么需要客户端包:宿主 `@deepseek-ai/dsh-settings` 的 `describe()` 只投影
  * `.volatile()` 字段给"自带页面的客户端",而 dsh 0.2.0-rc.2 **没有**通用的
@@ -79,11 +80,12 @@ globalThis.__ModuleLoader__.load({
         catalogSearch: '搜索模型(provider / 模型 id / 名称)…',
         searchAria: '搜索模型',
         catalogNoMatch: '没有匹配的模型',
-        maxRetries: '最大回退次数',
-        maxRetriesHint: '0 = 按队列长度(切完所有候选才报错)',
-        fallbackWhen: '回退时机',
-        afterRetry: '官方重试耗尽后(afterRetry)',
-        immediately: '一次失败立即切换(immediately)',
+        maxRetries: '最多切换候选数',
+        maxRetriesHint:
+          '0 = 按队列长度(切完所有候选才报错);只限切换次数,同候选重试由下方次数控制',
+        retriesBeforeSwitch: '每候选重试次数',
+        retriesHint:
+          '0 = 跟随官方重试预算(provider 重试策略,默认 5);N = 以插件配置为准,当前候选重试 N 次后才切换(超出官方预算的部分由插件代执行)',
         save: '保存',
         discard: '放弃修改',
         saving: '保存中…',
@@ -116,11 +118,12 @@ globalThis.__ModuleLoader__.load({
         catalogSearch: 'Search models (provider / id / name)…',
         searchAria: 'Search models',
         catalogNoMatch: 'No matching models',
-        maxRetries: 'Max fallbacks',
-        maxRetriesHint: '0 = queue length (try every candidate before failing)',
-        fallbackWhen: 'Fallback timing',
-        afterRetry: 'After official retry budget (afterRetry)',
-        immediately: 'Switch on first failure (immediately)',
+        maxRetries: 'Max switches',
+        maxRetriesHint:
+          '0 = queue length (try every candidate before failing); bounds candidate switches, not same-candidate retries',
+        retriesBeforeSwitch: 'Retries before switch',
+        retriesHint:
+          '0 = follow the official retry budget (provider retry policy, default 5); N = authoritative — retry the current candidate N times before switching (the plugin performs retries beyond the official budget itself)',
         save: 'Save',
         discard: 'Discard',
         saving: 'Saving…',
@@ -300,7 +303,6 @@ globalThis.__ModuleLoader__.load({
       },
       noMatch: { fontSize: 12, color: T.textSecondary, padding: '8px 2px' },
       notice: { fontSize: 13, color: T.textSecondary },
-      option: { background: T.surface, color: T.text },
     };
 
     function apply(ctx) {
@@ -352,9 +354,9 @@ globalThis.__ModuleLoader__.load({
         var draftRetriesState = useState(null);
         var draftRetries = draftRetriesState[0];
         var setDraftRetries = draftRetriesState[1];
-        var draftWhenState = useState(null);
-        var draftWhen = draftWhenState[0];
-        var setDraftWhen = draftWhenState[1];
+        var draftRetriesBeforeState = useState(null);
+        var draftRetriesBefore = draftRetriesBeforeState[0];
+        var setDraftRetriesBefore = draftRetriesBeforeState[1];
         var draftRevState = useState(null);
         var draftRev = draftRevState[0];
         var setDraftRev = draftRevState[1];
@@ -462,20 +464,22 @@ globalThis.__ModuleLoader__.load({
         var queue = draftQueue === null ? currentQueue : draftQueue;
         var retries =
           draftRetries === null ? Number(value.maxRetries || 0) : draftRetries;
-        var when =
-          draftWhen === null ? value.fallbackWhen || 'afterRetry' : draftWhen;
+        var retriesBefore =
+          draftRetriesBefore === null
+            ? Number(value.retriesBeforeSwitch || 0)
+            : draftRetriesBefore;
         var dirty =
           enabled !== (value.enabled !== false) ||
           !sameQueue(queue, currentQueue) ||
           retries !== Number(value.maxRetries || 0) ||
-          when !== (value.fallbackWhen || 'afterRetry');
+          retriesBefore !== Number(value.retriesBeforeSwitch || 0);
 
         function beginDraft() {
           if (draftQueue === null) {
             setDraftEnabled(value.enabled !== false);
             setDraftQueue(currentQueue.map(function (r) { return { provider: r.provider, model: r.model }; }));
             setDraftRetries(Number(value.maxRetries || 0));
-            setDraftWhen(value.fallbackWhen || 'afterRetry');
+            setDraftRetriesBefore(Number(value.retriesBeforeSwitch || 0));
             setDraftRev(snap.revision);
           }
         }
@@ -517,7 +521,7 @@ globalThis.__ModuleLoader__.load({
           setDraftEnabled(null);
           setDraftQueue(null);
           setDraftRetries(null);
-          setDraftWhen(null);
+          setDraftRetriesBefore(null);
           setDraftRev(null);
           setError(null);
         }
@@ -543,7 +547,11 @@ globalThis.__ModuleLoader__.load({
                   }),
                 },
                 { op: 'set', path: ['maxRetries'], value: retries },
-                { op: 'set', path: ['fallbackWhen'], value: when },
+                {
+                  op: 'set',
+                  path: ['retriesBeforeSwitch'],
+                  value: retriesBefore,
+                },
               ],
               revision,
             )
@@ -723,7 +731,37 @@ globalThis.__ModuleLoader__.load({
           ),
         );
 
-        // 最大回退次数
+        // 每候选重试次数(0 = 跟随官方重试预算)
+        children.push(
+          h(
+            'div',
+            { key: 'retriesBeforeSwitch', style: S.row },
+            h(
+              'div',
+              null,
+              h('div', { style: S.label }, t('retriesBeforeSwitch')),
+              h('div', { style: S.hint }, t('retriesHint')),
+            ),
+            h('input', {
+              type: 'number',
+              min: 0,
+              style: S.input,
+              value: String(retriesBefore),
+              disabled: !writable || busy,
+              onChange: function (event) {
+                beginDraft();
+                var parsed = Number(event.target.value);
+                setDraftRetriesBefore(
+                  Number.isFinite(parsed) && parsed >= 0
+                    ? Math.floor(parsed)
+                    : 0,
+                );
+              },
+            }),
+          ),
+        );
+
+        // 最大切换候选数
         children.push(
           h(
             'div',
@@ -746,29 +784,6 @@ globalThis.__ModuleLoader__.load({
                 setDraftRetries(Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0);
               },
             }),
-          ),
-        );
-
-        // 回退时机
-        children.push(
-          h(
-            'div',
-            { key: 'when', style: S.row },
-            h('div', { style: S.label }, t('fallbackWhen')),
-            h(
-              'select',
-              {
-                style: S.input,
-                value: when,
-                disabled: !writable || busy,
-                onChange: function (event) {
-                  beginDraft();
-                  setDraftWhen(event.target.value);
-                },
-              },
-              h('option', { value: 'afterRetry', style: S.option }, t('afterRetry')),
-              h('option', { value: 'immediately', style: S.option }, t('immediately')),
-            ),
           ),
         );
 
