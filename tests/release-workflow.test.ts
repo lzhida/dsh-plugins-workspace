@@ -8,7 +8,8 @@
  * - 发布前门禁链顺序与本地一致:format:check → lint → typecheck → test;
  * - 认证走 npm OIDC trusted publishing(免 token,不引用 NPM_TOKEN);
  * - 安装使用 --frozen-lockfile,第三方 action 按主版本号固定;
- * - 最小权限(contents: read + id-token: write)与 registry 接线;
+ * - 最小权限(contents: write + id-token: write)与 registry 接线;
+ * - npm 暂存成功后创建 GitHub Release(github-release 子命令,GH_TOKEN 接线);
  * - Node 24 保证内置 npm ≥ 11.5.1(OIDC 发布最低要求)。
  *
  * YAML 语法校验复用根 devDependencies 中的 prettier(内含 YAML parser),
@@ -131,9 +132,27 @@ describe('release-workflow', () => {
     }
   });
 
-  it('最小权限:contents: read + id-token: write(OIDC 换取发布凭证)', () => {
-    expect(workflow).toMatch(/permissions:\s*\r?\n\s+contents:\s*read/);
+  it('最小权限:contents: write(创建 GitHub Release)+ id-token: write(OIDC 换取发布凭证)', () => {
+    // contents: write 为 `pnpm release github-release` 创建 GitHub Release
+    // 所需的最小新增权限(npm 暂存成功后的工作流步骤);id-token: write
+    // 供 npm OIDC trusted publishing 换取短时发布凭证。
+    expect(workflow).toMatch(/permissions:\s*\r?\n\s+contents:\s*write/);
     expect(workflow).toMatch(/\r?\n\s+id-token:\s*write/);
+  });
+
+  it('npm 暂存成功后创建 GitHub Release(CHANGELOG 版本段,notes 同源 tag message)', () => {
+    // 发布流水线以 publish 步骤为前置,显式编排 github-release 子命令;
+    // 凭证用内置 GITHUB_TOKEN(permissions 已授予 contents: write)。
+    expect(workflow).toContain(
+      'run: pnpm release publish "${{ github.ref_name }}" --client npm-stage',
+    );
+    expect(workflow).toContain(
+      'run: pnpm release github-release "${{ github.ref_name }}"',
+    );
+    const ghStepIndex = workflow.indexOf('run: pnpm release github-release');
+    const publishStepIndex = workflow.indexOf('run: pnpm release publish');
+    expect(ghStepIndex).toBeGreaterThan(publishStepIndex); // 暂存成功后才建 Release
+    expect(workflow).toMatch(/GH_TOKEN:\s*\$\{\{\s*github\.token\s*\}\}/);
   });
 
   it('Node 版本不低于 engines 下限', () => {
