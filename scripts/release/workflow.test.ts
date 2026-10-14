@@ -39,6 +39,7 @@ function writePackage(
   rootDir: string,
   shortName: string,
   manifest: Record<string, unknown>,
+  changelog?: string,
 ): void {
   const pkgDir = join(rootDir, 'packages', shortName);
   mkdirSync(pkgDir, { recursive: true });
@@ -47,6 +48,9 @@ function writePackage(
     `${JSON.stringify(manifest, null, 2)}\n`,
     'utf8',
   );
+  if (changelog !== undefined) {
+    writeFileSync(join(pkgDir, 'CHANGELOG.md'), changelog, 'utf8');
+  }
 }
 
 /** 构建最小 monorepo fixture:两个子包(dsh-alpha private、dsh-beta public)+ 初始提交。 */
@@ -136,6 +140,62 @@ describe('release workflow(临时 git 仓库端到端)', () => {
     expect(message).toContain('@zhidal/dsh-beta v1.2.3');
   });
 
+  it('tagPackage 包带 CHANGELOG 时,tag message 为 subject + 空行 + 该版本段落', () => {
+    const root = makeFixture();
+    // makeFixture 之后补写:给 dsh-beta 加 CHANGELOG(仍纳入工作树会弄脏 →
+    // 直接提交后再打 tag,保证 clean 检查通过)
+    writeFileSync(
+      join(root, 'packages', 'dsh-beta', 'CHANGELOG.md'),
+      '# @zhidal/dsh-beta\n\n## 1.2.3\n\n### Minor Changes\n\n- abc1234: 新增演示功能\n',
+      'utf8',
+    );
+    git(['add', '.'], root);
+    git(
+      [
+        '-c',
+        'user.name=test',
+        '-c',
+        'user.email=test@example.com',
+        'commit',
+        '-m',
+        'docs: changelog',
+      ],
+      root,
+    );
+    const outcome = tagPackage({ rootDir: root, query: '@zhidal/dsh-beta' });
+    // outcome.message = subject + 空行 + 版本段
+    expect(outcome.message).toBe(
+      '@zhidal/dsh-beta v1.2.3\n\n### Minor Changes\n\n- abc1234: 新增演示功能',
+    );
+    const message = gitOut(['tag', '--list', '--format=%(contents)'], root);
+    expect(message).toContain('@zhidal/dsh-beta v1.2.3');
+    expect(message).toContain('新增演示功能');
+  });
+
+  it('tagPackage 包 CHANGELOG 无该版本段落时降级为纯 subject', () => {
+    const root = makeFixture();
+    writeFileSync(
+      join(root, 'packages', 'dsh-beta', 'CHANGELOG.md'),
+      '# @zhidal/dsh-beta\n\n## 0.0.1\n\n- 旧版本内容\n',
+      'utf8',
+    );
+    git(['add', '.'], root);
+    git(
+      [
+        '-c',
+        'user.name=test',
+        '-c',
+        'user.email=test@example.com',
+        'commit',
+        '-m',
+        'docs: changelog',
+      ],
+      root,
+    );
+    const outcome = tagPackage({ rootDir: root, query: '@zhidal/dsh-beta' });
+    expect(outcome.message).toBe('@zhidal/dsh-beta v1.2.3');
+  });
+
   it('tagPackage dry-run 完整预览但不打 tag', () => {
     const root = makeFixture();
     const preview = tagPackage({
@@ -148,6 +208,8 @@ describe('release workflow(临时 git 仓库端到端)', () => {
       branch: 'main',
       dryRun: true,
     });
+    // 无 CHANGELOG:预览 message 为纯 subject(降级路径在 dry-run 同样可见)
+    expect(preview.message).toBe('@zhidal/dsh-beta v1.2.3');
     expect(gitOut(['tag', '--list'], root)).toBe('');
   });
 

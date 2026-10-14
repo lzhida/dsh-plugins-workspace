@@ -22,15 +22,17 @@ pnpm changeset              # 声明一次变更:选包、选 semver 档位、�
 pnpm changeset:version      # 消费 changeset 文件:写回版本号 + 生成各包 CHANGELOG.md
 pnpm changeset:publish      # 手动发布公开包到 npm(自动流水线的备用路径)
 
-# —— tag 发布(本工具,tag 名 = {短包名}-v{X.Y.Z})——
+# —— tag 发布(本工具,tag 名 = {短包名}-v{X.Y.Z};message 自动带 CHANGELOG 版本段)——
 pnpm release list                       # 子包清单:包名 / 版本 / 可见性 / tag 名预览
 pnpm release tag dsh-taskboard          # 为当前已提交版本补打 annotated tag
 pnpm release tag --all                  # 批量:尚无 tag 的子包全打,已有的跳过(幂等)
-pnpm release tag --all --dry-run        # 预览将创建/跳过哪些 tag,零副作用
+pnpm release tag --all --dry-run        # 预览将创建/跳过哪些 tag 与 tag message,零副作用
 
 # —— npm 发布流水线(tag 推送触发,CI 自动;本地可 dry-run)——
 pnpm release publish dsh-llm-fallback-v0.3.2           # 按tag决策并发布(公开包正式版)
 pnpm release publish dsh-llm-fallback-v0.3.2 --dry-run # 只预览三态决策,不发npm
+pnpm release github-release dsh-llm-fallback-v0.5.0    # 创建 GitHub Release(notes = CHANGELOG 版本段)
+pnpm release github-release dsh-llm-fallback-v0.5.0 --dry-run  # 预览命令与 notes
 ```
 
 推荐发布流(与 `.changeset/README.md` 一致;发布线守护要求 tag 可从 main 到达):
@@ -42,10 +44,12 @@ git add . && git commit   # 3. 人工审阅后提交,合入 dev(建议: chore(re
 git switch main && git merge dev
                           # 4. 把集线合入发布线(main)——发布线守护的前提
 pnpm release tag --all    # 5. 在 main 上批量打 {短名}-v{X.Y.Z} annotated tag
+                          #    (message 自动带各包 CHANGELOG 版本段)
 git push --follow-tags    # 6. push 永远由你手动执行,工具绝不自动 push
                           # 7. 公开包正式版 tag 推送后,Release 流水线自动发到
-                          #    npm 暂存队列;去 npmjs.com 包页(或 `npm stage
-                          #    approve`,2FA)人工放行,版本才公开可安装
+                          #    npm 暂存队列,并创建 GitHub Release(notes = 各包
+                          #    CHANGELOG 版本段);去 npmjs.com 包页(或 `npm
+                          #    stage approve`,2FA)人工放行,版本才公开可安装
 ```
 
 ## 发布流水线(tag 推送 → npm 暂存 → 人工放行)
@@ -53,18 +57,20 @@ git push --follow-tags    # 6. push 永远由你手动执行,工具绝不自动 
 `.github/workflows/release.yml` 监听 `push: tags: ['*-v*']`,检出 tag 指向的
 commit,先跑与 CI 完全相同的门禁链(format:check → lint → typecheck → test),
 再执行 `pnpm release publish "${{ github.ref_name }}" --client npm-stage`,
-与本地 CLI 共用 `scripts/release/publish.ts` 的同一套决策逻辑:
+与本地 CLI 共用 `scripts/release/publish.ts` 的同一套决策逻辑;npm 暂存成功
+后执行 `pnpm release github-release "${{ github.ref_name }}"` 创建 GitHub
+Release(notes = 包 CHANGELOG 版本段,见下):
 
-| tag 形态                                        | 决策      | 行为                                                                                                           |
-| ----------------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------- |
-| `{短名}-v{正式版}`,短名命中唯一**公开**包       | `publish` | CI 执行 `npm stage publish --access public`(OIDC 暂存);本地默认 `pnpm publish --no-git-checks --access public` |
-| `{短名}-v{预发布版}`(如 `-rc.1`)                | `skip`    | 按约定不发 npm,退出 0 并留日志                                                                                 |
-| `{短名}-v{正式版}` 但包为 `private: true`       | `skip`    | 私有包不发 npm,退出 0 并留日志                                                                                 |
-| 不符合 `{短名}-v{semver}` 约定的 tag            | `skip`    | 与流水线无关,退出 0                                                                                            |
-| 短名无对应包 / 短名命中多个 scope 包            | `fail`    | `PKG_NOT_FOUND` / `PKG_AMBIGUOUS`,非零退出                                                                     |
-| tag 版本 ≠ tag 指向 commit 上 package.json 版本 | `fail`    | `TAG_VERSION_MISMATCH`,非零退出                                                                                |
-| tag 指向的提交不可从发布线 main 到达            | `fail`    | `TAG_NOT_ON_MAIN`,非零退出(发布线守护,见下)                                                                    |
-| tag 在仓库中不存在(版本恰好与清单一致)          | `fail`    | `TAG_NOT_FOUND`,非零退出                                                                                       |
+| tag 形态                                        | 决策      | 行为                                                                                                                                                          |
+| ----------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `{短名}-v{正式版}`,短名命中唯一**公开**包       | `publish` | CI 执行 `npm stage publish --access public`(OIDC 暂存)+ 创建 GitHub Release(notes = CHANGELOG 版本段);本地默认 `pnpm publish --no-git-checks --access public` |
+| `{短名}-v{预发布版}`(如 `-rc.1`)                | `skip`    | 按约定不发 npm、不建 GitHub Release,退出 0 并留日志                                                                                                           |
+| `{短名}-v{正式版}` 但包为 `private: true`       | `skip`    | 私有包不发 npm、不建 GitHub Release,退出 0 并留日志                                                                                                           |
+| 不符合 `{短名}-v{semver}` 约定的 tag            | `skip`    | 与流水线无关,退出 0                                                                                                                                           |
+| 短名无对应包 / 短名命中多个 scope 包            | `fail`    | `PKG_NOT_FOUND` / `PKG_AMBIGUOUS`,非零退出                                                                                                                    |
+| tag 版本 ≠ tag 指向 commit 上 package.json 版本 | `fail`    | `TAG_VERSION_MISMATCH`,非零退出                                                                                                                               |
+| tag 指向的提交不可从发布线 main 到达            | `fail`    | `TAG_NOT_ON_MAIN`,非零退出(发布线守护,见下)                                                                                                                   |
+| tag 在仓库中不存在(版本恰好与清单一致)          | `fail`    | `TAG_NOT_FOUND`,非零退出                                                                                                                                      |
 
 前置与边界:
 
@@ -99,7 +105,17 @@ commit,先跑与 CI 完全相同的门禁链(format:check → lint → typecheck
   CI 全新检出天然干净,本地执行加 `--allow-dirty` 可显式越过。
 - **构建**:发布触发各包自带 `prepack`(如 dsh-llm-fallback 自动 esbuild 出
   dist),流水线无需额外构建步骤。
-- **不变式**:工具与流水线都不 push、不创建 GitHub Release、不做 dist-tag
+- **GitHub Release(tag 内容的"给人看"形态,2026-10-14 起)**:npm 暂存
+  成功后,工作流执行 `pnpm release github-release <tag>` 自动创建 GitHub
+  Release——title 为 `{包名} v{版本}`,notes 取包 CHANGELOG.md 中该版本的
+  段落,与 annotated tag message 同源(见下节),三处内容一致。Release 在
+  暂存时创建而非 npm 放行后:放行是 npm 后台的人工动作、无 CI 触发点,tag
+  内容即发布内容。prerelease / 私有包 / 非发布 tag 按发布决策跳过不创建;
+  release 已存在(流水线重放)幂等跳过。本地补建:`pnpm release
+github-release <tag>`(需 gh 已安装并登录,或配置 GH_TOKEN)。创建步骤
+  需要的权限为 `contents: write`(workflow 已授予),凭证用内置
+  GITHUB_TOKEN。
+- **不变式**:工具与流水线都不 push、不做 dist-tag
   管理(Trusted Publisher 的 Allow npm dist-tag 保持关闭);prerelease 想发
   npm 时仍走手动 `pnpm changeset:publish` / `pnpm publish`(带 dist-tag 自理)。
 
@@ -110,6 +126,11 @@ commit,先跑与 CI 完全相同的门禁链(format:check → lint → typecheck
   同仓库多插件的发布标记互不干扰。Changesets 原生 tag 硬编码为
   `pkg@version`(`changeset publish` / `changeset git-tag` 均不可配置格式),
   故配置 `privatePackages.tag: false` 全部关掉,tag 语义由本工具统一。
+- **tag message(2026-10-14 起)**:annotated tag 的 message 为
+  `{包名} v{版本}` + 空行 + 包 CHANGELOG.md 中该版本的段落(提取逻辑见
+  `changelog.ts`,容错 `## [v?]x.y.z` 与尾部日期注释)——`git show <tag>`
+  与 GitHub tag 页可直接读更新内容,与 GitHub Release notes 同源。段落
+  缺失(无 CHANGELOG / 无该版本)降级为纯 subject,打 tag 永不因此失败。
 - **tag 前提**:tag 指向 HEAD,因此当前版本号必须已提交;脏工作树默认拒绝
   (避免 tag 名与提交内容脱节),`--allow-dirty` 是显式逃生门。
 - **幂等批量**:`tag --all` 对已有同名 tag 的包跳过而非报错,可安全重复执行;
@@ -130,17 +151,19 @@ commit,先跑与 CI 完全相同的门禁链(format:check → lint → typecheck
   config.json          Changesets 配置(baseBranch=dev、privatePackages.version=true/tag=false)
   README.md            Changesets 工作流说明
 scripts/
-  pkg-release.ts       CLI 入口(list / tag <包名|--all> / publish <tag>,参数解析、输出、退出码)
+  pkg-release.ts       CLI 入口(list / tag <包名|--all> / publish <tag> / github-release <tag>,参数解析、输出、退出码)
   release/
     core.ts            纯函数:semver 解析校验、tag 名生成、包名解析、ReleaseError(16 种错误码)
     workspace.ts       workspace 模式解析、子包发现(只读)
     git.ts             git 子进程薄封装(结构化错误)+ 发布线解析与可达性判定
-    workflow.ts        tagPackage / tagAllPackages 编排(dry-run、脏树与 tag 冲突检查)
+    changelog.ts       包 CHANGELOG 版本段提取(纯函数)+ tag message / release notes 组装
+    workflow.ts        tagPackage / tagAllPackages 编排(dry-run、脏树与 tag 冲突检查、CHANGELOG tag message)
     publish.ts         发布流水线:parseReleaseTag / isStableVersion / decidePublish 纯函数 + 发布编排(pnpm/npm 双客户端,发布线 main 可达性守护)
+    github-release.ts  GitHub Release 创建:复用 decidePublish,notes 取包 CHANGELOG 版本段(gh 执行器注入,幂等)
     *.test.ts          单测 + 临时 git 仓库端到端回归
 .github/workflows/
   ci.yml               push/PR 门禁(镜像本地提交前检查链)
-  release.yml          tag 推送 → npm 发布流水线(门禁 + release publish 决策,OIDC 免 token)
+  release.yml          tag 推送 → npm 发布流水线(门禁 + release publish 决策 + GitHub Release 创建,OIDC 免 token)
 ```
 
 错误以 `ReleaseError { code }` 结构化抛出:`PKG_NOT_FOUND`、`PKG_AMBIGUOUS`、
