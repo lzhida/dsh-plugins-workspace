@@ -1,8 +1,0 @@
-# dsh-taskboard bundle 层：dsh plugin add 安装本包时自动激活的插件行。
-# name 用包名（profile 依赖树已 link 安装），格式对齐官方 dsh-acp-app。
-# node 半区（exports "."）跑在宿主进程（工具、台账、路由、调度器、协议
-# section）；package.json 的 dsh.client 声明让浏览器半区（exports "./client"，
-# 服务路径 /plugins/<id>/client.js）加载进 Web GUI。
-- insert:
-    - id: dsh-taskboard
-      name: '@lzhida/dsh-taskboard'
