@@ -39,31 +39,10 @@
 - **错误归一**:所有失败归一为 `[CODE] message` 文本(`OBSIDIAN_CLI_NOT_FOUND` / `OBSIDIAN_INVALID_INPUT` / `OBSIDIAN_SPAWN_FAILED` / `OBSIDIAN_TIMEOUT` / `OBSIDIAN_NONZERO_EXIT` / `OBSIDIAN_PROTOCOL_ERROR`),model 直接字符串匹配;Obsidian 特有的 `Error:` stdout 前缀被 runner 转成 `OBSIDIAN_PROTOCOL_ERROR`;
 - **stdio 截断**:stdout 20k / stderr 4k,超出加 `[truncated to N chars]` 标记;
 - **不打包二进制**:`obsidian` 由 Obsidian 应用暴露到 `PATH`;缺失时第一次调用即报 `OBSIDIAN_CLI_NOT_FOUND`,给出明确恢复提示;
-- **system-prompt section**:`tool:obsidian` order=2960(与 `tool:taskboard` 2950 同档,排在它之后),加载即向 model 注入 35+ 条命令清单与安全约束;
+- **system-prompt section**:`tool:obsidian` order=2960,加载即向 model 注入 35+ 条命令清单与安全约束;
 - **零配置**:安装即用,默认用激活 vault;多 vault 场景在每次调用时显式传 `vault=<name>`。
 
 **前置**:本机安装 Obsidian(≥1.4,提供 `obsidian` CLI);若 `obsidian --version` 失败,先修复 PATH。
-
-### @lzhida/dsh-taskboard
-
-任务看板插件(源码同步自 [cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard#readme) **0.8.7**,Apache-2.0):**人建卡 → agent 认领执行 → 人验收** 的全功能任务看板。10 个 `taskboard_*` agent 工具 + 代码级协议闸,ifVersion 乐观并发,DoD 验收清单(≤30 项),结构化执行报告,SSE 实时看板 UI,宿主侧 cron / 一次性定时执行,按任务指定模型与 preset,可选 git worktree 隔离(任务分支 + 一键合并 + 多仓库整区镜像),外部会话自动同步,任务模板与图片附件。台账落 `~/.dsh/dsh-taskboard.json` 原子写持久化。
-
-**核心特性**
-
-- **10 个 `taskboard_*` 工具**:`taskboard_list` / `get` / `comments` / `create` / `update` / `move` / `comment_add` / `delete` / `checklist` / `execution_report`——任何会话可用,按项目边界(workspaceId)校验;
-- **代码级协议闸**:四类失败路径由代码强制拒绝(`DONE_FORBIDDEN` / `TASK_HELD` / `CROSS_PROJECT_FORBIDDEN` / `CHECKLIST_NOTE_REQUIRED`),不靠提示词约定;
-- **ifVersion 乐观并发**:update / move / checklist / trash 全部要求 ifVersion 匹配,过期版本抛 `VERSION_CONFLICT`;
-- **DoD 验收清单**:建卡时定验收条件(≤30 项,每项 ≤200 字符),agent 勾选必须附 evidence note(命令/文件/测试),用户在详情页可独立勾选,清单全勾也不自动 done;
-- **结构化执行报告**:`taskboard_execution_report` 提交(摘要 / 改动文件 / 自验 / 产物 / 风险),待验收详情页分栏渲染;
-- **五列流转 + 软删除**:backlog / todo / in_progress / in_review / done + canceled / archived / trashed;状态机白名单限制非法转移;
-- **system-prompt section**:`tool:taskboard` order=2950 声明认领纪律、done-gate、retry 规则,模型在第一次调用前就知道协议;
-- **实时看板 UI**:SSE 刷新 + 官方 slot 双轨挂载(dsh ≥ 0.1.7 一等侧边栏面板,旧 shell 自动回落 DOM 注入),diff 查看器、筛选排序持久化、JSON 导入导出;
-- **执行编排**:手动 / 一次性定时 / cron 定期(host 侧调度,浏览器关了照跑);定时任务可复用既有会话,定期任务支持完成后「回到待办」或「新建下一轮待办」;
-- **Git worktree 隔离**:每次执行独立 worktree + 任务分支,验收一键合并;多仓库工作区整区镜像;非 git 项目自动降级原目录执行;
-- **任务模板与图片附件**:内置任务模板,内容寻址附件存储;
-- **零配置**:安装即用,无需 Token / API Key,数据本地。
-
-**与上游的差异**(monorepo 一致性重构,功能不变):包名 `@lzhida/dsh-taskboard`、TS 源码入口(`main: src/index.ts`,仅 link: 安装)、客户端预构建产物提交于 `client/index.js`、宿主半区构造器参数属性转显式字段(Node type-stripping 兼容)、`@deepseek-ai/*` 全部 devDependencies 且仅 type-only 引入。详见[包 README](./packages/dsh-taskboard/README.md)。
 
 ## 安装
 
@@ -75,10 +54,9 @@
 # 仓库根目录执行(PowerShell)。Git Bash 把路径表达式换成 "$(pwd -W)",POSIX 用 "$(pwd)"
 pnpm dsh plugin --profile default add "link:$($PWD.Path -replace '\\','/')/packages/dsh-guided-goal"   # 引导式 goal 命令(独立,不依赖执行器)
 pnpm dsh plugin --profile default add "link:$($PWD.Path -replace '\\','/')/packages/dsh-obsidian"      # Obsidian 操作(独立,9 个 obsidian_* 工具 + 通用入口,封装 Obsidian 内置 CLI)
-pnpm dsh plugin --profile default add "link:$($PWD.Path -replace '\\','/')/packages/dsh-taskboard"     # 任务看板(独立,10 个 taskboard_* 工具 + 代码级协议闸)
 ```
 
-安装后在 dsh Web UI 的设置 → 插件中确认目标插件已启用:guided-goal 在会话输入框使用 `/guided-goal`;taskboard 在任意会话中由模型用 `taskboard_*` 工具集协作。
+安装后在 dsh Web UI 的设置 → 插件中确认目标插件已启用:guided-goal 在会话输入框使用 `/guided-goal`;obsidian 在任意会话中由模型用 `obsidian_*` 工具集协作。
 
 ## 开发
 
