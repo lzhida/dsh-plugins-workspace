@@ -11,7 +11,9 @@
  *   不含会话指定的模型——它失败后从队列第 1 项开始切);
  * - **最大回退次数**(maxRetries,0 = 链长;只限切换候选次数);
  * - **每候选重试次数**(retriesBeforeSwitch,0 = 跟随官方重试预算;
- *   0.5.0 起取代旧 fallbackWhen 回退时机下拉)。
+ *   0.5.0 起取代旧 fallbackWhen 回退时机下拉);
+ * - **失败候选冷却跳过**(cooldownEnabled 开关 + cooldownMs 窗口时长,
+ *   毫秒):失败模型短窗内不再作为后续请求起点,窗口期满自动恢复优先级。
  *
  * 为什么需要客户端包:宿主 `@deepseek-ai/dsh-settings` 的 `describe()` 只投影
  * `.volatile()` 字段给"自带页面的客户端",而 dsh 0.2.0-rc.2 **没有**通用的
@@ -86,6 +88,12 @@ globalThis.__ModuleLoader__.load({
         retriesBeforeSwitch: '每候选重试次数',
         retriesHint:
           '0 = 跟随官方重试预算(provider 重试策略,默认 5);N = 以插件配置为准,当前候选重试 N 次后才切换(超出官方预算的部分由插件代执行)',
+        cooldownEnabled: '失败候选冷却跳过',
+        cooldownEnabledHint:
+          '候选重试预算耗尽切换后,短时间内后续请求不再从它开始,直接用下一个可用候选;窗口期满自动恢复优先级并重新验证',
+        cooldownMs: '冷却窗口时长(毫秒)',
+        cooldownMsHint:
+          '失败模型保持跳过的时长,窗口过后重新验证并恢复其优先级;0 = 立即过期(等效禁用)',
         save: '保存',
         discard: '放弃修改',
         saving: '保存中…',
@@ -124,6 +132,12 @@ globalThis.__ModuleLoader__.load({
         retriesBeforeSwitch: 'Retries before switch',
         retriesHint:
           '0 = follow the official retry budget (provider retry policy, default 5); N = authoritative — retry the current candidate N times before switching (the plugin performs retries beyond the official budget itself)',
+        cooldownEnabled: 'Cooldown skip for failed models',
+        cooldownEnabledHint:
+          'After a candidate exhausts its retry budget and the chain switches away, subsequent requests skip it for a short window and start from the next healthy candidate; it is re-verified when the window expires',
+        cooldownMs: 'Cooldown window (ms)',
+        cooldownMsHint:
+          'How long a failed model stays skipped before being re-verified and restored to its priority position; 0 = expire immediately (disabled)',
         save: 'Save',
         discard: 'Discard',
         saving: 'Saving…',
@@ -357,6 +371,12 @@ globalThis.__ModuleLoader__.load({
         var draftRetriesBeforeState = useState(null);
         var draftRetriesBefore = draftRetriesBeforeState[0];
         var setDraftRetriesBefore = draftRetriesBeforeState[1];
+        var draftCooldownEnabledState = useState(null);
+        var draftCooldownEnabled = draftCooldownEnabledState[0];
+        var setDraftCooldownEnabled = draftCooldownEnabledState[1];
+        var draftCooldownMsState = useState(null);
+        var draftCooldownMs = draftCooldownMsState[0];
+        var setDraftCooldownMs = draftCooldownMsState[1];
         var draftRevState = useState(null);
         var draftRev = draftRevState[0];
         var setDraftRev = draftRevState[1];
@@ -468,11 +488,29 @@ globalThis.__ModuleLoader__.load({
           draftRetriesBefore === null
             ? Number(value.retriesBeforeSwitch || 0)
             : draftRetriesBefore;
+        // 冷却跳过:enabled 默认 true;窗口默认 300000ms(schema 默认值,
+        // 存储里未写过该键时显示默认而非 0,避免误导为"已禁用")。
+        var DEFAULT_COOLDOWN_MS = 300000;
+        var savedCooldownMs =
+          value.cooldownMs === undefined || value.cooldownMs === null
+            ? DEFAULT_COOLDOWN_MS
+            : Number(value.cooldownMs);
+        if (!Number.isFinite(savedCooldownMs) || savedCooldownMs < 0) {
+          savedCooldownMs = DEFAULT_COOLDOWN_MS;
+        }
+        var cooldownEnabled =
+          draftCooldownEnabled === null
+            ? value.cooldownEnabled !== false
+            : draftCooldownEnabled;
+        var cooldownMs =
+          draftCooldownMs === null ? savedCooldownMs : draftCooldownMs;
         var dirty =
           enabled !== (value.enabled !== false) ||
           !sameQueue(queue, currentQueue) ||
           retries !== Number(value.maxRetries || 0) ||
-          retriesBefore !== Number(value.retriesBeforeSwitch || 0);
+          retriesBefore !== Number(value.retriesBeforeSwitch || 0) ||
+          cooldownEnabled !== (value.cooldownEnabled !== false) ||
+          cooldownMs !== savedCooldownMs;
 
         function beginDraft() {
           if (draftQueue === null) {
@@ -480,6 +518,8 @@ globalThis.__ModuleLoader__.load({
             setDraftQueue(currentQueue.map(function (r) { return { provider: r.provider, model: r.model }; }));
             setDraftRetries(Number(value.maxRetries || 0));
             setDraftRetriesBefore(Number(value.retriesBeforeSwitch || 0));
+            setDraftCooldownEnabled(value.cooldownEnabled !== false);
+            setDraftCooldownMs(savedCooldownMs);
             setDraftRev(snap.revision);
           }
         }
@@ -522,6 +562,8 @@ globalThis.__ModuleLoader__.load({
           setDraftQueue(null);
           setDraftRetries(null);
           setDraftRetriesBefore(null);
+          setDraftCooldownEnabled(null);
+          setDraftCooldownMs(null);
           setDraftRev(null);
           setError(null);
         }
@@ -552,6 +594,12 @@ globalThis.__ModuleLoader__.load({
                   path: ['retriesBeforeSwitch'],
                   value: retriesBefore,
                 },
+                {
+                  op: 'set',
+                  path: ['cooldownEnabled'],
+                  value: cooldownEnabled,
+                },
+                { op: 'set', path: ['cooldownMs'], value: cooldownMs },
               ],
               revision,
             )
@@ -782,6 +830,53 @@ globalThis.__ModuleLoader__.load({
                 beginDraft();
                 var parsed = Number(event.target.value);
                 setDraftRetries(Number.isFinite(parsed) && parsed >= 0 ? Math.floor(parsed) : 0);
+              },
+            }),
+          ),
+        );
+
+        // 失败候选冷却跳过(开关 + 窗口时长)
+        children.push(
+          h(
+            'label',
+            { key: 'cooldownEnabled', style: S.check },
+            h('input', {
+              type: 'checkbox',
+              checked: cooldownEnabled,
+              disabled: !writable || busy,
+              onChange: function () {
+                beginDraft();
+                setDraftCooldownEnabled(!cooldownEnabled);
+              },
+            }),
+            h('span', { style: S.label }, t('cooldownEnabled')),
+            h('span', { style: S.hint }, t('cooldownEnabledHint')),
+          ),
+        );
+        children.push(
+          h(
+            'div',
+            { key: 'cooldownMs', style: S.row },
+            h(
+              'div',
+              null,
+              h('div', { style: S.label }, t('cooldownMs')),
+              h('div', { style: S.hint }, t('cooldownMsHint')),
+            ),
+            h('input', {
+              type: 'number',
+              min: 0,
+              style: S.input,
+              value: String(cooldownMs),
+              disabled: !writable || busy,
+              onChange: function (event) {
+                beginDraft();
+                var parsed = Number(event.target.value);
+                setDraftCooldownMs(
+                  Number.isFinite(parsed) && parsed >= 0
+                    ? Math.floor(parsed)
+                    : 0,
+                );
               },
             }),
           ),
