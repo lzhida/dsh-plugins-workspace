@@ -10,7 +10,7 @@ A plugin repository for [dsh](https://www.npmjs.com/package/@deepseek-ai/dsh) (D
 
 ### @zhidal/dsh-llm-fallback
 
-The model-fallback plugin for dsh: it intercepts global LLM calls and, when the session-selected model (the de-facto primary) fails, automatically switches to the next `provider/model` in the fallback queue **without interrupting the conversation**. Supports per-candidate retries (`retriesBeforeSwitch`), cooldown skipping of failed candidates, and a visual settings card; routing decisions use only stable host failure codes. See [packages/dsh-llm-fallback/README.md](./packages/dsh-llm-fallback/README.md) for features, internals, configuration, and troubleshooting.
+The model-fallback plugin for dsh: it intercepts global LLM calls and, when the session-selected model (the de-facto primary) fails, automatically switches to the next `provider/model` in the fallback queue **without interrupting the conversation**. Supports per-candidate retries (`retriesBeforeSwitch`), cooldown skipping of failed candidates, and a visual settings card; routing decisions use only stable host failure codes. See [packages/dsh-llm-fallback/README.md](./packages/dsh-llm-fallback/README.md) for features, internals, configuration, and troubleshooting; the roadmap of future strategy dimensions (time-window restrictions, cost routing, etc.) and its decision checklist live in [docs/llm-fallback-roadmap.md](./docs/llm-fallback-roadmap.md) (Chinese).
 
 ## Installation
 

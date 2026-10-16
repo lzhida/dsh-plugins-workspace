@@ -18,6 +18,7 @@ dsh 的模型回退插件：拦截全局 LLM 调用，**会话页面指定的模
 - [已知限制](#已知限制)
 - [故障排查](#故障排查)
 - [开发](#开发)
+- [演进路线](#演进路线)
 - [许可证](#许可证)
 
 ## 特性
@@ -204,6 +205,10 @@ pnpm --filter @zhidal/dsh-llm-fallback build # 单独重建 dist
 ```
 
 **为什么入口是 dist**：dsh 宿主经 Node 原生 type-stripping 加载 TS 插件，而 Node 硬性拒绝转译 realpath 位于任何 node_modules 之下的 `.ts` 文件（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`），纯 TS 源码入口在 git/npm/tarball 实体安装下必然加载失败。本插件因此以 esbuild 打包 `dist/index.js` 单文件发行（内联运行时依赖），源码仍是 `src/*.ts`；git 安装依赖包内 `prepare` 现场构建，消费方需按 pnpm 要求放行构建脚本（见上文）。其他 TS 插件如需支持实体安装，照此模式改造。
+
+## 演进路线
+
+时段限制、成本路由、健康度路由等后续策略维度的盘点（市场调研、可行性判据、推荐排序）与立项决策清单，见仓库根目录的 [`docs/llm-fallback-roadmap.md`](../../docs/llm-fallback-roadmap.md)（仓库内相对链接，npm 上不可点）。
 
 ## 许可证
 

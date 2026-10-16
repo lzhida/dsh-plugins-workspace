@@ -10,7 +10,7 @@
 
 ### @zhidal/dsh-llm-fallback
 
-dsh 的模型回退插件:拦截全局 LLM 调用,**会话页面指定的模型**(事实主模型)失败时,按回退队列自动切换到下一个 `provider/model`,**对话不中断**。支持每候选重试次数(`retriesBeforeSwitch`)、失败候选冷却跳过与可视化配置卡,失败码路由只按宿主稳定失败码决策。特性、原理、配置与故障排查详见 [packages/dsh-llm-fallback/README.md](./packages/dsh-llm-fallback/README.md)。
+dsh 的模型回退插件:拦截全局 LLM 调用,**会话页面指定的模型**(事实主模型)失败时,按回退队列自动切换到下一个 `provider/model`,**对话不中断**。支持每候选重试次数(`retriesBeforeSwitch`)、失败候选冷却跳过与可视化配置卡,失败码路由只按宿主稳定失败码决策。特性、原理、配置与故障排查详见 [packages/dsh-llm-fallback/README.md](./packages/dsh-llm-fallback/README.md);后续策略演进(时段限制、成本路由等)的盘点与决策清单见 [docs/llm-fallback-roadmap.md](./docs/llm-fallback-roadmap.md)。
 
 ## 安装
 
