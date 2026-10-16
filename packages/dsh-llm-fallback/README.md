@@ -215,13 +215,15 @@ registry 元数据分钟级边缘缓存。安装 / 升级 / 回滚都用精确�
 ## 开发
 
 ```sh
-pnpm install                                 # 仓库根，包内 prepare 自动产出 dist
+pnpm install                                 # 仓库根，包内 prepare 自动产出 dist 与 client 产物
 pnpm test                                    # vitest 全仓测试
 pnpm typecheck                               # 递归 tsc --noEmit
-pnpm --filter @zhidal/dsh-llm-fallback build # 单独重建 dist
+pnpm --filter @zhidal/dsh-llm-fallback build # 单独重建 dist 与 client 产物
 ```
 
 **为什么入口是 dist**：dsh 宿主经 Node 原生 type-stripping 加载 TS 插件，而 Node 硬性拒绝转译 realpath 位于任何 node_modules 之下的 `.ts` 文件（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`），纯 TS 源码入口在 git/npm/tarball 实体安装下必然加载失败。本插件因此以 esbuild 打包 `dist/index.js` 单文件发行（内联运行时依赖），源码仍是 `src/*.ts`；git 安装依赖包内 `prepare` 现场构建，消费方需按 pnpm 要求放行构建脚本（见上文）。其他 TS 插件如需支持实体安装，照此模式改造。
+
+**客户端半区（配置卡）**：源码在 `client/src/`（TSX 组件化 + hooks + 纯函数分层，React 仅作 devDependency 供类型与测试），经 `scripts/build-client.ts`（esbuild JS API）打包为惰性 CJS 注册壳 `client/index.js` 并随包提交——产物顶层只有 `globalThis.__ModuleLoader__.load({ id, factory })`，整个模块体（含 react 解析）都在 factory 闭包内，react 保持 external 经宿主模块表注入（绝不可打第二份 React）。`id` 由构建脚本从 package.json 读取，与 keyed 插槽 key（`PKG_NAME` 常量）共同受 `src/client-bundle.test.ts` 契约断言保护；组件行为另有 jsdom 渲染冒烟测试（`client/src/components/FallbackCard.test.tsx`）。改动 client 源码后重跑 `build` 并连同产物一起提交。
 
 ## 演进路线
 

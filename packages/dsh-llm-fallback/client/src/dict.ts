@@ -1,0 +1,163 @@
+/**
+ * 配置卡文案字典（zh / en）。
+ *
+ * 经 plugin.apply 注册进宿主 locale 服务（命名空间 DICT_NS）：当前语言即
+ * dsh 的语言配置（Host 偏好存于设置 namespace `locale` 字段 `preference`，
+ * 缺省回退浏览器语言，再回退 `en`，与 dsh-client-locale 内置语言目录
+ * LOCALE_IDS `['zh','en']` 对齐）。locale 服务缺失（组合未含
+ * dsh-client-locale）时 plugin.apply 回退本表 en 字典的静态 t，配置卡
+ * 降级可用、apply 不抛错。
+ *
+ * zh/en 键集一致性由 client-bundle.test.ts 断言（缺译 / 漏译防回归）。
+ *
+ * @module dsh-llm-fallback/client/dict
+ */
+
+/** 文案字典类型：两语言同键集。 */
+export type Dict = Record<'zh' | 'en', Record<string, string>>;
+
+export const DICT: Dict = {
+  zh: {
+    title: '模型回退',
+    intro:
+      '会话指定的模型失败时,自动按队列顺序切换到下一个模型(对话不中断)。本队列是纯回退候选,不含会话指定的模型。',
+    enabled: '启用',
+    enabledDesc: '关闭后不再拦截模型失败',
+    queue: '回退队列(可上移/下移调整顺序)',
+    queueEmpty: '尚未选择模型;请在下方勾选可用模型。',
+    fallbackN: '回退',
+    moveUp: '上移',
+    moveDown: '下移',
+    remove: '移除',
+    catalog: '可用模型',
+    catalogLoading: '正在加载模型目录…',
+    catalogError: '模型目录加载失败',
+    catalogRetry: '重试',
+    catalogEmpty: '宿主尚未配置任何 provider 模型。',
+    catalogHint: '勾选加入队列(追加到末尾)',
+    catalogSearch: '搜索模型(provider / 模型 id / 名称)…',
+    searchAria: '搜索模型',
+    catalogNoMatch: '没有匹配的模型',
+    maxRetries: '最多切换候选数',
+    maxRetriesHint:
+      '0 = 按队列长度(切完所有候选才报错);只限切换次数,同候选重试由下方次数控制',
+    retriesBeforeSwitch: '每候选重试次数',
+    retriesHint:
+      '0 = 跟随官方重试预算(provider 重试策略,默认 5);N = 以插件配置为准,当前候选重试 N 次后才切换(超出官方预算的部分由插件代执行)',
+    cooldownEnabled: '失败候选冷却跳过',
+    cooldownEnabledHint:
+      '候选重试预算耗尽切换后,短时间内后续请求不再从它开始,直接用下一个可用候选;窗口期满自动恢复优先级并重新验证',
+    cooldownMs: '冷却窗口时长(毫秒)',
+    cooldownMsHint:
+      '失败模型保持跳过的时长,窗口过后重新验证并恢复其优先级;0 = 立即过期(等效禁用)',
+    scheduleEnabled: '时段计划',
+    scheduleEnabledHint:
+      '开启后按下方规则在指定时段自动避开被阻塞的 provider/model(改写为回退队列可用候选,对话不中断;按宿主机本地时区判定)',
+    scheduleHint:
+      '规则 = 阻塞目标 + 时段窗口;窗口内命中目标的请求自动改写为链上第一个可用候选,全部候选被阻塞时降级放行(绝不中断对话)',
+    scheduleAddRule: '添加规则',
+    scheduleRemoveRule: '删除规则',
+    scheduleRuleN: '规则',
+    scheduleTargets: '阻塞目标',
+    scheduleTargetsEmpty: '尚未选择目标;点击「编辑目标」从模型目录勾选。',
+    scheduleTargetsHint: '勾选加入阻塞目标(与回退队列同一模型目录)',
+    scheduleEditTargets: '编辑目标',
+    scheduleDoneTargets: '完成选择',
+    scheduleWindows: '时段窗口',
+    scheduleAddWindow: '添加窗口',
+    scheduleStart: '开始',
+    scheduleEnd: '结束',
+    scheduleInvalid: '窗口时间格式应为 HH:mm;起点>终点 = 跨夜,相等 = 全天',
+    scheduleOvernight: '跨夜',
+    d1: '一',
+    d2: '二',
+    d3: '三',
+    d4: '四',
+    d5: '五',
+    d6: '六',
+    d7: '日',
+    save: '保存',
+    discard: '放弃修改',
+    saving: '保存中…',
+    saved: '已保存',
+    failed: '保存失败,请重试',
+    conflict: '配置已在别处被修改,请放弃草稿后重试',
+    loading: '正在载入配置…',
+    unavailable: '配置存储不可用',
+    readonly: '只读连接,无法修改',
+    dirty: '有未保存的修改',
+  },
+  en: {
+    title: 'Model fallback',
+    intro:
+      'When the model selected in the session fails, the next model in the queue is tried automatically (the conversation is not interrupted). This queue holds pure fallback candidates — the session-selected primary is not configured here.',
+    enabled: 'Enabled',
+    enabledDesc: 'When off, model failures are no longer intercepted',
+    queue: 'Fallback queue (move up/down to reorder)',
+    queueEmpty: 'No model selected yet — check models below.',
+    fallbackN: 'Fallback',
+    moveUp: 'Move up',
+    moveDown: 'Move down',
+    remove: 'Remove',
+    catalog: 'Available models',
+    catalogLoading: 'Loading model catalog…',
+    catalogError: 'Model catalog failed to load',
+    catalogRetry: 'Retry',
+    catalogEmpty: 'No provider model is configured on this host yet.',
+    catalogHint: 'Check to append to the queue',
+    catalogSearch: 'Search models (provider / id / name)…',
+    searchAria: 'Search models',
+    catalogNoMatch: 'No matching models',
+    maxRetries: 'Max switches',
+    maxRetriesHint:
+      '0 = queue length (try every candidate before failing); bounds candidate switches, not same-candidate retries',
+    retriesBeforeSwitch: 'Retries before switch',
+    retriesHint:
+      '0 = follow the official retry budget (provider retry policy, default 5); N = authoritative — retry the current candidate N times before switching (the plugin performs retries beyond the official budget itself)',
+    cooldownEnabled: 'Cooldown skip for failed models',
+    cooldownEnabledHint:
+      'After a candidate exhausts its retry budget and the chain switches away, subsequent requests skip it for a short window and start from the next healthy candidate; it is re-verified when the window expires',
+    cooldownMs: 'Cooldown window (ms)',
+    cooldownMsHint:
+      'How long a failed model stays skipped before being re-verified and restored to its priority position; 0 = expire immediately (disabled)',
+    scheduleEnabled: 'Time-window schedule',
+    scheduleEnabledHint:
+      'When on, blocked providers/models are avoided automatically during the windows below — requests are rewritten to an available fallback candidate without interrupting the conversation (host local timezone)',
+    scheduleHint:
+      'A rule pairs blocked targets with time windows; during a window, matching requests are rewritten to the first available candidate, and when every candidate is blocked they pass through unchanged (the conversation is never interrupted)',
+    scheduleAddRule: 'Add rule',
+    scheduleRemoveRule: 'Remove rule',
+    scheduleRuleN: 'Rule',
+    scheduleTargets: 'Blocked targets',
+    scheduleTargetsEmpty:
+      'No targets yet — click "Edit targets" to pick from the model catalog.',
+    scheduleTargetsHint:
+      'Check to add blocked targets (same catalog as the fallback queue)',
+    scheduleEditTargets: 'Edit targets',
+    scheduleDoneTargets: 'Done',
+    scheduleWindows: 'Time windows',
+    scheduleAddWindow: 'Add window',
+    scheduleStart: 'Start',
+    scheduleEnd: 'End',
+    scheduleInvalid:
+      'Window time must be HH:mm; start > end wraps midnight, start == end means all day',
+    scheduleOvernight: 'overnight',
+    d1: 'Mon',
+    d2: 'Tue',
+    d3: 'Wed',
+    d4: 'Thu',
+    d5: 'Fri',
+    d6: 'Sat',
+    d7: 'Sun',
+    save: 'Save',
+    discard: 'Discard',
+    saving: 'Saving…',
+    saved: 'Saved',
+    failed: 'Save failed, please retry',
+    conflict: 'Settings changed elsewhere; discard the draft and retry',
+    loading: 'Loading settings…',
+    unavailable: 'Settings storage unavailable',
+    readonly: 'Read-only connection; settings cannot be changed',
+    dirty: 'Unsaved changes',
+  },
+};
