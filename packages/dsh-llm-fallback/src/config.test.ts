@@ -22,7 +22,7 @@
  *     scheduled;不切换时不写;
  *   - effect 卸载时 dispose 被收集。
  *
- * 风格沿用 dsh-obsidian 的 stubCtx + spyOn(console.log);用
+ * 风格采用 stubCtx + spyOn(console.log);用
  * `as unknown as Context` 强制把 stub 对象窄化为 cordis Context 类型,
  * 满足 `@typescript-eslint/no-explicit-any` 约束。
  */

@@ -2,12 +2,12 @@
 
 ## Project Overview
 
-dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/cordis`）插件集合，pnpm workspaces 单层结构。插件默认以 TS 源码形态被宿主 dsh loader 直接加载——**没有构建步骤、不产出 dist**；唯一例外是 `packages/dsh-llm-fallback`（构建式发行，见下）。当前包含 `packages/dsh-guided-goal`、`packages/dsh-llm-fallback`、`packages/dsh-obsidian`、`packages/dsh-open-in-zed`。
+dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/cordis`）插件集合，pnpm workspaces 单层结构。插件默认以 TS 源码形态被宿主 dsh loader 直接加载——**没有构建步骤、不产出 dist**；需要实体安装（git/npm/tarball）的插件必须以 JS 为入口。当前仅包含 `packages/dsh-llm-fallback`（构建式发行，见下）。
 
 ## Architecture & Data Flow
 
-- **加载链**：宿主 dsh loader 按插件包 `main` 字段 import 插件入口 → 调用 `apply(ctx)`。TS 源码入口（`main: "src/index.ts"`，如 `packages/dsh-guided-goal`）依赖 Node 原生 type-stripping，**只在 `link:` 安装下可用**——实体安装（git/npm/tarball，落盘于 profile 的 node_modules）会被 Node 以 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING` 拒绝，宿主只报静默的 `failed to import`。需要支持实体安装的插件必须以 JS 为入口（见 `packages/dsh-llm-fallback` 的 dist 方案）。
-- **插件契约三符号**（见 `packages/dsh-guided-goal/src/index.ts`）：
+- **加载链**：宿主 dsh loader 按插件包 `main` 字段 import 插件入口 → 调用 `apply(ctx)`。TS 源码入口（`main: "src/index.ts"`）依赖 Node 原生 type-stripping，**只在 `link:` 安装下可用**——实体安装（git/npm/tarball，落盘于 profile 的 node_modules）会被 Node 以 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING` 拒绝，宿主只报静默的 `failed to import`。需要支持实体安装的插件必须以 JS 为入口（见 `packages/dsh-llm-fallback` 的 dist 方案）。
+- **插件契约三符号**（见 `packages/dsh-llm-fallback/src/index.ts`）：
   - `export const name`——loader 依赖的字符串标识，必须与插件语义一致；
   - `export function apply(ctx: Context)`——cordis 安装钩子，在此注册能力/副作用；
   - 业务辅助纯函数（如 `greet`）。
@@ -39,12 +39,12 @@ pnpm release list    # 列出子包版本与 tag 预览
                      # --dry-run 预览；永不自动 push
 ```
 
-新增插件的最小步骤：建 `packages/my-plugin/`，仿照 `packages/dsh-guided-goal/package.json`（`type: "module"`、`main: "src/index.ts"`、`devDependencies` 含 cordis、`scripts.typecheck`），tsconfig extends 根配置即可，无需其他注册动作。
+新增插件的最小步骤：建 `packages/my-plugin/`，仿照 `packages/dsh-llm-fallback/package.json`（`type: "module"`、`devDependencies` 含 cordis、`scripts.typecheck`；其 `main` 指向 esbuild 构建的 dist——若插件只走 `link:` 安装可用 TS 源码入口 `main: "src/index.ts"`），tsconfig extends 根配置即可，无需其他注册动作。
 
 ## Subpackage Versioning & Release
 
 - 子包版本管理走 **Changesets**（`.changeset/` + `@changesets/cli`，2026-10-12 由自研 CLI 切换而来）：`pnpm changeset` 声明变更 → `pnpm changeset:version` 写回版本号并生成各包 CHANGELOG.md（提交由人执行）→ `pnpm changeset:publish` 发布公开包到 npm（目前仅 `@zhidal/dsh-llm-fallback`）。`privatePackages: { version: true, tag: false }`——私有包同样参与版本递增与 CHANGELOG。
-- git tag 发布由 `scripts/pkg-release.ts`（jiti 直跑零构建）补足：tag 名固定 `{短包名}-v{X.Y.Z}`（如 `dsh-obsidian-v0.1.0`），与插件一一对应；`pnpm release tag --all` 幂等批量为当前版本补 tag。Changesets 原生 tag 硬编码 `pkg@version` 且格式不可配置，故全部关闭，tag 语义由本工具统一（该 `{pkg}-v{X.Y.Z}` 形态与 Tauri 官方插件 monorepo 实际 tag 约定一致）。
+- git tag 发布由 `scripts/pkg-release.ts`（jiti 直跑零构建）补足：tag 名固定 `{短包名}-v{X.Y.Z}`（如 `dsh-llm-fallback-v0.5.0`），与插件一一对应；`pnpm release tag --all` 幂等批量为当前版本补 tag。Changesets 原生 tag 硬编码 `pkg@version` 且格式不可配置，故全部关闭，tag 语义由本工具统一（该 `{pkg}-v{X.Y.Z}` 形态与 Tauri 官方插件 monorepo 实际 tag 约定一致）。
 - npm 发布流水线由 `.github/workflows/release.yml` 承担（2026-10-12 新增，2026-10-13 迁移 OIDC 暂存发布）：推送 `*-v*` tag 自动触发，先跑与 CI 相同的门禁链，再按 `scripts/release/publish.ts` 的三态决策执行——仅「公开包 + 正式版本」真正发布：CI 走 `--client npm-stage` 的 OIDC 暂存发布（免 token，`npm stage publish` 进暂存队列，维护者在 npm 后台或 `npm stage approve` 人工放行后才公开；前置是在 npm 包后台登记 trusted publisher；本地默认 `pnpm publish`）；`dsh-llm-fallback` 经 `prepack` 自动构建 dist；prerelease（如 `-rc.1`）与 private 包明确跳过（退出 0），tag 与清单版本不一致/短名无对应包直接失败。发布线守护（2026-10-13 起）：tag 必须存在且指向的提交可从 main 到达（`TAG_NOT_ON_MAIN`），发布 tag 一律在 dev 合入 main 后于 main 上打；工作流以 `fetch-depth: 0` 拉全量历史解析发布线（本地 `main` 优先，回退 `origin/main`）。备选 token 方案的 `NPM_TOKEN` 必须是 **Granular Access Token** 且创建时勾选 **Bypass 2FA**（npm 2025-12-09 起经典 token 已全部吊销、包默认强制 2FA，未勾选则发布被 OTP 验证码拦下）。
 - agent 只可跑 `--dry-run`、`list` 与 `changeset status`；实际 version 提交/tag/publish 属发布动作，须用户明确授意后由用户执行或经确认后代跑，push 一律留给用户。
 - 设计决策与语义边界见 `scripts/release/README.md` 与 `.changeset/README.md`。
@@ -88,7 +88,7 @@ pnpm release list    # 列出子包版本与 tag 预览
 
 - **无专用脚本**：按 `.agents/skills/dsh-plugin-dev/SKILL.md` §5 的手工 CLI 流程编排——`pnpm dsh --profile test --from-default-profile web` 引导（仅首次）→ 构建式插件先 `pnpm --filter <pkg> build` → `pnpm dsh plugin --profile test add link:<仓库绝对路径>/packages/<name>`（**`--profile` 必须置于 `plugin` 子命令之后；`link:` 后必须是绝对路径——相对路径按 pnpm 语义解析到 profile 目录**）→ `pnpm dsh --profile test --no-open --port 3865` 启动 → 断言 → `plugin remove` 清理
 - 机制：全局 `~/.dsh` + 独立 profile（统一 `test`）启动真实 dsh；profile 隔离插件列表（不触碰默认 profile 与已运行实例），模型凭证全局共享；包内 `dsh.bundle.patch`（cordis.patch.yml 的 `- insert` 行）使 `link:` 安装的插件自动激活为 profile 层
-- 三项断言：① 实例输出出现插件加载日志——**契约：插件 `apply` 时须打印 `[name] ` 前缀格式的日志行**（如 `[guided-goal] plugin loaded`），按该结构化格式匹配，路径中出现裸包名不算 ② Web 服务端口可访问 ③ 带 token 的 UI URL 页面返回 <400；结束后结束进程并 `plugin remove` 被测插件，恢复 profile 干净态
+- 三项断言：① 实例输出出现插件加载日志——**契约：插件 `apply` 时须打印 `[name] ` 前缀格式的日志行**（如 `[dsh-llm-fallback] plugin loaded`），按该结构化格式匹配，路径中出现裸包名不算 ② Web 服务端口可访问 ③ 带 token 的 UI URL 页面返回 <400；结束后结束进程并 `plugin remove` 被测插件，恢复 profile 干净态
 - 默认端口 3865——**3080 是上游默认，3865 只是本机现状产物**（本机 3080 被已运行实例占用）；新机器 3080 空闲时可改用 `--port 3080`
 - **浏览器级验证（Web 效果）**：保持实例存活，用 chrome-devtool MCP（或任意浏览器工具）打开 banner 打印的 tokened URL，验证：① 页面健康（标题 DeepSeek Harness、console 无错误）② 设置 → 插件 → 插件列表中目标插件显示「已启用」③ 工具实际调用：凭证全局共享，同 profile 发会话任务即可验证到这一层
 - 前提：`@deepseek-ai/dsh` 在根 devDependencies；`pnpm-workspace.yaml` 的 `allowBuilds` 已批准其原生依赖（node-pty/koffi/protobufjs/@google/genai/dsh-subprocess-local），新增依赖需构建脚本时照此追加

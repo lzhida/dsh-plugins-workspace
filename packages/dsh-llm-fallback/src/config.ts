@@ -46,8 +46,8 @@
  *   以 `turn:step` 为 key,新 step 天然从会话指定模型重新开始
  * - 不实现 provider/* 通配条目;链中每项就是字面 `provider/model`
  *
- * 渲染设置表单:loader 用 schemastery 把本 schema 投影成 GUI(参见 dsh-guided-goal
- * 的 `Config` 导出契约);`fallbackChains` 挂 `role('modelList', ...)` 给 dsh
+ * 渲染设置表单:loader 用 schemastery 把本 schema 投影成 GUI(插件导出
+ * `Config` 契约);`fallbackChains` 挂 `role('modelList', ...)` 给 dsh
  * 前端 `SettingsValueField` 提供 picker 渲染提示(若前端不识别此 role,降级为
  * 默认对象数组输入框,功能不受影响)。
  *
