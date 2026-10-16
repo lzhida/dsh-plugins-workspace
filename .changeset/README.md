@@ -24,7 +24,8 @@ git push --follow-tags      # 6. push 永远由你手动执行,工具绝不自�
 ## 本仓库的关键配置(`config.json`)
 
 - `baseBranch: dev` —— 与仓库 `main`(发布线)/ `dev`(集成线)分支模型对齐;
-- `privatePackages: { version: true, tag: false }` —— 四个 `private: true` 的插件包
+- `privatePackages: { version: true, tag: false }` —— 私有包（当前仓库仅剩公开包
+  `@zhidal/dsh-llm-fallback`，此规则面向未来新增的私有插件包）
   同样参与版本递增与 CHANGELOG,但 Changesets 不为任何人打 `name@version` tag
   (tag 语义统一交给 `pnpm release tag`,保持 `{短名}-v{X.Y.Z}` 单一形态);
 - `access: public` —— `@zhidal/dsh-llm-fallback` 走 npm 公开发行所需;
