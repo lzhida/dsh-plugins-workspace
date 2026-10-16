@@ -50,6 +50,17 @@ describe('dsh-llm-fallback README', () => {
     expect(readme).toContain('`30000`');
   });
 
+  it('时段计划锚定核心语义(scheduleEnabled 默认关闭 / 半开区间跨夜 / 全阻塞降级放行 / 本地时区)', () => {
+    expect(readme).toContain('## 时段计划（schedule）');
+    expect(readme).toContain('`scheduleEnabled`');
+    expect(readme).toContain('`false`');
+    expect(readme).toContain('`provider/*`');
+    expect(readme).toContain('半开区间');
+    expect(readme).toContain('跨夜');
+    expect(readme).toContain('宿主机本地时区');
+    expect(readme).toContain('降级');
+  });
+
   it('配置表不再包含旧回退时机配置 fallbackWhen(0.5.0 起改为每候选重试次数)', () => {
     // 0.5.0 移除 fallbackWhen(afterRetry/immediately 两档),配置面统一为
     // 数值化 retriesBeforeSwitch。配置表/配置值层面若再出现旧字段即为文档

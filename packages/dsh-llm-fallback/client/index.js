@@ -12,8 +12,12 @@
  * - **最大回退次数**(maxRetries,0 = 链长;只限切换候选次数);
  * - **每候选重试次数**(retriesBeforeSwitch,0 = 跟随官方重试预算;
  *   0.5.0 起取代旧 fallbackWhen 回退时机下拉);
- * - **失败候选冷却跳过**(cooldownEnabled 开关 + cooldownMs 窗口时长,
- *   毫秒):失败模型短窗内不再作为后续请求起点,窗口期满自动恢复优先级。
+ * - **失败候选冷却跳过**(cooldownEnabled 开关 + cooldownMs 窗口时长,毫秒):
+ *   失败模型短窗内不再作为后续请求起点,窗口期满自动恢复优先级;
+ * - **时段计划**(0.6.0):scheduleEnabled 开关 + 规则编辑(阻塞目标从同一
+ *   模型目录勾选,支持 provider/* 通配手改;窗口 HH:mm 起止 + 星期 chips,
+ *   起点可大于终点表示跨夜,相等为全天)——高峰窗口内被阻塞目标的请求
+ *   由宿主侧插件自动改写为链上首个可用候选,全部被阻塞时降级放行;
  *
  * 为什么需要客户端包:宿主 `@deepseek-ai/dsh-settings` 的 `describe()` 只投影
  * `.volatile()` 字段给"自带页面的客户端",而 dsh 0.2.0-rc.2 **没有**通用的
@@ -94,6 +98,33 @@ globalThis.__ModuleLoader__.load({
         cooldownMs: '冷却窗口时长(毫秒)',
         cooldownMsHint:
           '失败模型保持跳过的时长,窗口过后重新验证并恢复其优先级;0 = 立即过期(等效禁用)',
+        scheduleEnabled: '时段计划',
+        scheduleEnabledHint:
+          '开启后按下方规则在指定时段自动避开被阻塞的 provider/model(改写为回退队列可用候选,对话不中断;按宿主机本地时区判定)',
+        scheduleHint:
+          '规则 = 阻塞目标 + 时段窗口;窗口内命中目标的请求自动改写为链上第一个可用候选,全部候选被阻塞时降级放行(绝不中断对话)',
+        scheduleAddRule: '添加规则',
+        scheduleRemoveRule: '删除规则',
+        scheduleRuleN: '规则',
+        scheduleTargets: '阻塞目标',
+        scheduleTargetsEmpty: '尚未选择目标;点击「编辑目标」从模型目录勾选。',
+        scheduleTargetsHint: '勾选加入阻塞目标(与回退队列同一模型目录)',
+        scheduleEditTargets: '编辑目标',
+        scheduleDoneTargets: '完成选择',
+        scheduleWindows: '时段窗口',
+        scheduleAddWindow: '添加窗口',
+        scheduleStart: '开始',
+        scheduleEnd: '结束',
+        scheduleInvalid:
+          '窗口时间格式应为 HH:mm;起点>终点 = 跨夜,相等 = 全天',
+        scheduleOvernight: '跨夜',
+        d1: '一',
+        d2: '二',
+        d3: '三',
+        d4: '四',
+        d5: '五',
+        d6: '六',
+        d7: '日',
         save: '保存',
         discard: '放弃修改',
         saving: '保存中…',
@@ -138,6 +169,35 @@ globalThis.__ModuleLoader__.load({
         cooldownMs: 'Cooldown window (ms)',
         cooldownMsHint:
           'How long a failed model stays skipped before being re-verified and restored to its priority position; 0 = expire immediately (disabled)',
+        scheduleEnabled: 'Time-window schedule',
+        scheduleEnabledHint:
+          'When on, blocked providers/models are avoided automatically during the windows below — requests are rewritten to an available fallback candidate without interrupting the conversation (host local timezone)',
+        scheduleHint:
+          'A rule pairs blocked targets with time windows; during a window, matching requests are rewritten to the first available candidate, and when every candidate is blocked they pass through unchanged (the conversation is never interrupted)',
+        scheduleAddRule: 'Add rule',
+        scheduleRemoveRule: 'Remove rule',
+        scheduleRuleN: 'Rule',
+        scheduleTargets: 'Blocked targets',
+        scheduleTargetsEmpty:
+          'No targets yet — click "Edit targets" to pick from the model catalog.',
+        scheduleTargetsHint:
+          'Check to add blocked targets (same catalog as the fallback queue)',
+        scheduleEditTargets: 'Edit targets',
+        scheduleDoneTargets: 'Done',
+        scheduleWindows: 'Time windows',
+        scheduleAddWindow: 'Add window',
+        scheduleStart: 'Start',
+        scheduleEnd: 'End',
+        scheduleInvalid:
+          'Window time must be HH:mm; start > end wraps midnight, start == end means all day',
+        scheduleOvernight: 'overnight',
+        d1: 'Mon',
+        d2: 'Tue',
+        d3: 'Wed',
+        d4: 'Thu',
+        d5: 'Fri',
+        d6: 'Sat',
+        d7: 'Sun',
         save: 'Save',
         discard: 'Discard',
         saving: 'Saving…',
@@ -165,6 +225,82 @@ globalThis.__ModuleLoader__.load({
         }
       }
       return true;
+    }
+
+    /** 窗口时间格式(HH:mm,00:00-23:59)。 */
+    var TIME_RE = /^([01]?\d|2[0-3]):[0-5]\d$/;
+
+    /** 深拷贝规则数组(draft 不可变更新的基线;days 缺失归一为空数组)。 */
+    function cloneRules(rules) {
+      return (rules || []).map(function (rule) {
+        return {
+          targets: (rule.targets || []).slice(),
+          windows: (rule.windows || []).map(function (w) {
+            return {
+              start: String(
+                w.start === undefined || w.start === null ? '' : w.start,
+              ),
+              end: String(w.end === undefined || w.end === null ? '' : w.end),
+              days: (w.days || []).slice(),
+            };
+          }),
+        };
+      });
+    }
+
+    /** 深拷贝单条规则。 */
+    function cloneRule(rule) {
+      return cloneRules([rule])[0];
+    }
+
+    /** 规则列表是否结构一致(顺序敏感;days 空数组与缺失等同)。 */
+    function sameRules(a, b) {
+      if (a.length !== b.length) return false;
+      for (var i = 0; i < a.length; i += 1) {
+        var ra = a[i];
+        var rb = b[i];
+        if (ra.targets.length !== rb.targets.length) return false;
+        for (var t = 0; t < ra.targets.length; t += 1) {
+          if (ra.targets[t] !== rb.targets[t]) return false;
+        }
+        if (ra.windows.length !== rb.windows.length) return false;
+        for (var w = 0; w < ra.windows.length; w += 1) {
+          if (ra.windows[w].start !== rb.windows[w].start) return false;
+          if (ra.windows[w].end !== rb.windows[w].end) return false;
+          var da = ra.windows[w].days || [];
+          var db = rb.windows[w].days || [];
+          if (da.length !== db.length) return false;
+          for (var d = 0; d < da.length; d += 1) {
+            if (da[d] !== db[d]) return false;
+          }
+        }
+      }
+      return true;
+    }
+
+    /**
+     * 规则是否可保存:至少一个目标与一条窗口,且窗口时间均为合法 HH:mm。
+     * 宿主侧 resolveScheduleRules 对占位规则(targets/windows 双空)宽容跳过、
+     * 半配置/非法规则整体拒绝——client 侧保存闸保持同一判定,避免把会导致
+     * 宿主拒收配置的值写出去。
+     */
+    function ruleValid(rule) {
+      if (!rule || rule.targets.length === 0 || rule.windows.length === 0) {
+        return false;
+      }
+      for (var i = 0; i < rule.windows.length; i += 1) {
+        var w = rule.windows[i];
+        if (!TIME_RE.test(String(w.start || ''))) return false;
+        if (!TIME_RE.test(String(w.end || ''))) return false;
+      }
+      return true;
+    }
+
+    /** 保存前丢弃新建未填的占位规则(targets 与 windows 双空)。 */
+    function stripPlaceholderRules(rules) {
+      return rules.filter(function (rule) {
+        return rule.targets.length > 0 || rule.windows.length > 0;
+      });
     }
 
     /**
@@ -317,6 +453,33 @@ globalThis.__ModuleLoader__.load({
       },
       noMatch: { fontSize: 12, color: T.textSecondary, padding: '8px 2px' },
       notice: { fontSize: 13, color: T.textSecondary },
+      // 时段计划:规则盒(纵向容器)与星期 chips(选中 = 品牌底色)。
+      ruleBox: {
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 8,
+        padding: 8,
+        border: '1px solid ' + T.border,
+        borderRadius: 6,
+      },
+      chip: {
+        cursor: 'pointer',
+        padding: '2px 7px',
+        borderRadius: 999,
+        border: '1px solid ' + T.borderStrong,
+        background: 'transparent',
+        color: T.textSecondary,
+        fontSize: 11,
+      },
+      chipOn: {
+        cursor: 'pointer',
+        padding: '2px 7px',
+        borderRadius: 999,
+        border: '1px solid transparent',
+        background: T.brand,
+        color: '#fff',
+        fontSize: 11,
+      },
     };
 
     function apply(ctx) {
@@ -377,6 +540,12 @@ globalThis.__ModuleLoader__.load({
         var draftCooldownMsState = useState(null);
         var draftCooldownMs = draftCooldownMsState[0];
         var setDraftCooldownMs = draftCooldownMsState[1];
+        var draftScheduleEnabledState = useState(null);
+        var draftScheduleEnabled = draftScheduleEnabledState[0];
+        var setDraftScheduleEnabled = draftScheduleEnabledState[1];
+        var draftScheduleRulesState = useState(null);
+        var draftScheduleRules = draftScheduleRulesState[0];
+        var setDraftScheduleRules = draftScheduleRulesState[1];
         var draftRevState = useState(null);
         var draftRev = draftRevState[0];
         var setDraftRev = draftRevState[1];
@@ -397,6 +566,16 @@ globalThis.__ModuleLoader__.load({
         var searchState = useState('');
         var search = searchState[0];
         var setSearch = searchState[1];
+
+        // 规则目标编辑态:当前展开目录 picker 的规则下标(-1 = 全部收起;
+        // 同一时间只展开一个,控制 DOM 规模),以及规则 picker 独立的搜索词
+        // (不与回退队列的搜索互相干扰)。
+        var openRuleState = useState(-1);
+        var openRule = openRuleState[0];
+        var setOpenRule = openRuleState[1];
+        var ruleSearchState = useState('');
+        var ruleSearch = ruleSearchState[0];
+        var setRuleSearch = ruleSearchState[1];
 
         // 语言联动:订阅 locale 快照(LocaleFace getSnapshot/subscribe 契约),
         // revision 变化(切换语言 / 字典注册)时 bump 本地计数强制重渲染,
@@ -504,13 +683,37 @@ globalThis.__ModuleLoader__.load({
             : draftCooldownEnabled;
         var cooldownMs =
           draftCooldownMs === null ? savedCooldownMs : draftCooldownMs;
+        // 时段计划:enabled 默认 false(关闭 = 零行为变化);规则缺省 []。
+        var savedScheduleEnabled = value.scheduleEnabled === true;
+        var savedScheduleRules = useMemo(
+          function () {
+            return cloneRules(value.scheduleRules || []);
+          },
+          [snap.revision, snap.value],
+        );
+        var scheduleEnabled =
+          draftScheduleEnabled === null
+            ? savedScheduleEnabled
+            : draftScheduleEnabled;
+        var scheduleRules =
+          draftScheduleRules === null ? savedScheduleRules : draftScheduleRules;
+        // 保存闸:非占位规则必须可保存(目标+窗口齐备且时间为合法 HH:mm);
+        // 占位规则(双空)允许留在草稿——保存时被剥离。
+        var scheduleValid = scheduleRules.every(function (rule) {
+          if (rule.targets.length === 0 && rule.windows.length === 0) {
+            return true;
+          }
+          return ruleValid(rule);
+        });
         var dirty =
           enabled !== (value.enabled !== false) ||
           !sameQueue(queue, currentQueue) ||
           retries !== Number(value.maxRetries || 0) ||
           retriesBefore !== Number(value.retriesBeforeSwitch || 0) ||
           cooldownEnabled !== (value.cooldownEnabled !== false) ||
-          cooldownMs !== savedCooldownMs;
+          cooldownMs !== savedCooldownMs ||
+          scheduleEnabled !== savedScheduleEnabled ||
+          !sameRules(scheduleRules, savedScheduleRules);
 
         function beginDraft() {
           if (draftQueue === null) {
@@ -520,6 +723,8 @@ globalThis.__ModuleLoader__.load({
             setDraftRetriesBefore(Number(value.retriesBeforeSwitch || 0));
             setDraftCooldownEnabled(value.cooldownEnabled !== false);
             setDraftCooldownMs(savedCooldownMs);
+            setDraftScheduleEnabled(value.scheduleEnabled === true);
+            setDraftScheduleRules(cloneRules(value.scheduleRules || []));
             setDraftRev(snap.revision);
           }
         }
@@ -557,6 +762,89 @@ globalThis.__ModuleLoader__.load({
           setDraftQueue(base);
         }
 
+        // ── 时段计划规则编辑(全部走不可变更新:先 clone 再 set)──────
+        /** 取当前草稿规则数组(未进入草稿时从已保存值克隆)。 */
+        function rulesBase() {
+          return draftScheduleRules === null
+            ? cloneRules(savedScheduleRules)
+            : draftScheduleRules;
+        }
+
+        function addScheduleRule() {
+          if (!writable || busy) return;
+          beginDraft();
+          var base = rulesBase();
+          setDraftScheduleRules(
+            base.concat([
+              { targets: [], windows: [{ start: '09:00', end: '18:00', days: [] }] },
+            ]),
+          );
+          setOpenRule(base.length); // 展开新规则的目标编辑
+        }
+
+        function removeScheduleRule(index) {
+          if (!writable || busy) return;
+          beginDraft();
+          setDraftScheduleRules(
+            rulesBase().filter(function (_, i) { return i !== index; }),
+          );
+          if (openRule === index) setOpenRule(-1);
+        }
+
+        /** 对草稿规则做一次不可变变换(fn 收到深拷贝后的数组)。 */
+        function editRules(fn) {
+          if (!writable || busy) return;
+          beginDraft();
+          setDraftScheduleRules(fn(rulesBase().map(cloneRule)));
+        }
+
+        function toggleRuleTarget(ruleIndex, provider, model) {
+          editRules(function (rules) {
+            var key = provider + '/' + model;
+            var rule = rules[ruleIndex];
+            if (!rule) return rules;
+            var at = rule.targets.indexOf(key);
+            if (at >= 0) rule.targets.splice(at, 1);
+            else rule.targets.push(key);
+            return rules;
+          });
+        }
+
+        function addScheduleWindow(ruleIndex) {
+          editRules(function (rules) {
+            var rule = rules[ruleIndex];
+            if (rule) rule.windows.push({ start: '09:00', end: '18:00', days: [] });
+            return rules;
+          });
+        }
+
+        function removeScheduleWindow(ruleIndex, windowIndex) {
+          editRules(function (rules) {
+            var rule = rules[ruleIndex];
+            if (rule) rule.windows.splice(windowIndex, 1);
+            return rules;
+          });
+        }
+
+        function setScheduleWindowTime(ruleIndex, windowIndex, field, text) {
+          editRules(function (rules) {
+            var w = rules[ruleIndex] && rules[ruleIndex].windows[windowIndex];
+            if (w) w[field] = text;
+            return rules;
+          });
+        }
+
+        function toggleScheduleWindowDay(ruleIndex, windowIndex, day) {
+          editRules(function (rules) {
+            var w = rules[ruleIndex] && rules[ruleIndex].windows[windowIndex];
+            if (!w) return rules;
+            var at = w.days.indexOf(day);
+            if (at >= 0) w.days.splice(at, 1);
+            else w.days.push(day);
+            return rules;
+          });
+        }
+
         function discard() {
           setDraftEnabled(null);
           setDraftQueue(null);
@@ -564,12 +852,15 @@ globalThis.__ModuleLoader__.load({
           setDraftRetriesBefore(null);
           setDraftCooldownEnabled(null);
           setDraftCooldownMs(null);
+          setDraftScheduleEnabled(null);
+          setDraftScheduleRules(null);
+          setOpenRule(-1);
           setDraftRev(null);
           setError(null);
         }
 
         function save() {
-          if (busy || !writable) return;
+          if (busy || !writable || !scheduleValid) return;
           var revision = draftRev === null ? snap.revision : draftRev;
           if (draftRev !== null && snap.revision !== draftRev) {
             setError('conflict');
@@ -594,12 +885,29 @@ globalThis.__ModuleLoader__.load({
                   path: ['retriesBeforeSwitch'],
                   value: retriesBefore,
                 },
+                { op: 'set', path: ['cooldownEnabled'], value: cooldownEnabled },
+                { op: 'set', path: ['cooldownMs'], value: cooldownMs },
                 {
                   op: 'set',
-                  path: ['cooldownEnabled'],
-                  value: cooldownEnabled,
+                  path: ['scheduleEnabled'],
+                  value: scheduleEnabled,
                 },
-                { op: 'set', path: ['cooldownMs'], value: cooldownMs },
+                {
+                  op: 'set',
+                  path: ['scheduleRules'],
+                  value: stripPlaceholderRules(scheduleRules).map(function (rule) {
+                    return {
+                      targets: rule.targets.slice(),
+                      windows: rule.windows.map(function (w) {
+                        return {
+                          start: w.start,
+                          end: w.end,
+                          days: (w.days || []).slice(),
+                        };
+                      }),
+                    };
+                  }),
+                },
               ],
               revision,
             )
@@ -708,6 +1016,10 @@ globalThis.__ModuleLoader__.load({
         );
 
         // 模型目录(搜索 + 限高滚动 + 勾选)
+        // 模型目录渲染(picker 复用体):回退队列与时段规则目标共用同一目录
+        // 组件(搜索 + 限高滚动 + 勾选),仅选中集 / 点选回调 / 搜索词 / 提示
+        // 文案不同;目录数据(cat)两处共享。
+        function catalogElement(selectedMap, onToggle, searchText, setSearchText, hintKey) {
         var catalogBody;
         if (cat.status === 'loading') {
           catalogBody = h('div', { style: S.hint }, t('catalogLoading'));
@@ -725,7 +1037,7 @@ globalThis.__ModuleLoader__.load({
         } else if (cat.groups.length === 0) {
           catalogBody = h('div', { style: S.hint }, t('catalogEmpty'));
         } else {
-          var visibleGroups = filteredCatalogGroups(cat.groups, search);
+          var visibleGroups = filteredCatalogGroups(cat.groups, searchText);
           catalogBody = h(
             'div',
             { style: S.section },
@@ -734,9 +1046,9 @@ globalThis.__ModuleLoader__.load({
               style: S.searchInput,
               placeholder: t('catalogSearch'),
               'aria-label': t('searchAria'),
-              value: search,
+              value: searchText,
               onChange: function (event) {
-                setSearch(event.target.value);
+                setSearchText(event.target.value);
               },
             }),
             visibleGroups.length === 0
@@ -756,9 +1068,9 @@ globalThis.__ModuleLoader__.load({
                           { key: key, style: S.check },
                           h('input', {
                             type: 'checkbox',
-                            checked: selected[key] === true,
+                            checked: selectedMap[key] === true,
                             disabled: !writable || busy,
-                            onChange: function () { toggleModel(group.id, m.id); },
+                            onChange: function () { onToggle(group.id, m.id); },
                           }),
                           h('span', null, m.name || m.id),
                           h('span', { style: S.hint }, m.id),
@@ -769,13 +1081,19 @@ globalThis.__ModuleLoader__.load({
                 ),
           );
         }
+          return h(
+            'div',
+            { style: S.section },
+            h('div', { style: S.label }, t('catalog')),
+            h('div', { style: S.hint }, t(hintKey)),
+            catalogBody,
+          );
+        }
         children.push(
           h(
             'div',
             { key: 'catalog', style: S.section },
-            h('div', { style: S.label }, t('catalog')),
-            h('div', { style: S.hint }, t('catalogHint')),
-            catalogBody,
+            catalogElement(selected, toggleModel, search, setSearch, 'catalogHint'),
           ),
         );
 
@@ -882,6 +1200,191 @@ globalThis.__ModuleLoader__.load({
           ),
         );
 
+        // ── 时段计划(schedule):开关 + 规则编辑 ──────────────────────
+        children.push(
+          h(
+            'label',
+            { key: 'scheduleEnabled', style: S.check },
+            h('input', {
+              type: 'checkbox',
+              checked: scheduleEnabled,
+              disabled: !writable || busy,
+              onChange: function () {
+                beginDraft();
+                setDraftScheduleEnabled(!scheduleEnabled);
+              },
+            }),
+            h('span', { style: S.label }, t('scheduleEnabled')),
+            h('span', { style: S.hint }, t('scheduleEnabledHint')),
+          ),
+        );
+
+        var ruleRows = scheduleRules.map(function (rule, ruleIndex) {
+          var placeholder =
+            rule.targets.length === 0 && rule.windows.length === 0;
+          var valid = placeholder || ruleValid(rule);
+          var selectedMap = {};
+          rule.targets.forEach(function (key) {
+            selectedMap[key] = true;
+          });
+          var ruleChildren = [
+            h(
+              'div',
+              { key: 'head', style: S.row },
+              h('span', { style: S.badge }, t('scheduleRuleN') + ' ' + (ruleIndex + 1)),
+              h(
+                'span',
+                { style: { flex: 1, fontSize: 13 } },
+                rule.targets.length > 0
+                  ? rule.targets.join(', ')
+                  : t('scheduleTargetsEmpty'),
+              ),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  style: S.btn,
+                  disabled: !writable || busy,
+                  onClick: function () {
+                    setOpenRule(openRule === ruleIndex ? -1 : ruleIndex);
+                  },
+                },
+                openRule === ruleIndex
+                  ? t('scheduleDoneTargets')
+                  : t('scheduleEditTargets'),
+              ),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  style: S.btn,
+                  disabled: !writable || busy,
+                  title: t('scheduleRemoveRule'),
+                  onClick: function () { removeScheduleRule(ruleIndex); },
+                },
+                '✕',
+              ),
+            ),
+          ];
+          if (!valid) {
+            ruleChildren.push(
+              h('div', { key: 'invalid', style: S.hint }, '⚠ ' + t('scheduleInvalid')),
+            );
+          }
+          if (openRule === ruleIndex) {
+            ruleChildren.push(
+              h(
+                'div',
+                { key: 'targets', style: S.section },
+                catalogElement(
+                  selectedMap,
+                  function (provider, model) {
+                    toggleRuleTarget(ruleIndex, provider, model);
+                  },
+                  ruleSearch,
+                  setRuleSearch,
+                  'scheduleTargetsHint',
+                ),
+              ),
+            );
+          }
+          ruleChildren.push(
+            h(
+              'div',
+              { key: 'windows', style: S.section },
+              h('div', { style: S.label }, t('scheduleWindows')),
+              rule.windows.map(function (w, windowIndex) {
+                var overnight =
+                  w.start.length > 0 && w.end.length > 0 && w.start > w.end;
+                return h(
+                  'div',
+                  { key: 'w' + windowIndex, style: { display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' } },
+                  h('span', { style: S.hint }, t('scheduleStart')),
+                  h('input', {
+                    type: 'time',
+                    style: S.input,
+                    value: w.start,
+                    disabled: !writable || busy,
+                    onChange: function (event) {
+                      setScheduleWindowTime(ruleIndex, windowIndex, 'start', event.target.value);
+                    },
+                  }),
+                  h('span', { style: S.hint }, t('scheduleEnd')),
+                  h('input', {
+                    type: 'time',
+                    style: S.input,
+                    value: w.end,
+                    disabled: !writable || busy,
+                    onChange: function (event) {
+                      setScheduleWindowTime(ruleIndex, windowIndex, 'end', event.target.value);
+                    },
+                  }),
+                  overnight ? h('span', { style: S.badge }, t('scheduleOvernight')) : null,
+                  [1, 2, 3, 4, 5, 6, 7].map(function (day) {
+                    var on = (w.days || []).indexOf(day) >= 0;
+                    return h(
+                      'button',
+                      {
+                        key: 'd' + day,
+                        type: 'button',
+                        style: on ? S.chipOn : S.chip,
+                        disabled: !writable || busy,
+                        title: t('d' + day),
+                        onClick: function () {
+                          toggleScheduleWindowDay(ruleIndex, windowIndex, day);
+                        },
+                      },
+                      t('d' + day),
+                    );
+                  }),
+                  h(
+                    'button',
+                    {
+                      type: 'button',
+                      style: S.btn,
+                      disabled: !writable || busy,
+                      title: t('remove'),
+                      onClick: function () {
+                        removeScheduleWindow(ruleIndex, windowIndex);
+                      },
+                    },
+                    '✕',
+                  ),
+                );
+              }),
+              h(
+                'button',
+                {
+                  type: 'button',
+                  style: S.btn,
+                  disabled: !writable || busy,
+                  onClick: function () { addScheduleWindow(ruleIndex); },
+                },
+                t('scheduleAddWindow'),
+              ),
+            ),
+          );
+          return h('div', { key: 'rule' + ruleIndex, style: S.ruleBox }, ruleChildren);
+        });
+
+        children.push(
+          h(
+            'div',
+            { key: 'scheduleRules', style: S.section },
+            ruleRows.length > 0 ? h('div', { style: S.section }, ruleRows) : null,
+            h(
+              'button',
+              {
+                type: 'button',
+                style: S.btn,
+                disabled: !writable || busy,
+                onClick: addScheduleRule,
+              },
+              t('scheduleAddRule'),
+            ),
+          ),
+        );
+
         // 状态 + 操作
         var statusText = null;
         if (!writable) statusText = t('readonly');
@@ -962,6 +1465,10 @@ globalThis.__ModuleLoader__.load({
     // name/inject/apply,多余导出对宿主无影响)。
     exports.modelMatches = modelMatches;
     exports.filteredCatalogGroups = filteredCatalogGroups;
+    exports.cloneRules = cloneRules;
+    exports.sameRules = sameRules;
+    exports.ruleValid = ruleValid;
+    exports.stripPlaceholderRules = stripPlaceholderRules;
     exports.DICT = DICT;
     module.exports = exports;
     return module.exports;

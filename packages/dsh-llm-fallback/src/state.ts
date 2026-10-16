@@ -183,8 +183,10 @@ export function resolveCandidateRetryPlan(
  * 模型也配进队列时的防呆)。
  * 传入 `cooldowns` 时(失败冷却启用)再跳过仍在冷却窗内的候选——它们
  * 在此前的 step 里失败过且尚未到期,先试排在后面的可用候选效率更高;
- * 若冷却吞掉了全部剩余候选,降级回原语义(忽略冷却只跳 pageModel):
- * 冷却只是效率优化,绝不能让链失去全部候选而提前报错。
+ * 传入 `extraBlocked` 时(时段计划启用)同样跳过被日程阻塞的候选——
+ * 冷却与日程独立叠加,任一命中即跳过;
+ * 若跳过吞掉了全部剩余候选,降级回原语义(忽略冷却与日程,只跳 pageModel):
+ * 两者都只是路由优化,绝不能让链失去全部候选而提前报错。
  * - 扫完无候选(或已达最后一项)→ 返回 null(链耗尽);
  * - 若 state.retries >= maxRetries → 返回 null(达到上限);
  * - 否则返回新 { index, retries }。
@@ -194,6 +196,7 @@ export function nextCandidate(
   maxRetries: number,
   cooldowns?: ReadonlyMap<string, number>,
   now: number = 0,
+  extraBlocked?: (candidate: Candidate) => boolean,
 ): { index: number; retries: number } | null {
   if (state.exhausted) return null;
   if (state.retries >= maxRetries) return null;
@@ -211,12 +214,16 @@ export function nextCandidate(
       skippedCooling = true;
       continue;
     }
+    if (extraBlocked?.(candidate)) {
+      skippedCooling = true;
+      continue;
+    }
     return { index: i, retries: state.retries + 1 };
   }
   if (skippedCooling) {
-    // 降级扫描:剩余候选全部在冷却中 → 忽略冷却,回到只跳 pageModel 的
-    // 原语义。被跳过的候选仍值得再试(总比报错中断对话好),到期与否由
-    // 下次 step 起点的冷却判定重新评估。
+    // 降级扫描:剩余候选全部在冷却中/被日程阻塞 → 忽略两者,回到只跳
+    // pageModel 的原语义。被跳过的候选仍值得再试(总比报错中断对话好),
+    // 到期与否由下次 step 起点的判定重新评估。
     for (let i = state.index + 1; i < state.chain.length; i++) {
       const candidate = state.chain[i];
       if (!candidate) return null;
@@ -296,17 +303,23 @@ export function currentEffectiveCandidate(
 }
 
 /**
- * step 起点的冷却跳过:会话指定模型(种子)在冷却中时,从链首找出第一个
- * 「不在冷却中且 ≠ pageModel」的候选下标,让该 step 直接从它开始——
- * 即"从下一个回退模型或此前验证可用的候选开始"。
- * - 无可用候选(链空 / 剩余全部在冷却中)→ 返回 -1:调用方保持 index=-1,
- *   按原语义从会话模型开始——冷却绝不吞掉全部候选;
+ * step 起点的候选跳过:找出第一个「不在冷却中、不被日程阻塞(可选)且
+ * ≠ pageModel」的候选下标,让该 step 直接从它开始——即"从下一个回退模型
+ * 或此前验证可用的候选开始"。
+ * - 冷却(失败驱动)与日程(时段计划,`extraBlocked`)独立叠加,任一命中即跳过;
+ * - 无可用候选(链空 / 剩余全部被跳过)→ 返回 -1:调用方保持 index=-1,
+ *   按原语义从会话模型开始——路由优化绝不吞掉全部候选;
  * - 既有防呆保持:与 pageModel 相同的队列项照旧跳过。
  */
 export function firstAvailableCandidateIndex(
   chain: ReadonlyArray<Candidate>,
   table: ReadonlyMap<string, number>,
-  options: { pageModel?: Candidate; now: number },
+  options: {
+    pageModel?: Candidate;
+    now: number;
+    /** 附加阻塞判定(时段计划);缺省 = 只按冷却判定。 */
+    extraBlocked?: (candidate: Candidate) => boolean;
+  },
 ): number {
   const page = options.pageModel;
   for (let i = 0; i < chain.length; i++) {
@@ -320,6 +333,7 @@ export function firstAvailableCandidateIndex(
       continue;
     }
     if (isCoolingDown(table, candidate, options.now)) continue;
+    if (options.extraBlocked?.(candidate)) continue;
     return i;
   }
   return -1;

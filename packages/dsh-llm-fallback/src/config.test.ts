@@ -64,6 +64,7 @@ import {
 beforeEach(() => {
   vi.spyOn(console, 'log').mockImplementation(() => {});
   vi.spyOn(console, 'error').mockImplementation(() => {});
+  vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
 
 afterEach(() => {
@@ -229,6 +230,43 @@ describe('resolveConfig', () => {
     expect(c.baseDelayMs).toBe(500);
     expect(c.maxDelayMs).toBe(30000);
     expect(c.perTurn).toBe(true);
+    // 时段计划默认关闭(存量用户零行为变化)
+    expect(c.schedule.enabled).toBe(false);
+    expect(c.schedule.rules).toEqual([]);
+  });
+
+  it('时段计划:规则归一解析;占位规则跳过;非法规则抛错(整体保留 last-good)', () => {
+    const c = resolveConfig({
+      scheduleEnabled: true,
+      scheduleRules: [
+        {
+          targets: ['deepseek-account/*', 'openai/gpt-4o'],
+          windows: [{ start: '08:30', end: '12:00' }],
+        },
+        {}, // 新建未填的占位规则 → 静默跳过
+      ],
+    });
+    expect(c.schedule.enabled).toBe(true);
+    expect(c.schedule.rules).toHaveLength(1);
+    expect(c.schedule.rules[0]?.targets).toEqual([
+      'deepseek-account/*',
+      'openai/gpt-4o',
+    ]);
+    expect(c.schedule.rules[0]?.windows).toHaveLength(1);
+    expect(c.schedule.rules[0]?.windows[0]?.startMinutes).toBe(510);
+
+    // 半配置规则 → resolveConfig 抛错(listener 保留 last-good 配置)
+    expect(() =>
+      resolveConfig({ scheduleRules: [{ targets: ['a/b'], windows: [] }] }),
+    ).toThrow(/scheduleRules\[0\]\.windows/);
+    // 窗口值非法 → 抛错(含规则与窗口下标)
+    expect(() =>
+      resolveConfig({
+        scheduleRules: [
+          { targets: ['a/b'], windows: [{ start: 'xx', end: '2:00' }] },
+        ],
+      }),
+    ).toThrow(/scheduleRules\[0\]\.windows\[0\]\.start/);
   });
 
   it('undefined / null 输入视为空对象,默认值与 resolveConfig({}) 一致', () => {
@@ -934,6 +972,108 @@ describe('agent/request listener', () => {
       async () => seed,
     );
     expect(result).toEqual(seed);
+  });
+});
+
+describe('agent/request listener 时段计划(schedule)', () => {
+  /** 全天窗口(00:00-00:00 = start==end = allDay):测试与真实时间无关。 */
+  const ALL_DAY = [{ start: '00:00', end: '00:00' }];
+  const signal = () => new AbortController().signal;
+  const seedDeepseek = async (listener: unknown): Promise<unknown> =>
+    callListener(
+      listener,
+      { turn: 1, step: 1, signal: signal() },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+
+  it('会话模型被日程阻塞 → step 起点直接改写为链上首个可用候选', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['openai/gpt-4o', 'anthropic/claude-sonnet-4'],
+      scheduleEnabled: true,
+      scheduleRules: [{ targets: ['deepseek/*'], windows: ALL_DAY }],
+    });
+    const result = await seedDeepseek(findListener(listeners, 'agent/request'));
+    // deepseek/* 被全天窗口阻塞 → 直接从 openai/gpt-4o 开始(零失败成本)
+    expect(result).toEqual({ provider: 'openai', model: 'gpt-4o' });
+    expect(console.log).toHaveBeenCalledWith(
+      expect.stringContaining('schedule skip'),
+    );
+  });
+
+  it('日程关闭(默认)时同配置不改写 seed(零行为变化)', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['openai/gpt-4o'],
+      // scheduleEnabled 缺省 = false
+      scheduleRules: [{ targets: ['deepseek/*'], windows: ALL_DAY }],
+    });
+    const result = await seedDeepseek(findListener(listeners, 'agent/request'));
+    expect(result).toEqual({ provider: 'deepseek', model: 'deepseek-chat' });
+  });
+
+  it('全部候选被阻塞 → 降级放行 seed 并 console.warn(限制绝不吞掉全部候选)', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['deepseek/deepseek-reasoner'],
+      scheduleEnabled: true,
+      scheduleRules: [{ targets: ['deepseek/*'], windows: ALL_DAY }],
+    });
+    const seed = { provider: 'deepseek', model: 'deepseek-chat' };
+    const result = await seedDeepseek(findListener(listeners, 'agent/request'));
+    expect(result).toEqual(seed);
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('all candidates blocked'),
+    );
+  });
+
+  it('日程改写后失败归因正确:冷却落在实际发送的链上候选而非会话模型', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['openai/gpt-4o'],
+      retriesBeforeSwitch: 0, // 首失败即切
+      scheduleEnabled: true,
+      scheduleRules: [{ targets: ['deepseek/*'], windows: ALL_DAY }],
+    });
+    const listener = findListener(listeners, 'agent/request');
+    const errListener = findListener(listeners, 'agent/request-error');
+    // step(1,1):seed deepseek 被日程阻塞 → 改写为 openai(state.index=0)
+    await seedDeepseek(listener);
+    // openai 失败且预算耗尽 → 链耗尽,冷却应记在 openai(实际发送方)
+    await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'openai',
+        failure: stubFailure('RATE_LIMIT'),
+        signal: signal(),
+      },
+      async () => undefined,
+    );
+    // step(2,1):seed deepseek 仍被日程阻塞;链上 openai 在冷却 →
+    // 全部不可用 → 降级放行 seed。若归因错误(冷却误记在会话模型
+    // deepseek 上),此处会改写为 openai 而非放行 seed。
+    const result = await callListener(
+      listener,
+      { turn: 2, step: 1, signal: signal() },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    expect(result).toEqual({ provider: 'deepseek', model: 'deepseek-chat' });
+    expect(console.warn).toHaveBeenCalledWith(
+      expect.stringContaining('all candidates blocked'),
+    );
+  });
+
+  it('日程启用但规则不命中(seed 不在 targets 内)→ 不改写', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['openai/gpt-4o'],
+      scheduleEnabled: true,
+      scheduleRules: [{ targets: ['anthropic/*'], windows: ALL_DAY }],
+    });
+    const result = await seedDeepseek(findListener(listeners, 'agent/request'));
+    expect(result).toEqual({ provider: 'deepseek', model: 'deepseek-chat' });
   });
 });
 
