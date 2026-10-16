@@ -27,6 +27,19 @@ interface ClientExports {
     groups: Array<{ id: string; models: Array<{ id: string; name?: string }> }>,
     query: string,
   ) => Array<{ id: string; models: Array<{ id: string; name?: string }> }>;
+  cloneRules: (rules: unknown) => Array<{
+    targets: string[];
+    windows: Array<{ start: string; end: string; days: number[] }>;
+  }>;
+  sameRules: (
+    a: Array<Record<string, unknown>>,
+    b: Array<Record<string, unknown>>,
+  ) => boolean;
+  ruleValid: (rule: {
+    targets: string[];
+    windows: Array<{ start: string; end: string }>;
+  }) => boolean;
+  stripPlaceholderRules: <T>(rules: T[]) => T[];
 }
 
 interface LoaderDefinition {
@@ -95,11 +108,12 @@ describe('dsh-llm-fallback', () => {
     expect(client).toContain(`catalogSearch: 'Search models`);
     expect(client).toContain(`catalogNoMatch: '没有匹配的模型'`);
     expect(client).toContain(`catalogNoMatch: 'No matching models'`);
-    // 搜索态与过滤管线存在,输入框受控
+    // 搜索态与过滤管线存在,输入框受控(catalogElement 为队列与规则目标
+    // 共用的 picker 体,搜索回调统一走 setSearchText 形参)
     expect(client).toContain(`var searchState = useState('')`);
     expect(client).toContain('function modelMatches(');
     expect(client).toContain('function filteredCatalogGroups(');
-    expect(client).toContain('setSearch(event.target.value)');
+    expect(client).toContain('setSearchText(event.target.value)');
   });
 
   it('client bundle 颜色接入 dsh 主题 token(暗色模式可读),不再硬编码灰阶', () => {
@@ -118,6 +132,151 @@ describe('dsh-llm-fallback', () => {
     }
     // 旧硬编码灰阶 rgba(128,128,128,*) 是暗色模式混色看不清的根因,防回归。
     expect(client).not.toContain('rgba(128,128,128');
+  });
+
+  it('client bundle 提供时段计划配置节(开关 + 规则编辑 + 目录复用 + 窗口校验)', () => {
+    const client = readPackageFile('../client/index.js');
+    // 开关与规则编辑器存在
+    expect(client).toContain("key: 'scheduleEnabled'");
+    expect(client).toContain("key: 'scheduleRules'");
+    expect(client).toContain('function addScheduleRule(');
+    expect(client).toContain('function toggleRuleTarget(');
+    // 窗口编辑用原生 time 输入;目录 picker 复用体同时服务队列与规则目标
+    expect(client).toContain("type: 'time'");
+    expect(client).toContain('function catalogElement(');
+    expect(client).toContain(
+      "catalogElement(selected, toggleModel, search, setSearch, 'catalogHint')",
+    );
+    expect(client).toContain("'scheduleTargetsHint'");
+    // 保存闸:非法规则禁止保存;占位规则保存时剥离
+    expect(client).toContain('function ruleValid(');
+    expect(client).toContain('!scheduleValid');
+    expect(client).toContain('stripPlaceholderRules(scheduleRules)');
+  });
+
+  describe('时段计划纯函数(client 导出)', () => {
+    const { exports } = loadClientExports();
+
+    it('ruleValid:目标与窗口齐备且时间为 HH:mm 才有效', () => {
+      expect(
+        ruleValidPass(exports, {
+          targets: ['a/b'],
+          windows: [{ start: '08:30', end: '12:00' }],
+        }),
+      ).toBe(true);
+      expect(
+        ruleValidPass(exports, {
+          targets: ['a/*'],
+          windows: [{ start: '22:00', end: '6:00' }],
+        }),
+      ).toBe(true);
+      // 缺目标 / 缺窗口 → 无效
+      expect(
+        ruleValidPass(exports, {
+          targets: [],
+          windows: [{ start: '1:00', end: '2:00' }],
+        }),
+      ).toBe(false);
+      expect(ruleValidPass(exports, { targets: ['a/b'], windows: [] })).toBe(
+        false,
+      );
+      // 时间非法(越界/缺冒号/空串)
+      expect(
+        ruleValidPass(exports, {
+          targets: ['a/b'],
+          windows: [{ start: '24:00', end: '2:00' }],
+        }),
+      ).toBe(false);
+      expect(
+        ruleValidPass(exports, {
+          targets: ['a/b'],
+          windows: [{ start: '1:60', end: '2:00' }],
+        }),
+      ).toBe(false);
+      expect(
+        ruleValidPass(exports, {
+          targets: ['a/b'],
+          windows: [{ start: '', end: '2:00' }],
+        }),
+      ).toBe(false);
+      expect(
+        ruleValidPass(exports, {
+          targets: ['a/b'],
+          windows: [{ start: '0900', end: '2:00' }],
+        }),
+      ).toBe(false);
+    });
+
+    it('stripPlaceholderRules:丢弃 targets 与 windows 双空的占位规则', () => {
+      const rules = [
+        {
+          targets: ['a/b'],
+          windows: [{ start: '1:00', end: '2:00', days: [] }],
+        },
+        { targets: [], windows: [] },
+        { targets: ['c/d'], windows: [] },
+      ];
+      const kept = exports.stripPlaceholderRules(rules);
+      expect(kept).toHaveLength(2);
+      expect(kept[0]).toBe(rules[0]);
+      expect(kept[1]).toBe(rules[2]);
+    });
+
+    it('sameRules:结构一致为 true(顺序敏感),任一字段差异为 false', () => {
+      const rule = {
+        targets: ['a/b', 'c/*'],
+        windows: [{ start: '1:00', end: '2:00', days: [1, 3] }],
+      };
+      const copy = {
+        targets: ['a/b', 'c/*'],
+        windows: [{ start: '1:00', end: '2:00', days: [1, 3] }],
+      };
+      expect(exports.sameRules([rule], [copy])).toBe(true);
+      // targets 顺序敏感
+      expect(
+        exports.sameRules(
+          [rule],
+          [{ targets: ['c/*', 'a/b'], windows: copy.windows }],
+        ),
+      ).toBe(false);
+      // days 差异
+      expect(
+        exports.sameRules(
+          [rule],
+          [
+            {
+              targets: rule.targets,
+              windows: [{ start: '1:00', end: '2:00', days: [1] }],
+            },
+          ],
+        ),
+      ).toBe(false);
+      // 长度差异
+      expect(exports.sameRules([rule], [])).toBe(false);
+    });
+
+    it('cloneRules:深拷贝且 days 缺失归一为空数组(改 draft 不污染基线)', () => {
+      const source = [
+        { targets: ['a/b'], windows: [{ start: '1:00', end: '2:00' }] },
+      ];
+      const cloned = exports.cloneRules(source);
+      expect(cloned[0]!.windows[0]!.days).toEqual([]);
+      cloned[0]!.targets.push('x/y');
+      cloned[0]!.windows[0]!.start = '9:99';
+      expect(source[0]!.targets).toEqual(['a/b']);
+      expect(source[0]!.windows[0]!.start).toBe('1:00');
+    });
+
+    /** ruleValid 的类型收窄调用样板。 */
+    function ruleValidPass(
+      mod: ClientExports,
+      rule: {
+        targets: string[];
+        windows: Array<{ start: string; end: string }>;
+      },
+    ): boolean {
+      return mod.ruleValid(rule);
+    }
   });
 
   describe('模型搜索过滤(client 导出的纯函数)', () => {

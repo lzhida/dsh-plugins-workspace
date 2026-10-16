@@ -35,6 +35,12 @@
  * - `retryableCodes`:视为可重试的失败码(白名单;默认对齐 dsh 宿主官方重试码
  *   `dsh-llm` 的 DEFAULT_RETRYABLE_CODES,并保留配额/上下文类超集)
  * - `perTurn`:同一 step(`turn:step`)内是否允许多次切换;`false` = 至多切换一次(one-shot)
+ * - `scheduleEnabled` / `scheduleRules`:时段计划(0.6.0 起,默认关闭)——配置的
+ *   高峰窗口内,被阻塞目标(`provider/model` 精确项或 `provider/*` 通配,与回退
+ *   队列同一模型目录选取)的请求在 `agent/request` 直接改写为链上第一个可用候选;
+ *   窗口为 `HH:mm` 半开区间(起点>终点 = 跨夜,相等 = 全天),按宿主机本地时区
+ *   判定;语义与解析见 src/schedule.ts。全部候选被阻塞时降级放行(对齐冷却
+ *   哲学"绝不吞掉全部候选")
  *
  * 主模型语义(0.5.0 起):插件配置里没有"主模型"——dsh 会话页面指定的模型
  * 就是事实主模型。回退推进时自动跳过与会话模型相同的队列项(用户把会话模型
@@ -62,6 +68,9 @@
  */
 
 import Schema from '@deepseek-ai/schemastery';
+
+import { resolveSchedule } from './schedule.ts';
+import type { ResolvedSchedule } from './schedule.ts';
 
 // ── volatile(设置面板可编辑字段)支持 ────────────────────────────────
 //
@@ -318,6 +327,13 @@ export interface ResolvedConfig {
   cooldownMs: number;
   retryableCodes: ReadonlySet<string>;
   perTurn: boolean;
+  /**
+   * 时段计划(schedule,0.6.0 起):高峰窗口内把被阻塞目标自动改写为链上
+   * 可用候选。语义与解析见 src/schedule.ts(窗口 HH:mm 半开区间、跨夜回绕、
+   * 本地时区;目标精确 `provider/model` 或通配 `provider/*`)。
+   * 默认关闭(enabled=false)——存量用户零行为变化。
+   */
+  schedule: ResolvedSchedule;
 }
 
 /**
@@ -350,6 +366,8 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     cooldownMs?: unknown;
     retryableCodes?: unknown;
     perTurn?: unknown;
+    scheduleEnabled?: unknown;
+    scheduleRules?: unknown;
   };
   const enabled = raw.enabled !== false; // 默认 true
   // fallbackChains 接受形态:旧 string[]('provider/model')与新 Object[] 混用;
@@ -405,6 +423,10 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     if (alias !== undefined) retryableCodes.add(alias);
   }
   const perTurn = raw.perTurn !== false; // 默认 true
+  // 时段计划:enabled 默认关(scheduleEnabled === true 才开,见 resolveSchedule);
+  // 规则非法时 resolveSchedule 抛错 → resolveConfig 整体失败 → listener 保留
+  // last-good 配置(与链项错误同风格)。
+  const schedule = resolveSchedule(raw.scheduleEnabled, raw.scheduleRules);
 
   return {
     enabled,
@@ -418,6 +440,7 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     cooldownMs,
     retryableCodes,
     perTurn,
+    schedule,
   };
 }
 
@@ -449,6 +472,51 @@ const ChainEntrySchema = Schema.object({
     desc(
       'Optional note shown as a subtitle or tooltip in the settings UI',
       '可选备注,设置界面里作为副标题或提示展示',
+    ),
+  ),
+});
+
+/** 单条时段窗口的 schemastery schema(半开 [start,end);跨夜/全天语义见 schedule.ts)。 */
+const ScheduleWindowSchema = Schema.object({
+  start: setDescription(
+    Schema.string().default('00:00'),
+    desc(
+      'Window start "HH:mm" in host local time',
+      '窗口起点 "HH:mm"(宿主机本地时区)',
+    ),
+  ),
+  end: setDescription(
+    Schema.string().default('00:00'),
+    desc(
+      'Window end "HH:mm" — half-open [start,end); start > end wraps midnight; start == end means all day',
+      '窗口终点 "HH:mm"——半开区间 [start,end);起点>终点 = 跨夜;相等 = 全天',
+    ),
+  ),
+  days: setDescription(
+    Schema.array(Schema.number()).default([]),
+    desc(
+      'ISO weekdays 1-7 (1=Monday) this window is active on; empty = every day',
+      '本窗口生效的 ISO 星期 1-7(1=周一);留空 = 每天',
+    ),
+  ),
+});
+
+/** 单条时段规则的 schemastery schema;targets 与回退队列同源(modelList role)。 */
+const ScheduleRuleSchema = Schema.object({
+  targets: setDescription(
+    Schema.array(Schema.string())
+      .default([])
+      .role('modelList', { source: 'dsh-llm-runtime' }),
+    desc(
+      'Blocked targets — "provider/model" or "provider/*" (all models of the provider, including future ones); picked from the same model catalog as the fallback queue',
+      '被阻塞目标——"provider/model" 精确项或 "provider/*" 通配(该 provider 全部模型,含未来新增);与回退队列同一模型目录选取',
+    ),
+  ),
+  windows: setDescription(
+    Schema.array(ScheduleWindowSchema).default([]),
+    desc(
+      'Time windows; any match blocks the targets during that window',
+      '时段窗口列表;任一窗口命中即阻塞上述目标',
     ),
   ),
 });
@@ -558,6 +626,24 @@ export const Config = Schema.object({
       desc(
         'Within one llm/stream call, allow falling back to the next candidate; if false, fall back is one-shot per request',
         '同一次 llm/stream 调用内允许多次切换;false = 每次请求至多切换一次',
+      ),
+    ),
+  ),
+  scheduleEnabled: volatileField(
+    setDescription(
+      Schema.boolean().default(false),
+      desc(
+        'Time-window schedule: during configured windows, requests to blocked providers/models are transparently rewritten to the first available fallback candidate; all-blocked degrades to passing through unchanged. Off by default — zero behavior change until enabled',
+        '时段计划:配置的高峰窗口内,被阻塞 provider/model 的请求自动改写为链上第一个可用候选;全部被阻塞时降级放行。默认关闭——开启前零行为变化',
+      ),
+    ),
+  ),
+  scheduleRules: volatileField(
+    setDescription(
+      Schema.array(ScheduleRuleSchema).default([]),
+      desc(
+        'Schedule rules: each rule pairs blocked targets ("provider/model" or "provider/*", same model catalog as the fallback queue) with time windows ("HH:mm" half-open [start,end); start > end wraps midnight; start == end = all day; host local timezone)',
+        '时段规则:每条规则 = 被阻塞目标("provider/model" 或 "provider/*",与回退队列同一模型目录)+ 时段窗口("HH:mm" 半开区间;起点>终点 = 跨夜;相等 = 全天;按宿主机本地时区判定)',
       ),
     ),
   ),
