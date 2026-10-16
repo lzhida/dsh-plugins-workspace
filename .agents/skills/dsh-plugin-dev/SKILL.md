@@ -52,7 +52,7 @@ import type { Context } from '@deepseek-ai/cordis'
 export const name = 'my-plugin'
 
 export function apply(ctx: Context): void {
-  console.log(`[${name}] plugin loaded`)   // e2e 契约，见 §5.2
+  console.log(`[${name}] plugin loaded`)   // e2e 契约，见 §5.4
   ctx.effect(() => {
     const timer = setInterval(() => {
       console.log(`[${name}] heartbeat`)
@@ -98,55 +98,141 @@ export function apply(ctx: Context): void {
 
 要点：注册 disposer 自动附着到插件（卸载即注销）；`parameters` 规约转 JSON Schema 并在 execute 前校验；组合中需有 `@deepseek-ai/dsh-system-prompt` / `@deepseek-ai/dsh-tools` 提供方，否则 PENDING。
 
-## 5. e2e 自验（真实 dsh 实例，手工 CLI 编排，统一 `test` profile）
+## 5. e2e 自验（真实 dsh 实例，四步标准流程，统一 `test` profile）
 
-e2e **无专用脚本**：直接用 `pnpm dsh` 原生命令，在独立的 **`test` profile** 中编排一个真实 dsh Web 实例做「加载级」验证；真实效果由浏览器工具在同一实例上无缝接管（§5.3）。全程以仓库根为工作目录，**所有涉及测试执行的地方一律使用 `test` profile**。
+e2e **无专用脚本**：直接用 `pnpm dsh` 原生命令，在独立的 **`test` profile** 中编排一个真实 dsh Web 实例做「加载级」+「功能级」验证；真实效果由浏览器工具在同一实例上无缝接管。全程以仓库根为工作目录，**所有涉及测试执行的地方一律使用 `test` profile**。
 
-### 5.1 编排流程（照抄即可）
+**四步固定顺序**：
+
+1. **Step 1** —— profile 解析（找到或创建，含残留预检）
+2. **Step 2** —— 安装被测插件（默认 `link:`，其他方式须说明）
+3. **Step 3** —— 启动服务 + 浏览器 MCP 能力预检（必要时自配置）+ 顺带盘点其他控制类插件/MCP
+4. **Step 4** —— 加载级三断言 + 功能级逐项验证
+
+**测试完毕的清理必须询问用户，禁止 agent 自动执行破坏性清理动作**（见 §5.6）。
+
+### 5.1 Step 1 — profile 解析（找到或创建）
+
+- 优先复用既有 profile：先查 `~/.dsh/profiles/` 是否已有 `test`；已有则做**残留预检**（profile/package.json 的 `dependencies` 与 `dsh.profile.bundles`、profile/cordis.patch.yml 中被测插件/fixture 条目、profile/node_modules 孤儿目录），有残留先**询问用户**保留为 fixture 还是清理。
+- 不存在则创建：`pnpm dsh --profile test --from-default-profile web`（约 30-60s；命令非零退出但 profile 目录已生成 = 成功）。`--from-default-profile` **只拷 bundle 清单**，不继承 web profile 的用户补丁层——MCP insert 条目（chrome-devtools 等）不会随行，需按 §5.3 步骤自配置。
+- 非 Web 目标（headless / tui 类验证）可基于 `default` 模板创建并说明差异；e2e 一律 `test` profile，**不**触碰 default profile 与已运行实例。
+- 默认端口 `3865`（3080 是上游默认，本机常被占）；新机器 3080 空闲时可改用 `--port 3080`。
+
+### 5.2 Step 2 — 安装被测插件（默认 link:，其他方式须说明）
 
 ```sh
-# 0) 预检：默认端口 3865 空闲（3080 是上游默认，本机被占）；全局 ~/.dsh 已存在
-# 0.1) 复用已有 test profile 前核查无残留：profile 的 package.json（dependencies 与
-#      dsh.profile.bundles）及 cordis.patch.yml 不应有上次被测插件，有则先执行步骤 5 清理
-# 1) profile 引导（仅首次；约 30-60s；命令非零退出但 profile 目录已生成 = 成功；test profile 已存在则跳过）
-pnpm dsh --profile test --from-default-profile web
-# 2) 构建式插件预构建（package.json 有 scripts.build 的包，如 dsh-llm-fallback）：
-#    link: 安装不触发任何生命周期脚本（pnpm 对 link: 不跑 prepare），
+# 0) 构建式插件预构建：link: 不触发任何生命周期脚本（pnpm 对 link: 不跑 prepare），
 #    dist 缺失时宿主只报静默的 failed to import
 pnpm --filter <pkg-name> build
-# 3) 安装被测插件（--profile 必须置于 plugin 子命令之后，否则 too many arguments；
+# 1) link: 安装（--profile 必须置于 plugin 子命令之后，否则 too many arguments；
 #    link: 后必须是绝对路径——相对路径按 pnpm 语义解析到 profile 目录而非 CWD）
 pnpm dsh plugin --profile test add link:<仓库绝对路径>/packages/<name>
-#    临时插件同理：pnpm dsh plugin --profile test add link:<仓库绝对路径>/.agents/tmp/<kebab>
-# 4) 启动 Web UI（进程前台长跑即保活；带 token 的 UI 地址 banner 可能 40s+ 才打印）
-pnpm dsh --profile test --no-open --port 3865
-# 5) 断言通过、浏览器验证完成后，结束进程（Ctrl/C 或杀进程树）并清理
-pnpm dsh plugin --profile test remove <pkg-name>
+#    临时插件同理：link:<仓库绝对路径>/.agents/tmp/<kebab>
+# 2) 核对注册：profile/package.json 的 dependencies 与 dsh.profile.bundles 应含被测包
 ```
 
-### 5.2 三项断言（加载级）
+**`link:` 是默认与推荐方式**，因它指向 TS 源码入口（`main: src/index.ts`）即可直接加载，便于迭代。**其他安装方式仅当被测对象就是安装链路本身**时使用，并必须明确说明与 `link:` 的差异：
+
+| 安装方式 | 命令示例 | 适用 | 已知约束 |
+|----------|----------|------|----------|
+| `link:` | `plugin add link:<abs>/packages/<n>` | 默认；本地开发迭代 | TS 源码入口依赖 Node 原生 type-stripping（仅 `link:` 下可用） |
+| npm registry | `plugin add @scope/<pkg>@<exact>` | 验证实体安装 / 修复 e2e | 必须**精确版本号**（registry 元数据分钟级边缘缓存，`@latest` 易命中未传播旧版）；实体安装必须 JS 入口（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`） |
+| git | `plugin add <git-url>#<ref>` | 验证 git 安装 | 同样必须 JS 入口；git 依赖消费方需 `allowBuilds` 放行 |
+| tarball | `plugin add <pkg>-<ver>.tgz` | 验证打包完整性 | 同样必须 JS 入口；首次 add 中断重跑会丢 `dsh.profile.bundles` 注册 |
+
+构建式插件（如 `dsh-llm-fallback`）无论哪种安装方式都先 build 一次，再加 client bundle（`./client/index.js` 入口）；`cordis.patch.yml` 内的 `name: <pkg>` 与 `package.json#name` 必须一致，否则 web boot 静默失败。
+
+### 5.3 Step 3 — 启动服务 + 浏览器 MCP 能力预检与自配置
+
+```sh
+# 启动 Web UI（进程后台长跑即保活；带 token 的 UI 地址 banner 可能 40s+ 才打印）
+pnpm dsh --profile test --no-open --port 3865
+```
+
+**MCP 能力预检序列**（在浏览器工具派上用场之前完成）：
+
+1. **本会话工具清单**：确认是否已有 `mcp__chrome__*`（chrome-devtools MCP）；同时盘点其他控制类插件/MCP（`mcp__victauri__*` 等），避免验证手段重复建设。
+2. **所属 dsh profile 补丁层**：`pnpm dsh --profile <当前 profile> --dump-config | grep mcp` 看组合树中是否存在 mcp-client 实例；或直接读 `~/.dsh/profiles/<当前 profile>/cordis.patch.yml` 与 `~/.dsh/cordis.patch.yml` 查 `- insert:` 条目。
+
+**缺失时的自配置**：向验证 agent 所在 profile 的 `cordis.patch.yml` 追加 `- insert:` 块（**必须 insert，不能平级 id 覆盖**——bundle 层不存在该条目，id 覆盖会报 entry not found 被丢弃）：
+
+```yaml
+- insert:
+    - id: mcp-chrome-devtools-win
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: chrome
+        transport: stdio
+        command: chrome-devtools-mcp
+        args:
+          - '--executablePath=C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe'
+          - '--no-usage-statistics'
+          - '--isolated'
+      disabled: !!js process.platform !== 'win32'
+    - id: mcp-chrome-devtools-linux
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: chrome
+        transport: stdio
+        command: chrome-devtools-mcp
+        args:
+          - '--executablePath=/usr/bin/microsoft-edge-stable'
+          - '--no-usage-statistics'
+          - '--isolated'
+      disabled: !!js process.platform === 'win32'
+```
+
+写入后 HMR 或重启实例生效（`chrome-devtools-mcp` 经 mise shim 在 PATH）。**注意**：被测 profile 本身不需要浏览器 MCP——浏览器工具从验证侧连被测实例的 UI；只有「agent 自驱」模式（验证 agent 会话跑在被测 profile 内）才需给被测 profile 配。
+
+### 5.4 Step 4a — 加载级三断言
+
+实例输出出现后，逐项断言：
 
 1. **加载日志契约**：实例输出出现 `[<name>] ` 前缀格式的日志行（如 `[my-plugin] plugin loaded`）——插件 `apply` 时必须打印。按该结构化格式匹配，路径/堆栈中出现裸包名**不算**加载成功。类式插件（`extends Service`，如 shell executor）为惰性实例化，装载日志须打在**模块顶层**。
 2. **端口可达**：`http://127.0.0.1:3865` 有响应。
 3. **UI 页面健康**：打开 banner 打印的带 token URL，页面状态 <400（auth 中间件对带 token 首访返回 303 属健康——认证决策流由后续会话续接）。
 
-### 5.3 浏览器级验证（真实效果，chrome devtool MCP 接管）
+### 5.5 Step 4b — 功能级逐项验证
 
-装载级断言不发起模型调用；凭证全局共享，**真实调用验证可在同一 profile 无缝继续**。保持 §5.1 步骤 4 的实例不退出，用浏览器工具打开 tokened URL：
+**方法论**：从插件 README / 本次变更说明提取「本次更新特性清单」，逐项映射到验证手段（UI 配置面 / 行为契约面 / 轨迹与日志面），形成可勾选清单后逐项执行。
+
+保持 §5.3 实例不退出，用浏览器工具打开 tokened URL：
 
 1. **页面健康**：标题 `DeepSeek Harness`，console 无与目标插件相关的错误（web-all/git-graph 等生态噪音可忽略）；
 2. **插件面板**：设置 → 插件 →「已安装」分组中目标插件显示「已启用」；
-3. **真实调用**：新会话发自然任务（需要专测某工具时在任务里点名该工具），发送后等响应，展开「N 次工具调用」核查参数；
-4. **轨迹核查（比 UI 可靠）**：从 `~/.dsh/sessions/--<cwd-dir>--/session-*/session.v3.jsonl.zstd` 流式解压（Node `zstandard` 多帧流式读，`decompress()` 只出首帧），提取 `tool/call` 的 arguments 逐项核查；
-5. **纯净 profile 对比法**（排除 hindsight 记忆污染）：记忆会把过往成功经验注入新会话——验证「默认行为」必须用无记忆环境。建独立 profile（`pnpm dsh --profile <name> --from-default-profile web` 引导 + add 被测包；`<name>` 须另起名，勿复用主测试 profile `test`），跑零工具暗示的任务，从该 profile 轨迹核实工具选择；
-6. **提示词契约**：description/section 等引导文案是行为定义，测试里加「存在性断言」（如 `toContain('Do NOT shell out')`）防回归删除。
+3. **配置面**：本次更新涉及的所有配置项（开关、列表、规则编辑器、主题变量等）均能在配置卡中正确渲染、保存即时生效、保存·放弃 + revision 冲突检测；
+4. **行为契约面**：本次更新的功能逻辑逐一验证（窗口/规则/事件触发/降级路径等），发会话任务触发真实调用，展开「N 次工具调用」核查参数；
+5. **真实调用**：新会话发自然任务（需要专测某工具时在任务里点名该工具），发送后等响应，核查响应符合行为契约；
+6. **轨迹核查（比 UI 可靠）**：从 `~/.dsh/sessions/--<cwd-dir>--/session-*/session.v3.jsonl.zstd` 流式解压（Node `zstandard` 多帧流式读，`decompress()` 只出首帧），提取 `tool/call` 的 arguments 逐项核查；
+7. **纯净 profile 对比法**（排除 hindsight 记忆污染）：记忆会把过往成功经验注入新会话——验证「默认行为」必须用无记忆环境。建独立 profile（`pnpm dsh --profile <name> --from-default-profile web` 引导 + add 被测包；`<name>` 须另起名，勿复用主测试 profile `test`），跑零工具暗示的任务，从该 profile 轨迹核实工具选择；
+8. **提示词契约**：description/section 等引导文案是行为定义，测试里加「存在性断言」（如 `toContain('Do NOT shell out')`）防回归删除。
 
-### 5.4 注意事项
+**验证完毕：所有项打勾、证据齐备后，进入 §5.6 清理决策点。**
+
+### 5.6 测试完毕——清理决策必须询问用户（重点）
+
+**测试验证全部 PASS 后，先不清理**；向用户提交「测试产物清单」供选择：
+
+- 安装的插件（`link:` 实体 / 节点链接）；
+- profile `cordis.patch.yml` 中本次新增/修改的条目（含 fixture 配置如 broken-model provider、agent-default-model 改写等）；
+- node_modules 孤儿目录；
+- 工作区被改动的文件（构建产物、临时 scratch、未提交修改）；
+- 后台实例进程。
+
+询问决策维度（可多选）：
+
+- **全部清理，恢复干净态**（执行 `plugin remove` + 剥离 patch 条目 + 清孤儿 + 删 scratch + 结束实例）；
+- **保留为 fixture**（profile + 插件原样留着，下次复用——参考历史 `llmfb-entity-test` 脚手架的复用方式）；
+- **部分清理**（用户逐项圈选要清/要留的）。
+
+**原则**：插件是否清理是**用户决策**而非 agent 自动行为。破坏性动作（plugin remove、patch 回滚、删 scratch、结束实例）一律先经用户确认。
+
+### 5.7 注意事项
 
 - **profile 隔离**：profile 只隔离**插件列表**，`DSH_HOME` 共享全局 `~/.dsh`（模型凭证不隔离）；不触碰默认 profile 与已运行实例。**e2e 一律在 `test` profile 上执行，不要在 default profile 上跑**。
-- **清理义务**：profile 只隔离插件列表——测完必须 `plugin remove` 被测插件并结束实例（§5.1 步骤 5），残留会进入后续会话。
-- **agent 自驱**：dsh agent 会话内可用后台 job 方式执行同一流程（步骤 4 后台长跑 + 浏览器/MCP 工具接管验证），步骤与 §5.1 完全一致；清理同样必须显式执行。
-- **permission presets 互斥**（仅非禁闭执行器类插件）：被测插件独占 `ctx.shell` 且非 confining 时，permission presets 构造期检查抛错（要求禁闭执行器）——在该 profile 的 `cordis.patch.yml` 顶层追加 `- id: permission` + `  disabled: true`（附注释行说明缘由），测完剥离恢复官方 permission 栈。
+- **agent 自驱**：dsh agent 会话内可用后台 job 方式执行同一流程（Step 3 后台长跑 + 浏览器/MCP 工具接管验证），步骤与 §5.1–§5.6 完全一致；清理同样**必须询问用户**。
+- **permission presets 互斥**（仅非禁闭执行器类插件）：被测插件独占 `ctx.shell` 且非 confining 时，permission presets 构造期检查抛错（要求禁闭执行器）——在该 profile 的 `cordis.patch.yml` 顶层追加 `- id: permission` + `  disabled: true`（附注释行说明缘由）；该条目属于「本次新增/修改」应在 §5.6 清理询问中由用户决策。
+- **避免重复配置**：§5.3 能力预检的盘点同时给出「当前 dsh agent 已有 MCP 清单」，防止为同一能力重复配置（如同时存在 victauri 与 tauri-mcp 时只保留一个）。
 
 ## 6. 门禁链（提交前必过）
 

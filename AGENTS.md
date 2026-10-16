@@ -84,11 +84,13 @@ pnpm release list    # 列出子包版本与 tag 预览
   - `vi.spyOn(console, 'log')` 静默计数，`afterEach` 里 `vi.useRealTimers()` + `vi.restoreAllMocks()` 还原。
 - 提交前门禁链：手动跑 `pnpm lint && pnpm typecheck && pnpm test`；pre-commit 钩子自动跑 lint-staged，pre-push 跑 `pnpm test`。
 
-### E2E（Web UI 加载级验证）
+### E2E（真实 dsh 实例，四步标准流程）
 
-- **无专用脚本**：按 `.agents/skills/dsh-plugin-dev/SKILL.md` §5 的手工 CLI 流程编排——`pnpm dsh --profile test --from-default-profile web` 引导（仅首次）→ 构建式插件先 `pnpm --filter <pkg> build` → `pnpm dsh plugin --profile test add link:<仓库绝对路径>/packages/<name>`（**`--profile` 必须置于 `plugin` 子命令之后；`link:` 后必须是绝对路径——相对路径按 pnpm 语义解析到 profile 目录**）→ `pnpm dsh --profile test --no-open --port 3865` 启动 → 断言 → `plugin remove` 清理
-- 机制：全局 `~/.dsh` + 独立 profile（统一 `test`）启动真实 dsh；profile 隔离插件列表（不触碰默认 profile 与已运行实例），模型凭证全局共享；包内 `dsh.bundle.patch`（cordis.patch.yml 的 `- insert` 行）使 `link:` 安装的插件自动激活为 profile 层
-- 三项断言：① 实例输出出现插件加载日志——**契约：插件 `apply` 时须打印 `[name] ` 前缀格式的日志行**（如 `[dsh-llm-fallback] plugin loaded`），按该结构化格式匹配，路径中出现裸包名不算 ② Web 服务端口可访问 ③ 带 token 的 UI URL 页面返回 <400；结束后结束进程并 `plugin remove` 被测插件，恢复 profile 干净态
-- 默认端口 3865——**3080 是上游默认，3865 只是本机现状产物**（本机 3080 被已运行实例占用）；新机器 3080 空闲时可改用 `--port 3080`
-- **浏览器级验证（Web 效果）**：保持实例存活，用 chrome-devtool MCP（或任意浏览器工具）打开 banner 打印的 tokened URL，验证：① 页面健康（标题 DeepSeek Harness、console 无错误）② 设置 → 插件 → 插件列表中目标插件显示「已启用」③ 工具实际调用：凭证全局共享，同 profile 发会话任务即可验证到这一层
-- 前提：`@deepseek-ai/dsh` 在根 devDependencies；`pnpm-workspace.yaml` 的 `allowBuilds` 已批准其原生依赖（node-pty/koffi/protobufjs/@google/genai/dsh-subprocess-local），新增依赖需构建脚本时照此追加
+- **无专用脚本**：完整流程在 `.agents/skills/dsh-plugin-dev/SKILL.md` §5，按四步标准顺序执行：① profile 解析 → ② 安装被测插件 → ③ 启动 + 浏览器 MCP 预检 → ④ 加载级三断言 + 功能级逐项验证。**测试完毕的清理必须询问用户**，禁止 agent 自动执行破坏性清理动作（见 SKILL.md §5.6）。
+- **profile**：统一用 `test`；复用前做残留预检（package.json dependencies、cordis.patch.yml、node_modules 孤儿）；不存在则 `pnpm dsh --profile test --from-default-profile web` 创建。`--from-default-profile` 只拷 bundle 清单，不继承 web profile 的用户补丁层。
+- **安装**：默认 `pnpm dsh plugin --profile test add link:<仓库绝对路径>/packages/<name>`（**`--profile` 须置于 `plugin` 之后；`link:` 后必须是绝对路径**）；构建式插件先 `pnpm --filter <pkg> build`；其他安装方式（npm/git/tarball）仅当被测对象就是安装链路时使用，并须按 SKILL.md §5.2 表逐项注明约束。
+- **MCP 能力预检**（浏览器验证前必跑）：① 本会话是否已有 `mcp__chrome__*` 工具；② `pnpm dsh --profile <p> --dump-config | grep mcp` 查 mcp-client 实例；缺失时自配置为所属 profile `cordis.patch.yml` 的 `- insert:` 块（**必须 insert，不能平级 id 覆盖**——bundle 层不存在该条目），HMR/重启生效。顺带盘点其他控制类插件/MCP（victauri 桥等），避免重复建设。
+- **加载级三断言**：① 实例输出出现 `[<name>] ` 前缀格式的日志行（按结构化格式匹配，路径中裸包名不算）② 端口可达（默认 3865；3080 是上游默认，本机被占）③ tokened UI URL 状态 <400。
+- **功能级逐项验证**：从 README/变更说明派生「本次更新特性清单」→ 映射到 UI 配置面 / 行为契约面 / 轨迹与日志面 → 逐项打勾。轨迹核查：`~/.dsh/sessions/--<cwd-dir>--/session-*/session.v3.jsonl.zstd` 流式解压。纯净 profile 对比法用于排除 hindsight 记忆污染。
+- **测试完毕的清理**：先不清理，提交产物清单（已装插件、patch 新增/修改条目、孤儿目录、工作区改动、后台实例）由用户选择「全部清理 / 保留为 fixture / 部分清理」；破坏性动作一律先经用户确认。
+- 前提：`@deepseek-ai/dsh` 在根 devDependencies；`pnpm-workspace.yaml` 的 `allowBuilds` 已批准其原生依赖（node-pty/koffi/protobufjs/@google/genai/dsh-subprocess-local），新增依赖需构建脚本时照此追加。
