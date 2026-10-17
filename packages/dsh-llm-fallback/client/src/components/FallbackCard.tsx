@@ -5,14 +5,14 @@
  *   hook 之前提前返回，符合 hooks 规则）。
  * - 其余（`view === 'page'`）：插件详情页「配置」区块的完整表单——
  *   启用开关、回退队列、模型目录（搜索+勾选）、最大切换候选数、
- *   每候选重试次数、失败候选冷却、时段计划、保存/放弃操作区。
+ *   每候选重试次数、失败候选冷却、保存/放弃操作区。
  *
  * 状态模型（对齐旧版手写实现）：
  * - configForms 快照订阅（scope.getSnapshot/subscribe 契约）；
  * - 单一草稿对象（旧版 8 个 useState 平铺的收敛；null = 无未保存编辑），
- *   保存闸 = isDirty（脏检查）+ scheduleRulesValid（规则校验）+
+ *   保存闸 = isDirty（脏检查）+
  *   revision 一致性（冲突检测，err.code SETTINGS_CONFLICT 同映射）；
- * - 模型目录共享给队列与规则目标两处 picker（useModelCatalog）；
+ * - 模型目录共享（useModelCatalog）；
  * - locale 快照订阅（useLocaleTick）驱动语言切换即时重渲染。
  *
  * @module dsh-llm-fallback/client/components/FallbackCard
@@ -26,11 +26,9 @@ import {
   isDirty,
   readSavedSettings,
   resolveView,
-  scheduleRulesValid,
   toSelectedMap,
   type DraftState,
 } from '../lib/settings.ts';
-import { cloneRule, type ScheduleRule } from '../lib/schedule.ts';
 import type {
   CardProps,
   ConfigScope,
@@ -42,7 +40,6 @@ import { S } from '../styles.ts';
 import { CheckRow, NumberRow } from './fields.tsx';
 import { CatalogPicker, type CatalogData } from './CatalogPicker.tsx';
 import { QueueSection } from './QueueSection.tsx';
-import { ScheduleSection } from './ScheduleSection.tsx';
 
 /** 配置卡 props（t 由 plugin 层注入；scope/session 来自客户端上下文）。 */
 export interface FallbackCardProps extends CardProps {
@@ -83,11 +80,8 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
 
   // 队列 picker 的搜索词（纯视图过滤：不影响草稿、队列与保存逻辑）。
   const [search, setSearch] = React.useState('');
-  // 规则目标 picker 的展开下标与搜索词（受控传给 ScheduleSection）。
-  const [openRule, setOpenRule] = React.useState(-1);
-  const [ruleSearch, setRuleSearch] = React.useState('');
 
-  // 模型目录（队列与规则目标共享）。
+  // 模型目录（队列 picker 数据源）。
   const { cat, reload } = useModelCatalog(session);
   const catalog = React.useMemo<CatalogData>(
     () => ({ groups: cat.groups, status: cat.status, onRetry: reload }),
@@ -101,7 +95,6 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
   );
   const view = resolveView(saved, draft);
   const dirty = isDirty(view, saved);
-  const scheduleValid = scheduleRulesValid(view.scheduleRules);
   const writable = snap.writable;
 
   /** 取当前草稿（无草稿则从已保存视图初始化——旧版 beginDraft）。 */
@@ -146,24 +139,13 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
     patchDraft(() => ({ queue: base }));
   }
 
-  /** 对草稿规则做一次不可变变换（fn 收到深拷贝后的数组）。 */
-  function editRules(fn: (rules: ScheduleRule[]) => ScheduleRule[]): void {
-    if (!writable || busy) return;
-    patchDraft((base) => ({
-      scheduleRules: fn(
-        (base.scheduleRules ?? saved.scheduleRules).map(cloneRule),
-      ),
-    }));
-  }
-
   function discard(): void {
     setDraft(null);
-    setOpenRule(-1);
     setError(null);
   }
 
   function save(): void {
-    if (busy || !writable || !scheduleValid) return;
+    if (busy || !writable) return;
     const revision = draft?.revision ?? snap.revision;
     if (draft !== null && snap.revision !== draft.revision) {
       setError('conflict');
@@ -272,23 +254,6 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
         value={view.cooldownMs}
         disabled={!writable || busy}
         onChange={(n) => patchDraft(() => ({ cooldownMs: n }))}
-      />
-
-      <ScheduleSection
-        t={t}
-        enabled={view.scheduleEnabled}
-        rules={view.scheduleRules}
-        writable={writable}
-        busy={busy}
-        catalog={catalog}
-        onToggleEnabled={() =>
-          patchDraft(() => ({ scheduleEnabled: !view.scheduleEnabled }))
-        }
-        editRules={editRules}
-        openRule={openRule}
-        onOpenRuleChange={setOpenRule}
-        ruleSearch={ruleSearch}
-        onRuleSearchChange={setRuleSearch}
       />
 
       <div style={S.row}>

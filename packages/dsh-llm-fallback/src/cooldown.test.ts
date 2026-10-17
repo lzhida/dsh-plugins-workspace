@@ -309,38 +309,6 @@ describe('firstAvailableCandidateIndex', () => {
       ),
     ).toBe(1);
   });
-
-  it('extraBlocked(时段计划)与冷却独立叠加:任一命中即跳过', () => {
-    const table = new Map<string, number>([
-      [cooldownKey({ provider: 'a', model: 'x' }), 5000],
-    ]);
-    // a 冷却 + b 被日程阻塞 → 首个可用是 c(下标 2)
-    expect(
-      firstAvailableCandidateIndex(chain, table, {
-        pageModel: { provider: 'p', model: 'm' },
-        now: 1000,
-        extraBlocked: (c) => c.provider === 'b',
-      }),
-    ).toBe(2);
-    // 无冷却、仅日程阻塞 a → 首个可用是 b(下标 1)
-    expect(
-      firstAvailableCandidateIndex(chain, new Map(), {
-        pageModel: { provider: 'p', model: 'm' },
-        now: 1000,
-        extraBlocked: (c) => c.provider === 'a',
-      }),
-    ).toBe(1);
-  });
-
-  it('extraBlocked 吞掉全部候选 → -1(路由优化绝不吞掉全部候选,由调用方降级)', () => {
-    expect(
-      firstAvailableCandidateIndex(chain, new Map(), {
-        pageModel: { provider: 'p', model: 'm' },
-        now: 1000,
-        extraBlocked: () => true,
-      }),
-    ).toBe(-1);
-  });
 });
 
 // ── 3. nextCandidate 冷却感知扫描 ────────────────────────────────────
@@ -394,29 +362,6 @@ describe('nextCandidate 冷却感知扫描', () => {
     const s2 = initState(chain, page);
     s2.retries = 2;
     expect(nextCandidate(s2, 2, new Map(), 0)).toBeNull();
-  });
-
-  it('extraBlocked(时段计划)与冷却独立叠加:被阻塞候选被跳过', () => {
-    const s = initState(chain, page);
-    expect(
-      nextCandidate(s, 10, new Map(), 1000, (c) => c.provider === 'a'),
-    ).toEqual({ index: 1, retries: 1 });
-    // a 冷却 + b 被日程阻塞 → 跳到 c
-    const s2 = initState(chain, page);
-    const table = new Map<string, number>([
-      [cooldownKey({ provider: 'a', model: 'x' }), 5000],
-    ]);
-    expect(
-      nextCandidate(s2, 10, table, 1000, (c) => c.provider === 'b'),
-    ).toEqual({ index: 2, retries: 1 });
-  });
-
-  it('extraBlocked 吞掉全部剩余候选 → 降级回原顺序(忽略日程)', () => {
-    const s = initState(chain, page);
-    expect(nextCandidate(s, 10, new Map(), 1000, () => true)).toEqual({
-      index: 0,
-      retries: 1,
-    });
   });
 });
 

@@ -1,9 +1,8 @@
 /**
  * 模型目录 picker：搜索框 + 限高滚动列表 + 勾选。
  *
- * 回退队列与时段规则目标共用同一目录组件（旧版 catalogElement 复用体的
- * 组件化），仅选中集 / 点选回调 / 搜索词 / 提示文案不同；目录数据
- * （groups/status/retry）由父级 useModelCatalog 提供并两处共享。
+ * 由旧版 catalogElement 复用体组件化而来；目录数据
+ * （groups/status/retry）由父级 useModelCatalog 提供并共享。
  *
  * @module dsh-llm-fallback/client/components/CatalogPicker
  */
@@ -13,7 +12,7 @@ import { filteredCatalogGroups } from '../lib/catalog.ts';
 import type { CatalogGroup, TFn } from '../types.ts';
 import { S } from '../styles.ts';
 
-/** picker 的目录数据与状态（父级共享，队列与规则目标不各拉一份）。 */
+/** picker 的目录数据与状态（父级共享）。 */
 export interface CatalogData {
   groups: CatalogGroup[];
   status: 'idle' | 'loading' | 'ready' | 'error';
@@ -23,7 +22,7 @@ export interface CatalogData {
 /** 模型目录 picker props。 */
 export interface CatalogPickerProps {
   t: TFn;
-  /** 提示文案键（catalogHint / scheduleTargetsHint）。 */
+  /** 提示文案键（catalogHint）。 */
   hintKey: string;
   catalog: CatalogData;
   selected: Record<string, boolean>;

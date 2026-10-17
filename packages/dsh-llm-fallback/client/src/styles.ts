@@ -125,41 +125,7 @@ export const S = {
   },
   noMatch: { fontSize: 12, color: T.textSecondary, padding: '8px 2px' },
   notice: { fontSize: 13, color: T.textSecondary },
-  // 时段计划：规则盒（纵向容器）与星期 chips（选中 = 品牌底色）。
-  ruleBox: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 8,
-    padding: 8,
-    border: '1px solid ' + T.border,
-    borderRadius: 6,
-  },
-  chip: {
-    cursor: 'pointer',
-    padding: '2px 7px',
-    borderRadius: 999,
-    border: '1px solid ' + T.borderStrong,
-    background: 'transparent',
-    color: T.textSecondary,
-    fontSize: 11,
-  },
-  chipOn: {
-    cursor: 'pointer',
-    padding: '2px 7px',
-    borderRadius: 999,
-    border: '1px solid transparent',
-    background: T.brand,
-    color: '#fff',
-    fontSize: 11,
-  },
-  /** 窗口行（起止输入 + 星期 chips 换行）。 */
-  windowRow: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 6,
-    flexWrap: 'wrap',
-  },
-  /** 队列/规则行的伸展中段（占满剩余宽度）。 */
+  /** 队列行的伸展中段（占满剩余宽度）。 */
   grow: { flex: 1, fontSize: 13 },
   /** 操作按钮组（保存/放弃）。 */
   actions: { display: 'flex', gap: 8 },

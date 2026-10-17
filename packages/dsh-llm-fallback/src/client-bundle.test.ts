@@ -6,12 +6,6 @@ import { PKG_NAME } from '../client/src/constants.ts';
 import { DICT } from '../client/src/dict.ts';
 import { T, LEGACY_GRAY_PREFIX } from '../client/src/styles.ts';
 import {
-  cloneRules,
-  ruleValid,
-  sameRules,
-  stripPlaceholderRules,
-} from '../client/src/lib/schedule.ts';
-import {
   filteredCatalogGroups,
   modelMatches,
 } from '../client/src/lib/catalog.ts';
@@ -133,106 +127,6 @@ describe('配置卡字典与主题', () => {
     expect(LEGACY_GRAY_PREFIX).toBe('rgba(128,128,128');
     const client = readPackageFile('../client/index.js');
     expect(client).not.toContain('rgba(128,128,128');
-  });
-});
-
-// ── 时段计划纯函数 ──────────────────────────────────────────────────
-
-describe('时段计划纯函数', () => {
-  it('ruleValid:目标与窗口齐备且时间为 HH:mm 才有效', () => {
-    expect(
-      ruleValid({
-        targets: ['a/b'],
-        windows: [{ start: '08:30', end: '12:00' }],
-      }),
-    ).toBe(true);
-    expect(
-      ruleValid({
-        targets: ['a/*'],
-        windows: [{ start: '22:00', end: '6:00' }],
-      }),
-    ).toBe(true);
-    // 缺目标 / 缺窗口 → 无效
-    expect(
-      ruleValid({ targets: [], windows: [{ start: '1:00', end: '2:00' }] }),
-    ).toBe(false);
-    expect(ruleValid({ targets: ['a/b'], windows: [] })).toBe(false);
-    // 时间非法(越界/缺冒号/空串)
-    expect(
-      ruleValid({
-        targets: ['a/b'],
-        windows: [{ start: '24:00', end: '2:00' }],
-      }),
-    ).toBe(false);
-    expect(
-      ruleValid({
-        targets: ['a/b'],
-        windows: [{ start: '1:60', end: '2:00' }],
-      }),
-    ).toBe(false);
-    expect(
-      ruleValid({ targets: ['a/b'], windows: [{ start: '', end: '2:00' }] }),
-    ).toBe(false);
-    expect(
-      ruleValid({
-        targets: ['a/b'],
-        windows: [{ start: '0900', end: '2:00' }],
-      }),
-    ).toBe(false);
-  });
-
-  it('stripPlaceholderRules:丢弃 targets 与 windows 双空的占位规则', () => {
-    const rules = [
-      { targets: ['a/b'], windows: [{ start: '1:00', end: '2:00', days: [] }] },
-      { targets: [], windows: [] },
-      { targets: ['c/d'], windows: [] },
-    ];
-    const kept = stripPlaceholderRules(rules);
-    expect(kept).toHaveLength(2);
-    expect(kept[0]).toBe(rules[0]);
-    expect(kept[1]).toBe(rules[2]);
-  });
-
-  it('sameRules:结构一致为 true(顺序敏感),任一字段差异为 false', () => {
-    const rule = {
-      targets: ['a/b', 'c/*'],
-      windows: [{ start: '1:00', end: '2:00', days: [1, 3] }],
-    };
-    const copy = {
-      targets: ['a/b', 'c/*'],
-      windows: [{ start: '1:00', end: '2:00', days: [1, 3] }],
-    };
-    expect(sameRules([rule], [copy])).toBe(true);
-    // targets 顺序敏感
-    expect(
-      sameRules([rule], [{ targets: ['c/*', 'a/b'], windows: copy.windows }]),
-    ).toBe(false);
-    // days 差异
-    expect(
-      sameRules(
-        [rule],
-        [
-          {
-            targets: rule.targets,
-            windows: [{ start: '1:00', end: '2:00', days: [1] }],
-          },
-        ],
-      ),
-    ).toBe(false);
-    // 长度差异
-    expect(sameRules([rule], [])).toBe(false);
-  });
-
-  it('cloneRules:深拷贝且 days 缺失归一为空数组(改 draft 不污染基线)', () => {
-    const source = [
-      { targets: ['a/b'], windows: [{ start: '1:00', end: '2:00' }] },
-    ];
-    const cloned = cloneRules(source);
-    expect(cloned[0].windows[0].days).toEqual([]);
-    cloned[0].targets.push('x/y');
-    cloned[0].windows[0].start = '9:99';
-    expect(source[0].targets).toEqual(['a/b']);
-    expect(source[0].windows[0].start).toBe('1:00');
   });
 });
 

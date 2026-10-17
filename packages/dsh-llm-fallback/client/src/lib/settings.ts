@@ -14,13 +14,6 @@
 
 import type { MutationOp } from '../types.ts';
 import { routeKey, sameQueue, type Route } from './catalog.ts';
-import {
-  cloneRules,
-  ruleValid,
-  sameRules,
-  stripPlaceholderRules,
-  type ScheduleRule,
-} from './schedule.ts';
 
 /** 冷却窗口的 schema 默认值（300000ms = 5 分钟）。 */
 export const DEFAULT_COOLDOWN_MS = 300000;
@@ -33,8 +26,6 @@ export interface SavedSettings {
   retriesBeforeSwitch: number;
   cooldownEnabled: boolean;
   cooldownMs: number;
-  scheduleEnabled: boolean;
-  scheduleRules: ScheduleRule[];
   revision: number;
 }
 
@@ -50,8 +41,6 @@ export interface DraftState {
   retriesBeforeSwitch: number;
   cooldownEnabled: boolean;
   cooldownMs: number;
-  scheduleEnabled: boolean;
-  scheduleRules: ScheduleRule[];
   /** 进入草稿时的快照 revision（保存闸：与当前 revision 不一致 = 冲突）。 */
   revision: number;
 }
@@ -80,8 +69,6 @@ export function readSavedSettings(
     retriesBeforeSwitch: Number(v.retriesBeforeSwitch ?? 0) || 0,
     cooldownEnabled: v.cooldownEnabled !== false,
     cooldownMs,
-    scheduleEnabled: v.scheduleEnabled === true,
-    scheduleRules: cloneRules(v.scheduleRules ?? []),
     revision,
   };
 }
@@ -95,8 +82,6 @@ export function beginDraft(saved: SavedSettings): DraftState {
     retriesBeforeSwitch: saved.retriesBeforeSwitch,
     cooldownEnabled: saved.cooldownEnabled,
     cooldownMs: saved.cooldownMs,
-    scheduleEnabled: saved.scheduleEnabled,
-    scheduleRules: cloneRules(saved.scheduleRules),
     revision: saved.revision,
   };
 }
@@ -114,8 +99,6 @@ export function resolveView(
     retriesBeforeSwitch: draft.retriesBeforeSwitch,
     cooldownEnabled: draft.cooldownEnabled,
     cooldownMs: draft.cooldownMs,
-    scheduleEnabled: draft.scheduleEnabled,
-    scheduleRules: draft.scheduleRules,
     revision: draft.revision,
   };
 }
@@ -128,29 +111,11 @@ export function isDirty(view: SavedSettings, saved: SavedSettings): boolean {
     view.maxRetries !== saved.maxRetries ||
     view.retriesBeforeSwitch !== saved.retriesBeforeSwitch ||
     view.cooldownEnabled !== saved.cooldownEnabled ||
-    view.cooldownMs !== saved.cooldownMs ||
-    view.scheduleEnabled !== saved.scheduleEnabled ||
-    !sameRules(view.scheduleRules, saved.scheduleRules)
+    view.cooldownMs !== saved.cooldownMs
   );
 }
 
-/**
- * 保存闸 2：非占位规则必须可保存（目标+窗口齐备且时间为合法 HH:mm）；
- * 占位规则（双空）允许留在草稿——保存时被剥离。
- */
-export function scheduleRulesValid(rules: ScheduleRule[]): boolean {
-  return rules.every((rule) => {
-    if (rule.targets.length === 0 && rule.windows.length === 0) return true;
-    return scheduleRuleValid(rule);
-  });
-}
-
-/** 单规则有效性（转发 lib/schedule 校验，供 RuleEditor 展示告警）。 */
-export function scheduleRuleValid(rule: ScheduleRule): boolean {
-  return ruleValid(rule);
-}
-
-/** 构造保存载荷：8 个 set op，scheduleRules 先剥离占位再深拷贝。 */
+/** 构造保存载荷：6 个 set op。 */
 export function buildMutations(view: SavedSettings): MutationOp[] {
   return [
     { op: 'set', path: ['enabled'], value: view.enabled },
@@ -170,19 +135,6 @@ export function buildMutations(view: SavedSettings): MutationOp[] {
     },
     { op: 'set', path: ['cooldownEnabled'], value: view.cooldownEnabled },
     { op: 'set', path: ['cooldownMs'], value: view.cooldownMs },
-    { op: 'set', path: ['scheduleEnabled'], value: view.scheduleEnabled },
-    {
-      op: 'set',
-      path: ['scheduleRules'],
-      value: stripPlaceholderRules(view.scheduleRules).map((rule) => ({
-        targets: rule.targets.slice(),
-        windows: rule.windows.map((w) => ({
-          start: w.start,
-          end: w.end,
-          days: (w.days ?? []).slice(),
-        })),
-      })),
-    },
   ];
 }
 

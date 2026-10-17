@@ -8,7 +8,7 @@ import * as React from 'react';
 import { parseCountInput } from '../lib/settings.ts';
 import { S } from '../styles.ts';
 
-/** 开关行：勾选框 + 加粗标签 + 次级说明（启用 / 冷却 / 时段计划共用）。 */
+/** 开关行：勾选框 + 加粗标签 + 次级说明（启用 / 冷却共用）。 */
 export function CheckRow(props: {
   checked: boolean;
   disabled: boolean;

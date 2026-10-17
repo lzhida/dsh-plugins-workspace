@@ -35,16 +35,6 @@
  *     绝不让冷却吞掉全部候选;非白名单失败与预算内的同候选重试不记冷却;
  *     cooldownEnabled=false 时表保持为空,行为与旧版完全一致。
  *
- * 4c. 时段计划(schedule,0.6.0 起):配置的高峰窗口内,被阻塞目标(provider/
- *     model 精确项或 provider/* 通配,与回退队列同一模型目录选取)在 step 起点
- *     直接改写为链上第一个可用候选(与冷却跳过同构,state.index 同步落位,
- *     失败归因因此正确);失败推进时同样跳过被阻塞候选;全部候选被阻塞时
- *     降级放行(路由优化绝不吞掉全部候选)。窗口按宿主机本地时区判定,
- *     语义与解析见 src/schedule.ts。日程改写发生在请求前、失败前——
- *     agent/request payload 不含 session,故无持久化轨迹事件通道;可见性为
- *     结构化日志 + 宿主 loop 自动记录的实际请求 provider/model(request/
- *     header、request/context 数据层)。
- *
  * 主模型语义(0.5.0 起):会话页面指定的模型就是事实主模型;配置的
  * fallbackChains 是纯回退候选队列,会话模型失败后按队列顺序切换(首失败
  * → chain[0]),推进时自动跳过与 pageModel 相同的候选(用户把会话模型
@@ -99,7 +89,6 @@ import type { LlmFailure } from '@deepseek-ai/dsh-llm';
 
 import { type ResolvedConfig, resolveConfig } from './config.ts';
 import { modelFallbackSection } from './protocol.ts';
-import { isScheduleBlocked } from './schedule.ts';
 import {
   type FallbackState,
   type StepKey,
@@ -247,51 +236,26 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
               model: seed.model,
             };
           }
-          // step 起点路由跳过:失败冷却(效率优化)与时段计划(策略)独立叠加——
-          // 会话指定模型处于冷却窗内或被日程窗口阻塞时,该 step 直接从链上
-          // 第一个可用候选开始;无可用候选时保持 index=-1 按原语义从会话模型
-          // 开始(路由优化绝不吞掉全部候选)。
-          const now = Date.now();
-          const scheduleActive =
-            cfg.schedule.enabled && cfg.schedule.rules.length > 0;
-          const pageCooling =
-            cfg.cooldownEnabled &&
-            isCoolingDown(cooldowns, state.pageModel, now);
-          const seedBlocked = scheduleActive
-            ? isScheduleBlocked(cfg.schedule, seed, now)
-            : false;
-          if (pageCooling || seedBlocked) {
-            const available = firstAvailableCandidateIndex(
-              state.chain,
-              cooldowns,
-              {
-                pageModel: state.pageModel,
-                now,
-                extraBlocked: scheduleActive
-                  ? (candidate) =>
-                      isScheduleBlocked(cfg.schedule, candidate, now)
-                  : undefined,
-              },
-            );
-            if (available >= 0) {
-              state.index = available;
-              state.retries = 0;
-              state.candidateFailures = 0;
-              const target = state.chain[available];
-              const reason = seedBlocked
-                ? pageCooling
-                  ? 'schedule+cooldown skip'
-                  : 'schedule skip'
-                : 'cooldown skip';
-              console.log(
-                `[${name}] ${reason}: ${seed.provider}/${seed.model} -> ${String(target?.provider)}/${String(target?.model)}`,
+          // 冷却跳过:会话指定模型在冷却窗内 → 该 step 直接从链上第一个
+          // 可用候选开始;无可用候选(全链冷却/链空)→ 保持 -1,按原语义
+          // 从会话模型开始(冷却绝不吞掉全部候选)。
+          if (cfg.cooldownEnabled) {
+            const now = Date.now();
+            if (isCoolingDown(cooldowns, state.pageModel, now)) {
+              const available = firstAvailableCandidateIndex(
+                state.chain,
+                cooldowns,
+                { pageModel: state.pageModel, now },
               );
-            } else if (seedBlocked) {
-              // 全部候选被阻塞/冷却 → 降级放行:时段计划是路由策略而非硬拒绝,
-              // 绝不因限制吞掉全部候选而中断对话。
-              console.warn(
-                `[${name}] schedule: all candidates blocked or cooling down, passing through ${seed.provider}/${seed.model} unchanged`,
-              );
+              if (available >= 0) {
+                state.index = available;
+                state.retries = 0;
+                state.candidateFailures = 0;
+                const target = state.chain[available];
+                console.log(
+                  `[${name}] cooldown skip: ${seed.provider}/${seed.model} is cooling down, starting from ${String(target?.provider)}/${String(target?.model)}`,
+                );
+              }
             }
           }
           if (state.index < 0) return seed;
@@ -413,20 +377,12 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
 
         // 预算耗尽 → 切下一候选(即使上游仍想重试也按配置覆盖)。
         // 冷却感知扫描:跳过仍在冷却窗内的候选(它们在此前 step 失败过且
-        // 未到期)与被时段窗口阻塞的候选(日程启用时),剩余候选全部被跳过
-        // 时降级回原顺序(见 nextCandidate)。
-        const advanceNow = Date.now();
-        const advanceScheduleActive =
-          cfg.schedule.enabled && cfg.schedule.rules.length > 0;
+        // 未到期),剩余候选全部在冷却中时降级回原顺序(见 nextCandidate)。
         const advance = nextCandidate(
           state,
           cfg.maxRetries,
           cfg.cooldownEnabled ? cooldowns : undefined,
-          advanceNow,
-          advanceScheduleActive
-            ? (candidate) =>
-                isScheduleBlocked(cfg.schedule, candidate, advanceNow)
-            : undefined,
+          Date.now(),
         );
         // 冷却标记:预算耗尽即认定失败方暂时不可用(无论随后是切换成功、
         // 退避被 abort 还是链耗尽)——白名单失败是既成事实,冷却窗内不再

@@ -46,7 +46,6 @@ export type CatalogState =
 /**
  * 模型目录加载：挂载后从 remote.session.modelCatalog() 拉取宿主已配置
  * provider 的模型目录（按 provider 分组）；失败可 retry 重拉。
- * 目录数据由回退队列与时段规则目标两处 picker 共享。
  */
 export function useModelCatalog(session: RemoteSessionFace | undefined): {
   cat: CatalogState;

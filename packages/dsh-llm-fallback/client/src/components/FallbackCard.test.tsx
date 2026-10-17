@@ -124,7 +124,7 @@ describe('FallbackCard 渲染', () => {
     expect(div.textContent).toBe(t('loading'));
   });
 
-  it('勾选模型 → 脏状态 → 保存调用 mutate 携带 8 个 op 与正确 revision', async () => {
+  it('勾选模型 → 脏状态 → 保存调用 mutate 携带 6 个 op 与正确 revision', async () => {
     const fake = fakeScope();
     const div = mount(
       <FallbackCard t={t} scope={fake.scope} session={fakeSession()} />,
@@ -156,7 +156,7 @@ describe('FallbackCard 渲染', () => {
     await waitFor(() => fake.mutations.length > 0);
     const mutation = fake.mutations[0];
     expect(mutation.revision).toBe(1);
-    expect(mutation.ops).toHaveLength(8);
+    expect(mutation.ops).toHaveLength(6);
     const chains = mutation.ops.find((op) => op.path[0] === 'fallbackChains');
     expect(chains?.value).toEqual([{ provider: 'prov', model: 'm1' }]);
     // 保存成功后草稿丢弃,脏状态消失
