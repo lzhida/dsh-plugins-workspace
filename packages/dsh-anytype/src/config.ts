@@ -12,12 +12,14 @@
  * 字段语义：
  * - `enabled`：总开关；false 时插件不注册任何工具（systemPrompt section 照常
  *   注册，向 agent 说明工具当前停用）。
- * - `baseUrl`：Anytype 本地 API 地址（官方 anytype-mcp 同款默认 31009 端口）。
- * - `apiKey`：Anytype 设置 → API Keys 创建的 Bearer 密钥；工具执行时实时读取，
- *   缺失时报可操作错误而非静默失败。
- * - `apiVersion`：`Anytype-Version` 请求头（官方当前值 2025-11-08）。
- * - `disabledGroups`：按组停用工具（connection/search/space/object/collection/
- *   type/property/member/schema/generic），控制工具面板体积。
+ * - 双后端模型：桌面端（`baseUrl`/`apiKey`，端口 31009，主账户实时库）与
+ *   anytype-cli（`cliUrl`/`cliKey`，端口 31012，独立 bot 账户数据面——CLI
+ *   不支持 mnemonic 登录，只能访问被邀请加入的 space）。两者 key 互不通用。
+ * - `backend`：auto（默认，桌面端优先，仅网络层不可达且 CLI 已配置时切换）/
+ *   desktop / cli。
+ * - `desktopPath` + `desktopAutoStart`：桌面端 exe 位置与拉起许可（detached
+ *   GUI 进程，插件卸载不终止）；`cliPath` + `cliAutoStart`：CLI 可执行文件
+ *   与服务拉起许可（仅 `service start`，绝不代装/代建户）。
  * - `requestTimeoutMs`：单请求超时（与调用方取消信号组合生效）。
  * - `maxResponseChars`：工具结果文本截断上限——超限时 `data` 被替换为
  *   `_truncated` 预览，保护模型上下文。
@@ -85,6 +87,30 @@ function setDescription<F extends { description(text: string): F }>(
 /** Anytype 桌面端本地 API 默认地址（官方 anytype-mcp 同款）。 */
 export const DEFAULT_BASE_URL = 'http://127.0.0.1:31009';
 
+/** anytype-cli 本地 API 默认地址（CLI 端口段 31010-31012，API 为 31012）。 */
+export const DEFAULT_CLI_URL = 'http://127.0.0.1:31012';
+
+/** anytype-cli 可执行文件的默认名称（PATH 查找）。 */
+export const DEFAULT_CLI_BIN = 'anytype';
+
+/**
+ * 桌面端可执行文件的默认发现候选（desktopPath 未配置时按序探测；
+ * 机器特定路径应显式配置 desktopPath，不放源码）。
+ */
+export function desktopExeCandidates(): string[] {
+  const localAppData = process.env.LOCALAPPDATA ?? '';
+  const userProfile = process.env.USERPROFILE ?? '';
+  const candidates = [
+    localAppData.length > 0
+      ? `${localAppData}\\Programs\\anytype\\Anytype.exe`
+      : '',
+    userProfile.length > 0
+      ? `${userProfile}\\scoop\\apps\\anytype\\current\\Anytype.exe`
+      : '',
+  ];
+  return candidates.filter((p) => p.length > 0);
+}
+
 /** `Anytype-Version` 请求头默认值（当前官方推荐值）。 */
 export const DEFAULT_API_VERSION = '2025-11-08';
 
@@ -111,14 +137,31 @@ export const TOOL_GROUPS = [
 /** 工具组标识类型。 */
 export type ToolGroup = (typeof TOOL_GROUPS)[number];
 
+/** 后端选择模式：auto = desktop 优先、网络不可达且已配置时切 cli。 */
+export type BackendMode = 'auto' | 'desktop' | 'cli';
+
+/** 单个后端（desktop/cli）的运行时设置。 */
+export interface BackendSettings {
+  /** 本地 API 地址（无尾斜杠）。 */
+  url: string;
+  /** Bearer 密钥（已 trim；空串 = 未配置，auto 模式跳过该后端）。 */
+  key: string;
+  /** 网络不可达时允许插件拉起（desktop：启动 exe；cli：service start）。 */
+  autoStart: boolean;
+  /** 可执行文件路径（desktop：桌面端 exe；cli：CLI 可执行文件）。 */
+  binPath: string;
+}
+
 /** resolveConfig 产出的运行时配置（已解包 volatile 并归一化）。 */
 export interface ResolvedConfig {
   /** 总开关；false = 不注册任何工具。 */
   enabled: boolean;
-  /** Anytype 本地 API 地址（无尾斜杠）。 */
-  baseUrl: string;
-  /** Bearer 密钥（已 trim；空串 = 未配置）。 */
-  apiKey: string;
+  /** 后端选择模式。 */
+  backendMode: BackendMode;
+  /** 桌面端后端（原 baseUrl/apiKey 配置项）。 */
+  desktop: BackendSettings;
+  /** CLI 后端（anytype-cli，独立 bot 账户数据面）。 */
+  cli: BackendSettings;
   /** `Anytype-Version` 头。 */
   apiVersion: string;
   /** 被停用的工具组。 */
@@ -150,17 +193,34 @@ function resolvePositiveInt(input: unknown, fallback: number): number {
   return Math.floor(raw);
 }
 
+/** 归一化字符串配置（trim）；非字符串安全转字符串。 */
+function resolveText(input: unknown): string {
+  return typeof input === 'string' ? input.trim() : String(input ?? '').trim();
+}
+
+/** 归一化布尔配置：仅字面 true 视为 true（设置面板/手工 YAML 都安全）。 */
+function resolveFlag(input: unknown): boolean {
+  return input === true;
+}
+
 /**
  * 解析并归一化插件配置。
  *
  * @param input - loader 传入的配置（volatile 引用嵌套或普通值，或 undefined）。
- * @returns 运行时配置；baseUrl 非法时回落默认地址（不抛错，插件不阻塞宿主）。
+ * @returns 运行时配置；URL 非法时回落默认地址（不抛错，插件不阻塞宿主）。
  */
 export function resolveConfig(input: unknown): ResolvedConfig {
   const raw = (unwrapVolatile(input) ?? {}) as {
     enabled?: unknown;
+    backend?: unknown;
     baseUrl?: unknown;
     apiKey?: unknown;
+    desktopPath?: unknown;
+    desktopAutoStart?: unknown;
+    cliUrl?: unknown;
+    cliKey?: unknown;
+    cliPath?: unknown;
+    cliAutoStart?: unknown;
     apiVersion?: unknown;
     disabledGroups?: unknown;
     requestTimeoutMs?: unknown;
@@ -168,12 +228,23 @@ export function resolveConfig(input: unknown): ResolvedConfig {
   };
 
   const enabled = raw.enabled !== false;
-  const baseUrl = normalizeBaseUrl(raw.baseUrl) ?? DEFAULT_BASE_URL;
-  const apiKey =
-    typeof raw.apiKey === 'string'
-      ? raw.apiKey.trim()
-      : String(raw.apiKey ?? '').trim();
-  const apiVersionRaw = String(raw.apiVersion ?? '').trim();
+  const backendRaw = String(raw.backend ?? 'auto');
+  const backendMode: BackendMode =
+    backendRaw === 'desktop' || backendRaw === 'cli' ? backendRaw : 'auto';
+
+  const desktop: BackendSettings = {
+    url: normalizeBaseUrl(raw.baseUrl) ?? DEFAULT_BASE_URL,
+    key: resolveText(raw.apiKey),
+    autoStart: resolveFlag(raw.desktopAutoStart),
+    binPath: resolveText(raw.desktopPath),
+  };
+  const cli: BackendSettings = {
+    url: normalizeBaseUrl(raw.cliUrl) ?? DEFAULT_CLI_URL,
+    key: resolveText(raw.cliKey),
+    autoStart: resolveFlag(raw.cliAutoStart),
+    binPath: resolveText(raw.cliPath) || DEFAULT_CLI_BIN,
+  };
+  const apiVersionRaw = resolveText(raw.apiVersion);
   const apiVersion =
     apiVersionRaw.length > 0 ? apiVersionRaw : DEFAULT_API_VERSION;
 
@@ -189,8 +260,9 @@ export function resolveConfig(input: unknown): ResolvedConfig {
 
   return {
     enabled,
-    baseUrl,
-    apiKey,
+    backendMode,
+    desktop,
+    cli,
     apiVersion,
     disabledGroups,
     requestTimeoutMs: resolvePositiveInt(
@@ -222,8 +294,8 @@ export const Config = Schema.object({
     setDescription(
       Schema.string().default(DEFAULT_BASE_URL),
       desc(
-        'Anytype local API base URL (desktop app default port 31009)',
-        'Anytype 本地 API 地址（桌面应用默认端口 31009）',
+        'Desktop backend: Anytype desktop app local API base URL (default port 31009)',
+        '桌面端后端：Anytype 桌面应用本地 API 地址（默认端口 31009）',
       ),
     ),
   ),
@@ -231,8 +303,71 @@ export const Config = Schema.object({
     setDescription(
       Schema.string().default(''),
       desc(
-        'Anytype API key (App Settings → API Keys → Create new)',
-        'Anytype API 密钥（Anytype 应用设置 → API Keys → 创建）',
+        'Desktop backend: Anytype API key (App Settings → API Keys → Create new)',
+        '桌面端后端：Anytype API 密钥（Anytype 应用设置 → API Keys → 创建）',
+      ),
+    ),
+  ),
+  backend: volatileField(
+    setDescription(
+      Schema.string().default('auto'),
+      desc(
+        'Backend selection: auto (desktop first, fall back to CLI on connection failure), desktop, or cli',
+        '后端选择：auto（桌面端优先，连接失败且 CLI 已配置时切换）、desktop、cli',
+      ),
+    ),
+  ),
+  desktopPath: volatileField(
+    setDescription(
+      Schema.string().default(''),
+      desc(
+        'Desktop app executable path (for auto-start); empty = probe standard install locations',
+        '桌面端可执行文件路径（用于自动拉起）；留空 = 按标准安装位置自动探测',
+      ),
+    ),
+  ),
+  desktopAutoStart: volatileField(
+    setDescription(
+      Schema.boolean().default(false),
+      desc(
+        'Allow launching the desktop app when its API is unreachable (GUI process keeps running after plugin unload)',
+        '桌面端 API 不可达时允许拉起桌面应用（GUI 进程在插件卸载后继续运行）',
+      ),
+    ),
+  ),
+  cliUrl: volatileField(
+    setDescription(
+      Schema.string().default(DEFAULT_CLI_URL),
+      desc(
+        'CLI backend: anytype-cli local API base URL (default port 31012, separate bot-account data plane)',
+        'CLI 后端：anytype-cli 本地 API 地址（默认端口 31012，独立 bot 账户数据面）',
+      ),
+    ),
+  ),
+  cliKey: volatileField(
+    setDescription(
+      Schema.string().default(''),
+      desc(
+        'CLI backend: bot API key (anytype auth apikey create); empty = CLI backend not configured',
+        'CLI 后端：bot API 密钥（anytype auth apikey create）；留空 = CLI 后端未配置',
+      ),
+    ),
+  ),
+  cliPath: volatileField(
+    setDescription(
+      Schema.string().default(DEFAULT_CLI_BIN),
+      desc(
+        'anytype-cli executable name or absolute path',
+        'anytype-cli 可执行文件名或绝对路径',
+      ),
+    ),
+  ),
+  cliAutoStart: volatileField(
+    setDescription(
+      Schema.boolean().default(false),
+      desc(
+        'Allow running `anytype service start` when the CLI backend is unreachable but the service is installed (never installs or creates accounts)',
+        'CLI 后端不可达但服务已安装时允许执行 `anytype service start`（绝不代为安装或创建账户）',
       ),
     ),
   ),

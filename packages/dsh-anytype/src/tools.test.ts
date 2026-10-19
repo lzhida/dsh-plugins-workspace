@@ -7,7 +7,9 @@ import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools';
 import { describe, expect, it } from 'vitest';
 
 import { AnytypeClient } from './client.ts';
+import type { ClientConfig } from './client.ts';
 import { resolveConfig } from './config.ts';
+import type { BackendLauncher } from './launcher.ts';
 import { assertAllowedPath } from './tools/generic.ts';
 import { buildGroupedTools } from './tools/index.ts';
 import type { ToolDeps } from './tools/shared.ts';
@@ -17,17 +19,34 @@ interface CapturedCall {
   init: RequestInit;
 }
 
-/** 组装带捕获 fetch 的 deps。 */
+/** 拉起器假体（行为测试不触达，仅 anytype_status 组装数据）。 */
+function stubLauncher(): BackendLauncher {
+  return {
+    resolveDesktopExe: () => ({ exe: 'C:\\x\\Anytype.exe', tried: [] }),
+    launchDesktop: () => Promise.resolve('launched'),
+    cliServiceStatus: () =>
+      Promise.resolve({
+        binFound: false,
+        state: 'not-installed',
+        detail: 'not installed',
+      }),
+    startCliService: () => Promise.resolve('not-installed'),
+  } as unknown as BackendLauncher;
+}
+
+/** 组装带捕获 fetch 的 deps（desktop 命中）。 */
 function makeDeps(): { deps: ToolDeps; calls: CapturedCall[] } {
   const calls: CapturedCall[] = [];
+  const clientCfg: ClientConfig = {
+    apiVersion: '2025-11-08',
+    timeoutMs: 5000,
+    backendMode: 'auto',
+    desktop: { url: 'http://127.0.0.1:31009', key: 'test-key' },
+    cli: { url: 'http://127.0.0.1:31012', key: '' },
+  };
   const deps: ToolDeps = {
     client: new AnytypeClient(
-      () => ({
-        baseUrl: 'http://127.0.0.1:31009',
-        apiKey: 'test-key',
-        apiVersion: '2025-11-08',
-        timeoutMs: 5000,
-      }),
+      () => clientCfg,
       async (url, init) => {
         calls.push({ url, init });
         return new Response(JSON.stringify({ echoed: true }), {
@@ -37,6 +56,7 @@ function makeDeps(): { deps: ToolDeps; calls: CapturedCall[] } {
       },
     ),
     config: () => resolveConfig(undefined),
+    launcher: stubLauncher(),
   };
   return { deps, calls };
 }
@@ -77,14 +97,14 @@ async function run(
 }
 
 describe('dsh-anytype tools', () => {
-  it('按组注册 26 个工具（组缺失即清单漂移）', () => {
+  it('按组注册 27 个工具（组缺失即清单漂移）', () => {
     const { deps } = makeDeps();
     const grouped = buildGroupedTools(deps);
     const counts = Object.fromEntries(
       [...grouped.entries()].map(([g, list]) => [g, list.length]),
     );
     expect(counts).toEqual({
-      connection: 1,
+      connection: 2,
       search: 2,
       space: 4,
       object: 4,
@@ -95,7 +115,26 @@ describe('dsh-anytype tools', () => {
       schema: 2,
       generic: 1,
     });
-    expect(flatTools(deps)).toHaveLength(26);
+    expect(flatTools(deps)).toHaveLength(27);
+  });
+
+  it('anytype_status：组装双后端探测 + CLI 服务状态 + 生效后端', async () => {
+    const { deps } = makeDeps();
+    const value = (await toolByName(deps, 'anytype_status').execute(
+      {},
+      stubExec(),
+    )) as { status: number; data: Record<string, unknown> };
+    expect(value.status).toBe(200);
+    expect(value.data.backend_mode).toBe('auto');
+    // 桌面端假 fetch 返回 200 → 生效后端 desktop
+    expect(value.data.effective_backend).toBe('desktop');
+    const desktop = value.data.desktop as Record<string, unknown>;
+    expect(desktop.configured).toBe(true);
+    expect(desktop.reachable).toBe(true);
+    expect(desktop.exe_found).toBe(true);
+    const cli = value.data.cli as Record<string, unknown>;
+    expect(cli.configured).toBe(false);
+    expect(cli.service_state).toBe('not-installed');
   });
 
   it('anytype_search：无 space_id 走全局 /v2/search，有则走空间内路径', async () => {
@@ -265,6 +304,7 @@ describe('dsh-anytype tools', () => {
     // 各读工具的最小合法入参（defineTool 的并发分类器对非法 args 返回 false）
     const readArgs: Record<string, Record<string, unknown>> = {
       anytype_whoami: {},
+      anytype_status: {},
       anytype_search: { query: 'x' },
       anytype_list_objects: { space_id: 's' },
       anytype_list_spaces: {},

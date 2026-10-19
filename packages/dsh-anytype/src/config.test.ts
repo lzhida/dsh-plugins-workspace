@@ -1,5 +1,5 @@
 /**
- * config.ts 测试：默认值、volatile 解包、baseUrl 归一化、组过滤与数值回退。
+ * config.ts 测试：默认值、volatile 解包、双后端归一化、组过滤与数值回退。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -7,8 +7,11 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_API_VERSION,
   DEFAULT_BASE_URL,
+  DEFAULT_CLI_BIN,
+  DEFAULT_CLI_URL,
   DEFAULT_MAX_RESPONSE_CHARS,
   DEFAULT_REQUEST_TIMEOUT_MS,
+  desktopExeCandidates,
   resolveConfig,
   unwrapVolatile,
 } from './config.ts';
@@ -22,12 +25,17 @@ function fakeVolatile(value: unknown): { get: () => unknown } {
 }
 
 describe('dsh-anytype config', () => {
-  it('undefined 输入回落全默认（enabled、默认地址、无停用组）', () => {
+  it('undefined 输入回落全默认（auto 模式、desktop 默认地址、CLI 未配置）', () => {
     const cfg = resolveConfig(undefined);
     expect(cfg.enabled).toBe(true);
-    expect(cfg.baseUrl).toBe(DEFAULT_BASE_URL);
-    expect(cfg.apiKey).toBe('');
-    expect(cfg.apiVersion).toBe(DEFAULT_API_VERSION);
+    expect(cfg.backendMode).toBe('auto');
+    expect(cfg.desktop.url).toBe(DEFAULT_BASE_URL);
+    expect(cfg.desktop.key).toBe('');
+    expect(cfg.desktop.autoStart).toBe(false);
+    expect(cfg.cli.url).toBe(DEFAULT_CLI_URL);
+    expect(cfg.cli.key).toBe('');
+    expect(cfg.cli.binPath).toBe(DEFAULT_CLI_BIN);
+    expect(cfg.cli.autoStart).toBe(false);
     expect(cfg.disabledGroups.size).toBe(0);
     expect(cfg.requestTimeoutMs).toBe(DEFAULT_REQUEST_TIMEOUT_MS);
     expect(cfg.maxResponseChars).toBe(DEFAULT_MAX_RESPONSE_CHARS);
@@ -37,10 +45,12 @@ describe('dsh-anytype config', () => {
     const cfg = resolveConfig({
       enabled: fakeVolatile(true),
       apiKey: fakeVolatile(' vk '),
+      cliKey: fakeVolatile(' bot '),
       disabledGroups: fakeVolatile(['search']),
     });
     expect(cfg.enabled).toBe(true);
-    expect(cfg.apiKey).toBe('vk');
+    expect(cfg.desktop.key).toBe('vk');
+    expect(cfg.cli.key).toBe('bot');
     expect(cfg.disabledGroups.has('search')).toBe(true);
   });
 
@@ -54,22 +64,52 @@ describe('dsh-anytype config', () => {
     expect(unwrapVolatile(42)).toBe(42);
   });
 
-  it('baseUrl 归一化：去尾斜杠；非法值回落默认地址', () => {
-    expect(resolveConfig({ baseUrl: 'http://localhost:31009/' }).baseUrl).toBe(
-      'http://localhost:31009',
-    );
-    expect(resolveConfig({ baseUrl: 'ftp://x' }).baseUrl).toBe(
-      DEFAULT_BASE_URL,
-    );
-    expect(resolveConfig({ baseUrl: 'not a url' }).baseUrl).toBe(
-      DEFAULT_BASE_URL,
-    );
-    expect(resolveConfig({ baseUrl: '' }).baseUrl).toBe(DEFAULT_BASE_URL);
+  it('双后端 URL 各自归一化：去尾斜杠；非法值回落各自默认', () => {
+    const ok = resolveConfig({
+      baseUrl: 'http://localhost:31009/',
+      cliUrl: 'http://127.0.0.1:39999/',
+    });
+    expect(ok.desktop.url).toBe('http://localhost:31009');
+    expect(ok.cli.url).toBe('http://127.0.0.1:39999');
+    const bad = resolveConfig({ baseUrl: 'ftp://x', cliUrl: 'not a url' });
+    expect(bad.desktop.url).toBe(DEFAULT_BASE_URL);
+    expect(bad.cli.url).toBe(DEFAULT_CLI_URL);
   });
 
-  it('apiKey/apiVersion trim；空 apiVersion 回落默认', () => {
-    const cfg = resolveConfig({ apiKey: '  k  ', apiVersion: '  ' });
-    expect(cfg.apiKey).toBe('k');
+  it('backendMode 只认 auto/desktop/cli，其余回落 auto', () => {
+    expect(resolveConfig({ backend: 'cli' }).backendMode).toBe('cli');
+    expect(resolveConfig({ backend: 'desktop' }).backendMode).toBe('desktop');
+    expect(resolveConfig({ backend: 'auto' }).backendMode).toBe('auto');
+    expect(resolveConfig({ backend: 'bogus' }).backendMode).toBe('auto');
+    expect(resolveConfig({ backend: 42 }).backendMode).toBe('auto');
+  });
+
+  it('desktopPath/cliPath trim；cliPath 空回落默认二进制名', () => {
+    const cfg = resolveConfig({
+      desktopPath: ' C:\\x\\Anytype.exe ',
+      cliPath: '  ',
+    });
+    expect(cfg.desktop.binPath).toBe('C:\\x\\Anytype.exe');
+    expect(cfg.cli.binPath).toBe(DEFAULT_CLI_BIN);
+  });
+
+  it('autoStart 仅字面 true 生效', () => {
+    const on = resolveConfig({ desktopAutoStart: true, cliAutoStart: true });
+    expect(on.desktop.autoStart).toBe(true);
+    expect(on.cli.autoStart).toBe(true);
+    const off = resolveConfig({ desktopAutoStart: 'yes', cliAutoStart: 1 });
+    expect(off.desktop.autoStart).toBe(false);
+    expect(off.cli.autoStart).toBe(false);
+  });
+
+  it('apiKey/cliKey trim；空 apiVersion 回落默认', () => {
+    const cfg = resolveConfig({
+      apiKey: '  k  ',
+      cliKey: 123,
+      apiVersion: '  ',
+    });
+    expect(cfg.desktop.key).toBe('k');
+    expect(cfg.cli.key).toBe('123');
     expect(cfg.apiVersion).toBe(DEFAULT_API_VERSION);
   });
 
@@ -100,5 +140,21 @@ describe('dsh-anytype config', () => {
     expect(
       resolveConfig({ maxResponseChars: Number.NaN }).maxResponseChars,
     ).toBe(DEFAULT_MAX_RESPONSE_CHARS);
+  });
+
+  it('desktopExeCandidates 基于环境变量生成候选（LOCALAPPDATA/USERPROFILE）', () => {
+    const candidates = desktopExeCandidates();
+    const localAppData = process.env.LOCALAPPDATA ?? '';
+    const userProfile = process.env.USERPROFILE ?? '';
+    if (localAppData.length > 0) {
+      expect(candidates).toContain(
+        `${localAppData}\\Programs\\anytype\\Anytype.exe`,
+      );
+    }
+    if (userProfile.length > 0) {
+      expect(candidates).toContain(
+        `${userProfile}\\scoop\\apps\\anytype\\current\\Anytype.exe`,
+      );
+    }
   });
 });
