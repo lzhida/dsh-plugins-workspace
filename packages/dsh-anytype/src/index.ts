@@ -129,7 +129,8 @@ export function apply(ctx: Context, configInput?: unknown): void {
 export { resolveConfig, Config } from './config.ts';
 export type {
   BackendMode,
-  BackendSettings,
+  CliBackendSettings,
+  DesktopBackendSettings,
   ResolvedConfig,
   ToolGroup,
 } from './config.ts';
@@ -151,11 +152,11 @@ export type {
   ClientConfig,
   UnreachableHook,
 } from './client.ts';
-export { autoStartHint, BackendLauncher } from './launcher.ts';
+export { cliAutoStartHint, CliLauncher } from './launcher.ts';
 export type {
   CliServiceStatus,
   CliStartResult,
-  DesktopLaunchResult,
+  LauncherConfig,
 } from './launcher.ts';
 export {
   buildTools,

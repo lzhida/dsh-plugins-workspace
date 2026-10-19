@@ -19,7 +19,7 @@ import type {
 } from '../client.ts';
 import { renderValue, toToolValue } from '../client.ts';
 import type { ResolvedConfig, ToolGroup } from '../config.ts';
-import type { BackendLauncher } from '../launcher.ts';
+import type { CliLauncher } from '../launcher.ts';
 
 /** 工具构建依赖（由 index.ts 在 apply 闭包里组装）。 */
 export interface ToolDeps {
@@ -27,8 +27,8 @@ export interface ToolDeps {
   client: AnytypeClient;
   /** volatile 配置现读入口。 */
   config: () => ResolvedConfig;
-  /** 拉起器（anytype_status 诊断用）。 */
-  launcher: BackendLauncher;
+  /** CLI 服务管理器（anytype_status 诊断用）。 */
+  launcher: CliLauncher;
 }
 
 /** 工具归属组（disabledGroups 过滤的粒度）。 */

@@ -23,7 +23,7 @@ import type { ToolDefinition } from '@deepseek-ai/dsh-tools';
 import type { ClientConfig, UnreachableHook } from '../client.ts';
 import { AnytypeClient } from '../client.ts';
 import type { ResolvedConfig, ToolGroup } from '../config.ts';
-import { autoStartHint, BackendLauncher } from '../launcher.ts';
+import { CliLauncher, cliAutoStartHint } from '../launcher.ts';
 import { buildCollectionTools } from './collections.ts';
 import { buildConnectionTools } from './connection.ts';
 import { buildGenericTools } from './generic.ts';
@@ -50,26 +50,20 @@ export function toClientConfig(cfg: ResolvedConfig): ClientConfig {
   };
 }
 
-/** autoStart 拉起接线：按后端许可执行对应拉起动作，失败打印可操作指引。 */
+/**
+ * autoStart 拉起接线：仅 CLI 后端（桌面端纯检测，无拉起）。失败打印可操作指引。
+ */
 export function createUnreachableHook(
   config: () => ResolvedConfig,
-  launcher: BackendLauncher,
+  launcher: CliLauncher,
 ): UnreachableHook {
   return async (backend) => {
+    if (backend !== 'cli') return false;
     const cfg = config();
-    if (backend === 'desktop') {
-      if (!cfg.desktop.autoStart) return false;
-      const result = await launcher.launchDesktop();
-      if (result !== 'launched') {
-        console.error(`${LOG_PREFIX} ${autoStartHint('desktop', result)}`);
-        return false;
-      }
-      return true;
-    }
     if (!cfg.cli.autoStart) return false;
     const result = await launcher.startCliService();
     if (result !== 'started' && result !== 'already-running') {
-      console.error(`${LOG_PREFIX} ${autoStartHint('cli', result)}`);
+      console.error(`${LOG_PREFIX} ${cliAutoStartHint(result)}`);
       return false;
     }
     return true;
@@ -103,7 +97,7 @@ export function buildGroupedTools(
 export function buildTools(
   config: () => ResolvedConfig,
 ): Map<ToolGroup, ToolDefinition[]> {
-  const launcher = new BackendLauncher(config);
+  const launcher = new CliLauncher(config);
   const deps: ToolDeps = {
     client: new AnytypeClient(
       () => toClientConfig(config()),

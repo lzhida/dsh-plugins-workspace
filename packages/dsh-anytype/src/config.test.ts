@@ -11,7 +11,6 @@ import {
   DEFAULT_CLI_URL,
   DEFAULT_MAX_RESPONSE_CHARS,
   DEFAULT_REQUEST_TIMEOUT_MS,
-  desktopExeCandidates,
   resolveConfig,
   unwrapVolatile,
 } from './config.ts';
@@ -31,7 +30,6 @@ describe('dsh-anytype config', () => {
     expect(cfg.backendMode).toBe('auto');
     expect(cfg.desktop.url).toBe(DEFAULT_BASE_URL);
     expect(cfg.desktop.key).toBe('');
-    expect(cfg.desktop.autoStart).toBe(false);
     expect(cfg.cli.url).toBe(DEFAULT_CLI_URL);
     expect(cfg.cli.key).toBe('');
     expect(cfg.cli.binPath).toBe(DEFAULT_CLI_BIN);
@@ -84,22 +82,15 @@ describe('dsh-anytype config', () => {
     expect(resolveConfig({ backend: 42 }).backendMode).toBe('auto');
   });
 
-  it('desktopPath/cliPath trim；cliPath 空回落默认二进制名', () => {
-    const cfg = resolveConfig({
-      desktopPath: ' C:\\x\\Anytype.exe ',
-      cliPath: '  ',
-    });
-    expect(cfg.desktop.binPath).toBe('C:\\x\\Anytype.exe');
+  it('cliPath trim；空回落默认二进制名', () => {
+    const cfg = resolveConfig({ cliPath: '  ' });
     expect(cfg.cli.binPath).toBe(DEFAULT_CLI_BIN);
   });
 
-  it('autoStart 仅字面 true 生效', () => {
-    const on = resolveConfig({ desktopAutoStart: true, cliAutoStart: true });
-    expect(on.desktop.autoStart).toBe(true);
-    expect(on.cli.autoStart).toBe(true);
-    const off = resolveConfig({ desktopAutoStart: 'yes', cliAutoStart: 1 });
-    expect(off.desktop.autoStart).toBe(false);
-    expect(off.cli.autoStart).toBe(false);
+  it('cliAutoStart 仅字面 true 生效', () => {
+    expect(resolveConfig({ cliAutoStart: true }).cli.autoStart).toBe(true);
+    expect(resolveConfig({ cliAutoStart: 'yes' }).cli.autoStart).toBe(false);
+    expect(resolveConfig({ cliAutoStart: 1 }).cli.autoStart).toBe(false);
   });
 
   it('apiKey/cliKey trim；空 apiVersion 回落默认', () => {
@@ -140,21 +131,5 @@ describe('dsh-anytype config', () => {
     expect(
       resolveConfig({ maxResponseChars: Number.NaN }).maxResponseChars,
     ).toBe(DEFAULT_MAX_RESPONSE_CHARS);
-  });
-
-  it('desktopExeCandidates 基于环境变量生成候选（LOCALAPPDATA/USERPROFILE）', () => {
-    const candidates = desktopExeCandidates();
-    const localAppData = process.env.LOCALAPPDATA ?? '';
-    const userProfile = process.env.USERPROFILE ?? '';
-    if (localAppData.length > 0) {
-      expect(candidates).toContain(
-        `${localAppData}\\Programs\\anytype\\Anytype.exe`,
-      );
-    }
-    if (userProfile.length > 0) {
-      expect(candidates).toContain(
-        `${userProfile}\\scoop\\apps\\anytype\\current\\Anytype.exe`,
-      );
-    }
   });
 });

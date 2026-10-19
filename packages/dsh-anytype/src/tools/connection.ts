@@ -39,7 +39,6 @@ export function buildConnectionTools(deps: ToolDeps) {
         const cfg = deps.config();
         const probes = await deps.client.probeAll(exec.signal);
         const cliStatus = await deps.launcher.cliServiceStatus();
-        const desktopExe = deps.launcher.resolveDesktopExe();
         const data = {
           backend_mode: cfg.backendMode,
           effective_backend: probes.effective,
@@ -48,10 +47,8 @@ export function buildConnectionTools(deps: ToolDeps) {
             configured: probes.desktop.configured,
             reachable: probes.desktop.reachable,
             authenticated: probes.desktop.authenticated,
-            auto_start: cfg.desktop.autoStart,
-            exe_found: desktopExe.exe !== undefined,
-            exe_path: desktopExe.exe ?? null,
             error: probes.desktop.error ?? null,
+            note: 'desktop is detection-only — start the Anytype desktop app yourself',
           },
           cli: {
             url: probes.cli.url,

@@ -1,27 +1,26 @@
 /**
- * 双后端拉起器：桌面端应用启动 + anytype-cli 服务管理。
+ * CLI 后端服务管理器：anytype-cli 的服务状态查询与最小拉起。
  *
  * 生命周期边界（安全设计）：
- * - 桌面端以 **detached** 方式拉起（GUI 进程独立存活，插件/宿主卸载绝不终止）；
- * - CLI 只执行 `service start`（OS 用户服务，生命周期归用户），**绝不**代为
+ * - 只执行 `service start`（OS 用户服务，生命周期归用户），**绝不**代为
  *   安装服务、创建 bot 账户或签发密钥——那些是用户主权动作，未完成时返回
- *   可操作指引；
- * - 健康判定与进程解耦：拉起后轮询目标 API 的 `/v2/auth/whoami`，收到任意
- *   HTTP 响应（含 401）即视为服务已起；超时返回失败并附指引。
+ *   可操作指引（安装 → `auth create` → `space join` → `auth apikey create`
+ *   → `service install`）；
+ * - 健康判定与进程解耦：启动后轮询目标 API 的 `/v2/auth/whoami`，收到任意
+ *   HTTP 响应（含 401）即视为服务已起；超时返回失败并附指引；
+ * - 桌面端**纯检测**：不做任何桌面应用拉起（实测从其他进程上下文启动
+ *   Anytype.exe 会立即退出，已移除该路径）。
  *
  * Node strip-only 约束：类禁用参数属性（构造器显式赋值）。
  */
 
 import { execFile } from 'node:child_process';
-import { existsSync } from 'node:fs';
 
-import type { BackendSettings } from './config.ts';
-import { desktopExeCandidates } from './config.ts';
+import type { CliBackendSettings } from './config.ts';
 
 /** 拉起器运行时配置（volatile 现读）。 */
 export interface LauncherConfig {
-  desktop: BackendSettings;
-  cli: BackendSettings;
+  cli: CliBackendSettings;
 }
 
 /** CLI 服务状态（`anytype service status` 的尽力解析）。 */
@@ -34,8 +33,7 @@ export interface CliServiceStatus {
   detail: string;
 }
 
-/** 拉起/启动结果归类。 */
-export type DesktopLaunchResult = 'launched' | 'exe-not-found' | 'failed';
+/** CLI 启动结果归类。 */
 export type CliStartResult =
   'started' | 'already-running' | 'not-installed' | 'bin-not-found' | 'failed';
 
@@ -113,27 +111,20 @@ async function pollUntilHealthy(
 
 /** 健康轮询预算（毫秒；可注入缩短测试耗时）。 */
 export interface PollBudgets {
-  desktopMs: number;
   cliMs: number;
   intervalMs: number;
 }
 
-/** 默认轮询预算：桌面端 90s（GUI 启动慢）、CLI 30s、间隔 1s。 */
-const DEFAULT_BUDGETS: PollBudgets = {
-  desktopMs: 90_000,
-  cliMs: 30_000,
-  intervalMs: 1000,
-};
+/** 默认轮询预算：CLI 30s、间隔 1s。 */
+const DEFAULT_BUDGETS: PollBudgets = { cliMs: 30_000, intervalMs: 1000 };
 
 /**
- * 双后端拉起器。`config` 每次调用现读（volatile 热生效）；
- * `spawnImpl`/`healthFetch`/`execFileImpl`/`budgets` 为测试注入点。
+ * CLI 服务管理器。`config` 每次调用现读（volatile 热生效）；
+ * `healthFetch`/`execFileImpl`/`budgets` 为测试注入点。
  */
-export class BackendLauncher {
+export class CliLauncher {
   /** 配置现读入口。 */
   private readonly config: () => LauncherConfig;
-  /** 桌面端 exe 拉起（注入点；默认 node:child_process spawn detached）。 */
-  private readonly spawnImpl: (exe: string) => Promise<void>;
   /** 健康探测 fetch（注入点）。 */
   private readonly healthFetch: HealthFetchLike;
   /** CLI 命令执行（注入点）。 */
@@ -143,80 +134,14 @@ export class BackendLauncher {
 
   constructor(
     config: () => LauncherConfig,
-    spawnImpl?: (exe: string) => Promise<void>,
     healthFetch?: HealthFetchLike,
     execFileImpl?: ExecFileLike,
     budgets?: Partial<PollBudgets>,
   ) {
     this.config = config;
-    this.spawnImpl =
-      spawnImpl ??
-      ((exe) =>
-        new Promise<void>((resolve, reject) => {
-          // spawn detached + unref：GUI 进程独立于宿主存活，插件卸载绝不终止它。
-          void import('node:child_process').then(({ spawn }) => {
-            try {
-              const child = spawn(exe, [], {
-                detached: true,
-                stdio: 'ignore',
-                windowsHide: true,
-              });
-              child.on('error', (err) => reject(err));
-              child.unref();
-              // 给同步 spawn 错误（ENOENT 等）一个事件循环拍
-              setTimeout(() => resolve(), 50);
-            } catch (err) {
-              reject(err instanceof Error ? err : new Error(String(err)));
-            }
-          });
-        }));
     this.healthFetch = healthFetch ?? defaultHealthFetch;
     this.execFileImpl = execFileImpl ?? defaultExecFile;
     this.budgets = { ...DEFAULT_BUDGETS, ...budgets };
-  }
-
-  /**
-   * 解析桌面端 exe 路径：显式 `desktopPath` 优先（存在性校验），
-   * 否则按标准安装位置候选探测。
-   *
-   * @returns 找到的路径，或 undefined（附候选清单供错误提示）。
-   */
-  resolveDesktopExe(): { exe?: string; tried: string[] } {
-    const configured = this.config().desktop.binPath;
-    if (configured.length > 0) {
-      return existsSync(configured)
-        ? { exe: configured, tried: [configured] }
-        : { tried: [configured] };
-    }
-    const candidates = desktopExeCandidates();
-    for (const candidate of candidates) {
-      if (existsSync(candidate)) return { exe: candidate, tried: candidates };
-    }
-    return { tried: candidates };
-  }
-
-  /**
-   * 拉起桌面端应用（detached）并轮询健康（上限 90s）。
-   * 已健康（服务本就在跑）时直接返回 launched。
-   */
-  async launchDesktop(): Promise<DesktopLaunchResult> {
-    const { desktop } = this.config();
-    if (await healthyOnce(desktop.url, this.healthFetch)) return 'launched';
-    const { exe } = this.resolveDesktopExe();
-    if (exe === undefined) return 'exe-not-found';
-    try {
-      await this.spawnImpl(exe);
-    } catch {
-      return 'failed';
-    }
-    return (await pollUntilHealthy(
-      desktop.url,
-      this.budgets.desktopMs,
-      this.budgets.intervalMs,
-      this.healthFetch,
-    ))
-      ? 'launched'
-      : 'failed';
   }
 
   /**
@@ -231,23 +156,13 @@ export class BackendLauncher {
         { timeout: 15_000 },
       );
       const detail = `${stdout}\n${stderr}`.trim().slice(0, 400);
-      const lower = detail.toLowerCase();
-      if (lower.includes('not installed') || lower.includes('not-installed')) {
-        return { binFound: true, state: 'not-installed', detail };
-      }
-      if (lower.includes('running') || lower.includes('active')) {
-        return { binFound: true, state: 'running', detail };
-      }
-      if (lower.includes('stopped') || lower.includes('inactive')) {
-        return { binFound: true, state: 'stopped', detail };
-      }
-      return { binFound: true, state: 'unknown', detail };
+      return { binFound: true, ...classifyCliOutput(detail) };
     } catch (err) {
       const wrapped = err as Error & { stdout?: string; stderr?: string };
-      const output = `${wrapped.stdout ?? ''}\n${wrapped.stderr ?? ''}`.trim();
-      const combined = `${output}\n${wrapped.message ?? ''}`
-        .trim()
-        .slice(0, 400);
+      const combined =
+        `${wrapped.stdout ?? ''}\n${wrapped.stderr ?? ''}\n${wrapped.message ?? ''}`
+          .trim()
+          .slice(0, 400);
       const lower = combined.toLowerCase();
       if (
         lower.includes('enoent') ||
@@ -259,16 +174,7 @@ export class BackendLauncher {
         return { binFound: false, state: 'not-installed', detail: combined };
       }
       // 非零退出但能跑起来 = 二进制存在；按输出归类
-      if (lower.includes('not installed') || lower.includes('not-installed')) {
-        return { binFound: true, state: 'not-installed', detail: combined };
-      }
-      if (lower.includes('running') || lower.includes('active')) {
-        return { binFound: true, state: 'running', detail: combined };
-      }
-      if (lower.includes('stopped') || lower.includes('inactive')) {
-        return { binFound: true, state: 'stopped', detail: combined };
-      }
-      return { binFound: true, state: 'unknown', detail: combined };
+      return { binFound: true, ...classifyCliOutput(combined) };
     }
   }
 
@@ -310,17 +216,26 @@ export class BackendLauncher {
   }
 }
 
-/** 面向用户的 autoStart 失败指引（按后端与结果归类）。 */
-export function autoStartHint(
-  backend: 'desktop' | 'cli',
-  result: string,
-): string {
-  if (backend === 'desktop') {
-    if (result === 'exe-not-found') {
-      return 'Desktop auto-start failed: Anytype.exe not found. Set desktopPath in Settings → Plugins → dsh-anytype (e.g. the scoop/standard install location), or start the desktop app manually.';
-    }
-    return 'Desktop auto-start failed: the app did not become healthy in time. Start the Anytype desktop app manually and check its login state.';
+/** 按输出关键词归类 CLI 服务状态（running / stopped / not-installed / unknown）。 */
+function classifyCliOutput(detail: string): {
+  state: CliServiceStatus['state'];
+  detail: string;
+} {
+  const lower = detail.toLowerCase();
+  if (lower.includes('not installed') || lower.includes('not-installed')) {
+    return { state: 'not-installed', detail };
   }
+  if (lower.includes('running') || lower.includes('active')) {
+    return { state: 'running', detail };
+  }
+  if (lower.includes('stopped') || lower.includes('inactive')) {
+    return { state: 'stopped', detail };
+  }
+  return { state: 'unknown', detail };
+}
+
+/** 面向用户的 CLI autoStart 失败指引（按结果归类）。 */
+export function cliAutoStartHint(result: CliStartResult): string {
   if (result === 'not-installed' || result === 'bin-not-found') {
     return 'CLI auto-start is unavailable: anytype-cli is not installed. See https://github.com/anyproto/anytype-cli — then: `anytype auth create <name>` → `anytype space join <invite>` → `anytype auth apikey create <name> --all-spaces --read-write` → `anytype service install` → `anytype service start`, and put the CLI key into cliKey.';
   }

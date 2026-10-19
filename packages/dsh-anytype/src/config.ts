@@ -17,9 +17,11 @@
  *   不支持 mnemonic 登录，只能访问被邀请加入的 space）。两者 key 互不通用。
  * - `backend`：auto（默认，桌面端优先，仅网络层不可达且 CLI 已配置时切换）/
  *   desktop / cli。
- * - `desktopPath` + `desktopAutoStart`：桌面端 exe 位置与拉起许可（detached
- *   GUI 进程，插件卸载不终止）；`cliPath` + `cliAutoStart`：CLI 可执行文件
- *   与服务拉起许可（仅 `service start`，绝不代装/代建户）。
+ * - 桌面端**纯检测**：不可达时切 CLI 或报错，不尝试启动桌面应用（实测从
+ *   其他进程上下文启动 Anytype.exe 会立即退出，拉起不可靠已移除）。
+ * - `cliPath` + `cliAutoStart`：CLI 可执行文件与服务拉起许可（仅对已安装
+ *   服务执行 `service start`，绝不代装/代建户；CLI 需一次性 bot 初始化：
+ *   auth create → space join → apikey create → 填 cliKey）。
  * - `requestTimeoutMs`：单请求超时（与调用方取消信号组合生效）。
  * - `maxResponseChars`：工具结果文本截断上限——超限时 `data` 被替换为
  *   `_truncated` 预览，保护模型上下文。
@@ -93,24 +95,6 @@ export const DEFAULT_CLI_URL = 'http://127.0.0.1:31012';
 /** anytype-cli 可执行文件的默认名称（PATH 查找）。 */
 export const DEFAULT_CLI_BIN = 'anytype';
 
-/**
- * 桌面端可执行文件的默认发现候选（desktopPath 未配置时按序探测；
- * 机器特定路径应显式配置 desktopPath，不放源码）。
- */
-export function desktopExeCandidates(): string[] {
-  const localAppData = process.env.LOCALAPPDATA ?? '';
-  const userProfile = process.env.USERPROFILE ?? '';
-  const candidates = [
-    localAppData.length > 0
-      ? `${localAppData}\\Programs\\anytype\\Anytype.exe`
-      : '',
-    userProfile.length > 0
-      ? `${userProfile}\\scoop\\apps\\anytype\\current\\Anytype.exe`
-      : '',
-  ];
-  return candidates.filter((p) => p.length > 0);
-}
-
 /** `Anytype-Version` 请求头默认值（当前官方推荐值）。 */
 export const DEFAULT_API_VERSION = '2025-11-08';
 
@@ -140,15 +124,23 @@ export type ToolGroup = (typeof TOOL_GROUPS)[number];
 /** 后端选择模式：auto = desktop 优先、网络不可达且已配置时切 cli。 */
 export type BackendMode = 'auto' | 'desktop' | 'cli';
 
-/** 单个后端（desktop/cli）的运行时设置。 */
-export interface BackendSettings {
+/** 桌面端后端运行时设置（纯检测：桌面端不可达时由 auto 语义切 CLI 或报错）。 */
+export interface DesktopBackendSettings {
   /** 本地 API 地址（无尾斜杠）。 */
   url: string;
   /** Bearer 密钥（已 trim；空串 = 未配置，auto 模式跳过该后端）。 */
   key: string;
-  /** 网络不可达时允许插件拉起（desktop：启动 exe；cli：service start）。 */
+}
+
+/** CLI 后端运行时设置（唯一支持自动拉起的后端）。 */
+export interface CliBackendSettings {
+  /** 本地 API 地址（无尾斜杠）。 */
+  url: string;
+  /** Bearer 密钥（已 trim；空串 = 未配置，auto 模式跳过该后端）。 */
+  key: string;
+  /** 网络不可达时允许插件对已安装服务执行 `service start`。 */
   autoStart: boolean;
-  /** 可执行文件路径（desktop：桌面端 exe；cli：CLI 可执行文件）。 */
+  /** CLI 可执行文件名或绝对路径。 */
   binPath: string;
 }
 
@@ -158,10 +150,10 @@ export interface ResolvedConfig {
   enabled: boolean;
   /** 后端选择模式。 */
   backendMode: BackendMode;
-  /** 桌面端后端（原 baseUrl/apiKey 配置项）。 */
-  desktop: BackendSettings;
+  /** 桌面端后端（原 baseUrl/apiKey 配置项；纯检测，无拉起）。 */
+  desktop: DesktopBackendSettings;
   /** CLI 后端（anytype-cli，独立 bot 账户数据面）。 */
-  cli: BackendSettings;
+  cli: CliBackendSettings;
   /** `Anytype-Version` 头。 */
   apiVersion: string;
   /** 被停用的工具组。 */
@@ -215,8 +207,6 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     backend?: unknown;
     baseUrl?: unknown;
     apiKey?: unknown;
-    desktopPath?: unknown;
-    desktopAutoStart?: unknown;
     cliUrl?: unknown;
     cliKey?: unknown;
     cliPath?: unknown;
@@ -232,13 +222,11 @@ export function resolveConfig(input: unknown): ResolvedConfig {
   const backendMode: BackendMode =
     backendRaw === 'desktop' || backendRaw === 'cli' ? backendRaw : 'auto';
 
-  const desktop: BackendSettings = {
+  const desktop: DesktopBackendSettings = {
     url: normalizeBaseUrl(raw.baseUrl) ?? DEFAULT_BASE_URL,
     key: resolveText(raw.apiKey),
-    autoStart: resolveFlag(raw.desktopAutoStart),
-    binPath: resolveText(raw.desktopPath),
   };
-  const cli: BackendSettings = {
+  const cli: CliBackendSettings = {
     url: normalizeBaseUrl(raw.cliUrl) ?? DEFAULT_CLI_URL,
     key: resolveText(raw.cliKey),
     autoStart: resolveFlag(raw.cliAutoStart),
@@ -294,8 +282,8 @@ export const Config = Schema.object({
     setDescription(
       Schema.string().default(DEFAULT_BASE_URL),
       desc(
-        'Desktop backend: Anytype desktop app local API base URL (default port 31009)',
-        '桌面端后端：Anytype 桌面应用本地 API 地址（默认端口 31009）',
+        'Desktop backend: Anytype desktop app local API base URL (default port 31009). Detection only — start the app yourself',
+        '桌面端后端：Anytype 桌面应用本地 API 地址（默认端口 31009）。仅检测——桌面应用请自行启动',
       ),
     ),
   ),
@@ -312,26 +300,8 @@ export const Config = Schema.object({
     setDescription(
       Schema.string().default('auto'),
       desc(
-        'Backend selection: auto (desktop first, fall back to CLI on connection failure), desktop, or cli',
-        '后端选择：auto（桌面端优先，连接失败且 CLI 已配置时切换）、desktop、cli',
-      ),
-    ),
-  ),
-  desktopPath: volatileField(
-    setDescription(
-      Schema.string().default(''),
-      desc(
-        'Desktop app executable path (for auto-start); empty = probe standard install locations',
-        '桌面端可执行文件路径（用于自动拉起）；留空 = 按标准安装位置自动探测',
-      ),
-    ),
-  ),
-  desktopAutoStart: volatileField(
-    setDescription(
-      Schema.boolean().default(false),
-      desc(
-        'Allow launching the desktop app when its API is unreachable (GUI process keeps running after plugin unload)',
-        '桌面端 API 不可达时允许拉起桌面应用（GUI 进程在插件卸载后继续运行）',
+        'Backend selection: auto (desktop first, fall back to CLI on connection failure when cliKey is set), desktop, or cli',
+        '后端选择：auto（桌面端优先，连接失败且已配置 cliKey 时切换到 CLI）、desktop、cli',
       ),
     ),
   ),
@@ -366,8 +336,8 @@ export const Config = Schema.object({
     setDescription(
       Schema.boolean().default(false),
       desc(
-        'Allow running `anytype service start` when the CLI backend is unreachable but the service is installed (never installs or creates accounts)',
-        'CLI 后端不可达但服务已安装时允许执行 `anytype service start`（绝不代为安装或创建账户）',
+        'When the CLI backend is the active candidate but unreachable: run `anytype service start` if the service is installed (never installs or creates accounts; requires one-time bot setup: auth create → space join → apikey create)',
+        '当 CLI 后端成为活跃候选但不可达时：服务已安装则执行 `anytype service start`（绝不代装/代建户；需一次性 bot 初始化：auth create → space join → apikey create）',
       ),
     ),
   ),

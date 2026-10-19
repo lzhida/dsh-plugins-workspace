@@ -25,11 +25,15 @@ pnpm dsh plugin --profile <profile> add link:<仓库绝对路径>/packages/dsh-a
 | API 地址 | `http://127.0.0.1:31009`                   | `http://127.0.0.1:31012`                                                                                         |
 | 账户     | 用户主账户，实时本地库                     | **独立 bot 账户**（`anytype auth create`，不支持 mnemonic 登录），仅访问被邀请加入的 space，数据经 any-sync 同步 |
 | key 来源 | 桌面应用 API Keys                          | `anytype auth apikey create`（与桌面端 key **互不通用**）                                                        |
-| 启动方式 | 打开桌面应用（或 `desktopAutoStart` 拉起） | `anytype service install` + `service start`（或 `cliAutoStart` 允许插件 start）                                  |
+| 启动方式 | **自行打开桌面应用**（插件只检测，不拉起） | `anytype service install` + `service start`（或 `cliAutoStart` 允许插件 start）                                  |
 
 `backend: auto`（默认）桌面端优先；**仅网络层不可达**且 CLI 已配置（`cliKey` 非空）才切换——鉴权失败不切换（换后端 = 换账户数据面）。每个工具结果携带 `backend` 字段标明实际数据面。
 
-**安全边界**：`desktopAutoStart`/`cliAutoStart` 只做最小拉起（启动 exe / `service start`）；插件绝不代为安装 CLI、创建 bot 账户、签发密钥或加入 space——那些是用户主权动作。被拉起的进程独立存活，插件卸载不终止。
+**桌面端纯检测**：插件不会尝试启动桌面应用（实测从其他进程上下文启动 Anytype.exe 会立即退出，不可靠）；桌面端不可达时切 CLI 或报可操作错误。
+
+**CLI 回退的前提（一次性 bot 初始化）**：`anytype auth create <name>` → `anytype space join <邀请链接>` → `anytype auth apikey create <name> --all-spaces --read-write` → 把 key 填进 `cliKey`。未配置 `cliKey` 时，桌面端不可达 = 无可用后端（不会启动一个没有可用 key 的 CLI 服务）。
+
+**安全边界**：`cliAutoStart` 只对**已安装**的 CLI 服务执行 `service start`；插件绝不代为安装 CLI、创建 bot 账户、签发密钥或加入 space——那些是用户主权动作。被拉起的服务独立存活，插件卸载不终止。
 
 ## 配置（Settings → Plugins → dsh-anytype）
 
@@ -39,8 +43,6 @@ pnpm dsh plugin --profile <profile> add link:<仓库绝对路径>/packages/dsh-a
 | `backend`          | `auto`                   | 后端选择：auto / desktop / cli                           |
 | `baseUrl`          | `http://127.0.0.1:31009` | **桌面端**本地 API 地址                                  |
 | `apiKey`           | `''`                     | **桌面端** Bearer 密钥；执行时实时读取，改动即时生效     |
-| `desktopPath`      | `''`（自动发现）         | 桌面端 exe 路径（自动拉起用）；留空探测标准安装位置      |
-| `desktopAutoStart` | `false`                  | 桌面端不可达时允许拉起桌面应用                           |
 | `cliUrl`           | `http://127.0.0.1:31012` | **CLI 后端**本地 API 地址                                |
 | `cliKey`           | `''`                     | **CLI 后端** bot 密钥（空 = CLI 后端未配置）             |
 | `cliPath`          | `anytype`                | anytype-cli 可执行文件名或绝对路径                       |

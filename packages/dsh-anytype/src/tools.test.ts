@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { AnytypeClient } from './client.ts';
 import type { ClientConfig } from './client.ts';
 import { resolveConfig } from './config.ts';
-import type { BackendLauncher } from './launcher.ts';
+import type { CliLauncher } from './launcher.ts';
 import { assertAllowedPath } from './tools/generic.ts';
 import { buildGroupedTools } from './tools/index.ts';
 import type { ToolDeps } from './tools/shared.ts';
@@ -19,11 +19,9 @@ interface CapturedCall {
   init: RequestInit;
 }
 
-/** 拉起器假体（行为测试不触达，仅 anytype_status 组装数据）。 */
-function stubLauncher(): BackendLauncher {
+/** CLI 服务管理器假体（行为测试不触达，仅 anytype_status 组装数据）。 */
+function stubLauncher(): CliLauncher {
   return {
-    resolveDesktopExe: () => ({ exe: 'C:\\x\\Anytype.exe', tried: [] }),
-    launchDesktop: () => Promise.resolve('launched'),
     cliServiceStatus: () =>
       Promise.resolve({
         binFound: false,
@@ -31,7 +29,7 @@ function stubLauncher(): BackendLauncher {
         detail: 'not installed',
       }),
     startCliService: () => Promise.resolve('not-installed'),
-  } as unknown as BackendLauncher;
+  } as unknown as CliLauncher;
 }
 
 /** 组装带捕获 fetch 的 deps（desktop 命中）。 */
@@ -131,7 +129,7 @@ describe('dsh-anytype tools', () => {
     const desktop = value.data.desktop as Record<string, unknown>;
     expect(desktop.configured).toBe(true);
     expect(desktop.reachable).toBe(true);
-    expect(desktop.exe_found).toBe(true);
+    expect(desktop.note).toContain('detection-only');
     const cli = value.data.cli as Record<string, unknown>;
     expect(cli.configured).toBe(false);
     expect(cli.service_state).toBe('not-installed');
