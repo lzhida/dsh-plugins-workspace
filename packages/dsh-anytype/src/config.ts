@@ -95,6 +95,9 @@ export const DEFAULT_CLI_URL = 'http://127.0.0.1:31012';
 /** anytype-cli 可执行文件的默认名称（PATH 查找）。 */
 export const DEFAULT_CLI_BIN = 'anytype';
 
+/** CLI JSON API 默认监听地址（login/create/serve 共用）。 */
+export const DEFAULT_CLI_LISTEN_ADDRESS = '127.0.0.1:31012';
+
 /** `Anytype-Version` 请求头默认值（当前官方推荐值）。 */
 export const DEFAULT_API_VERSION = '2025-11-08';
 
@@ -116,6 +119,7 @@ export const TOOL_GROUPS = [
   'member',
   'schema',
   'generic',
+  'cli-auth',
 ] as const;
 
 /** 工具组标识类型。 */
@@ -138,10 +142,23 @@ export interface CliBackendSettings {
   url: string;
   /** Bearer 密钥（已 trim；空串 = 未配置，auto 模式跳过该后端）。 */
   key: string;
-  /** 网络不可达时允许插件对已安装服务执行 `service start`。 */
+  /** 网络不可达时允许插件对已安装服务执行 `service start`（失败/不支持时 serve 回退）。 */
   autoStart: boolean;
   /** CLI 可执行文件名或绝对路径。 */
   binPath: string;
+  /** bot 账户 key（`auth login --key-stdin` 用；经 stdin 传入，不进命令行）。 */
+  accountKey: string;
+  /** `auth create` 的账户名（空 = create 工具报可操作错误）。 */
+  accountName: string;
+  /** 自建网络配置 YAML 路径（login/create 的 `--network-config`）。 */
+  networkConfig: string;
+  /**
+   * 账户数据根路径。仅 CLI 交互模式的 `--root-path`/`--path` 支持；
+   * 机读模式（插件固定使用）无此 flag，字段保留、执行时忽略。
+   */
+  rootPath: string;
+  /** JSON API 监听地址（login/create/serve 共用 `--listen-address`）。 */
+  listenAddress: string;
 }
 
 /** resolveConfig 产出的运行时配置（已解包 volatile 并归一化）。 */
@@ -211,6 +228,11 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     cliKey?: unknown;
     cliPath?: unknown;
     cliAutoStart?: unknown;
+    cliAccountKey?: unknown;
+    cliAccountName?: unknown;
+    cliNetworkConfig?: unknown;
+    cliRootPath?: unknown;
+    cliListenAddress?: unknown;
     apiVersion?: unknown;
     disabledGroups?: unknown;
     requestTimeoutMs?: unknown;
@@ -231,6 +253,12 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     key: resolveText(raw.cliKey),
     autoStart: resolveFlag(raw.cliAutoStart),
     binPath: resolveText(raw.cliPath) || DEFAULT_CLI_BIN,
+    accountKey: resolveText(raw.cliAccountKey),
+    accountName: resolveText(raw.cliAccountName),
+    networkConfig: resolveText(raw.cliNetworkConfig),
+    rootPath: resolveText(raw.cliRootPath),
+    listenAddress:
+      resolveText(raw.cliListenAddress) || DEFAULT_CLI_LISTEN_ADDRESS,
   };
   const apiVersionRaw = resolveText(raw.apiVersion);
   const apiVersion =
@@ -336,8 +364,53 @@ export const Config = Schema.object({
     setDescription(
       Schema.boolean().default(false),
       desc(
-        'When the CLI backend is the active candidate but unreachable: run `anytype service start` if the service is installed (never installs or creates accounts; requires one-time bot setup: auth create → space join → apikey create)',
-        '当 CLI 后端成为活跃候选但不可达时：服务已安装则执行 `anytype service start`（绝不代装/代建户；需一次性 bot 初始化：auth create → space join → apikey create）',
+        'When the CLI backend is the active candidate but unreachable: run `anytype service start`, falling back to a detached `anytype serve` when the service manager is unsupported (never installs or creates accounts; requires one-time bot setup)',
+        '当 CLI 后端成为活跃候选但不可达时：执行 `anytype service start`，服务管理器不支持时回退为 detached `anytype serve`（绝不代装/代建户；需一次性 bot 初始化）',
+      ),
+    ),
+  ),
+  cliAccountKey: volatileField(
+    setDescription(
+      Schema.string().default(''),
+      desc(
+        'Bot account key for `anytype auth login` (fed via stdin, never in the command line)',
+        '`anytype auth login` 用的 bot 账户 key（经 stdin 传入，不进命令行）',
+      ),
+    ),
+  ),
+  cliAccountName: volatileField(
+    setDescription(
+      Schema.string().default(''),
+      desc(
+        'Account name for `anytype auth create` (empty = the create tool reports an actionable error)',
+        '`anytype auth create` 的账户名（空 = create 工具报可操作错误）',
+      ),
+    ),
+  ),
+  cliNetworkConfig: volatileField(
+    setDescription(
+      Schema.string().default(''),
+      desc(
+        'Path to custom network configuration YAML for self-hosted networks (auth login/create --network-config)',
+        '自建网络的网络配置 YAML 路径（auth login/create 的 --network-config）',
+      ),
+    ),
+  ),
+  cliRootPath: volatileField(
+    setDescription(
+      Schema.string().default(''),
+      desc(
+        'Root path for account data. Only the CLI interactive mode supports it (--root-path/--path); the machine mode used by this plugin has no such flag, so it is kept for future CLI versions',
+        '账户数据根路径。仅 CLI 交互模式支持（--root-path/--path）；插件使用的机读模式无此 flag，字段保留待 CLI 后续版本',
+      ),
+    ),
+  ),
+  cliListenAddress: volatileField(
+    setDescription(
+      Schema.string().default(DEFAULT_CLI_LISTEN_ADDRESS),
+      desc(
+        'JSON API listen address for auth login/create and serve (host:port)',
+        'auth login/create 与 serve 的 JSON API 监听地址（host:port）',
       ),
     ),
   ),

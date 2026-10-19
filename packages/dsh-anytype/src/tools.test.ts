@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { AnytypeClient } from './client.ts';
 import type { ClientConfig } from './client.ts';
 import { resolveConfig } from './config.ts';
-import type { CliLauncher } from './launcher.ts';
+import type { CliLauncher, CliRuntimeStatus } from './launcher.ts';
 import { assertAllowedPath } from './tools/generic.ts';
 import { buildGroupedTools } from './tools/index.ts';
 import type { ToolDeps } from './tools/shared.ts';
@@ -19,9 +19,25 @@ interface CapturedCall {
   init: RequestInit;
 }
 
-/** CLI 服务管理器假体（行为测试不触达，仅 anytype_status 组装数据）。 */
-function stubLauncher(): CliLauncher {
+/** CLI 服务管理器假体（authStatus 返回机读解析样例）。 */
+function stubLauncher(overrides?: Partial<CliRuntimeStatus>): CliLauncher {
+  const auth: CliRuntimeStatus = {
+    parsed: true,
+    state: 'unavailable',
+    cliVersion: 'v0.5.0',
+    authenticated: false,
+    apiReady: false,
+    serviceManager: 'unsupported',
+    serviceInstalled: false,
+    serviceRunning: false,
+    serviceHealth: 'not_running',
+    workPath: 'C:\\x\\anytype',
+    errorCode: 'rpc_unavailable',
+    detail: '',
+    ...overrides,
+  };
   return {
+    authStatus: () => Promise.resolve(auth),
     cliServiceStatus: () =>
       Promise.resolve({
         binFound: false,
@@ -29,6 +45,11 @@ function stubLauncher(): CliLauncher {
         detail: 'not installed',
       }),
     startCliService: () => Promise.resolve('not-installed'),
+    login: () =>
+      Promise.resolve({ ok: true, state: 'ready', detail: '', account: {} }),
+    create: () =>
+      Promise.resolve({ ok: true, state: 'ready', detail: '', account: {} }),
+    serveStart: () => Promise.resolve('started'),
   } as unknown as CliLauncher;
 }
 
@@ -95,7 +116,7 @@ async function run(
 }
 
 describe('dsh-anytype tools', () => {
-  it('按组注册 27 个工具（组缺失即清单漂移）', () => {
+  it('按组注册 29 个工具（组缺失即清单漂移）', () => {
     const { deps } = makeDeps();
     const grouped = buildGroupedTools(deps);
     const counts = Object.fromEntries(
@@ -112,11 +133,12 @@ describe('dsh-anytype tools', () => {
       member: 2,
       schema: 2,
       generic: 1,
+      'cli-auth': 2,
     });
-    expect(flatTools(deps)).toHaveLength(27);
+    expect(flatTools(deps)).toHaveLength(29);
   });
 
-  it('anytype_status：组装双后端探测 + CLI 服务状态 + 生效后端', async () => {
+  it('anytype_status：组装双后端探测 + CLI 机读状态 + 生效后端', async () => {
     const { deps } = makeDeps();
     const value = (await toolByName(deps, 'anytype_status').execute(
       {},
@@ -132,7 +154,30 @@ describe('dsh-anytype tools', () => {
     expect(desktop.note).toContain('detection-only');
     const cli = value.data.cli as Record<string, unknown>;
     expect(cli.configured).toBe(false);
+    // 机读解析：serviceInstalled=false → not-installed；富字段来自 authStatus
     expect(cli.service_state).toBe('not-installed');
+    expect(cli.cli_version).toBe('v0.5.0');
+    expect(cli.cli_authenticated).toBe(false);
+    expect(cli.service_manager).toBe('unsupported');
+    expect(cli.work_path).toBe('C:\\x\\anytype');
+  });
+
+  it('anytype_cli_login/create：无参数执行并透传 launcher 结果', async () => {
+    const { deps } = makeDeps();
+    const login = (await toolByName(deps, 'anytype_cli_login').execute(
+      {},
+      stubExec(),
+    )) as { status: number; data: Record<string, unknown> };
+    expect(login.status).toBe(200);
+    expect(login.data.ok).toBe(true);
+    expect(login.data.state).toBe('ready');
+
+    const create = (await toolByName(deps, 'anytype_cli_create').execute(
+      {},
+      stubExec(),
+    )) as { status: number; data: Record<string, unknown> };
+    expect(create.status).toBe(200);
+    expect(create.data.ok).toBe(true);
   });
 
   it('anytype_search：无 space_id 走全局 /v2/search，有则走空间内路径', async () => {

@@ -24,6 +24,7 @@ import type { ClientConfig, UnreachableHook } from '../client.ts';
 import { AnytypeClient } from '../client.ts';
 import type { ResolvedConfig, ToolGroup } from '../config.ts';
 import { CliLauncher, cliAutoStartHint } from '../launcher.ts';
+import { buildCliAuthTools } from './cli-auth.ts';
 import { buildCollectionTools } from './collections.ts';
 import { buildConnectionTools } from './connection.ts';
 import { buildGenericTools } from './generic.ts';
@@ -51,7 +52,9 @@ export function toClientConfig(cfg: ResolvedConfig): ClientConfig {
 }
 
 /**
- * autoStart 拉起接线：仅 CLI 后端（桌面端纯检测，无拉起）。失败打印可操作指引。
+ * autoStart 拉起接线：仅 CLI 后端（桌面端纯检测，无拉起）。
+ * 拉起顺序：`service start` 优先；服务管理器不支持/失败时回退为
+ * detached `anytype serve`。失败打印可操作指引。
  */
 export function createUnreachableHook(
   config: () => ResolvedConfig,
@@ -61,12 +64,20 @@ export function createUnreachableHook(
     if (backend !== 'cli') return false;
     const cfg = config();
     if (!cfg.cli.autoStart) return false;
-    const result = await launcher.startCliService();
-    if (result !== 'started' && result !== 'already-running') {
-      console.error(`${LOG_PREFIX} ${cliAutoStartHint(result)}`);
-      return false;
+    const viaService = await launcher.startCliService();
+    if (viaService === 'started' || viaService === 'already-running') {
+      return true;
     }
-    return true;
+    // service 不可用（未安装/管理器不支持/失败）→ serve 回退
+    console.error(
+      `${LOG_PREFIX} service start unavailable (${viaService}); falling back to \`anytype serve\``,
+    );
+    const viaServe = await launcher.serveStart();
+    if (viaServe === 'started' || viaServe === 'already-running') {
+      return true;
+    }
+    console.error(`${LOG_PREFIX} ${cliAutoStartHint(viaService)}`);
+    return false;
   };
 }
 
@@ -85,6 +96,7 @@ export function buildGroupedTools(
     ['member', buildMemberTools(deps)],
     ['schema', buildSchemaTools(deps)],
     ['generic', buildGenericTools(deps)],
+    ['cli-auth', buildCliAuthTools(deps)],
   ]);
 }
 

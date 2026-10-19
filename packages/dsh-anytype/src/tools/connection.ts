@@ -38,7 +38,26 @@ export function buildConnectionTools(deps: ToolDeps) {
       async execute(_args, exec) {
         const cfg = deps.config();
         const probes = await deps.client.probeAll(exec.signal);
-        const cliStatus = await deps.launcher.cliServiceStatus();
+        // CLI 段：优先机读 `--json service status`（认证态/服务管理器/版本），
+        // 二进制缺失或老版本无 --json 时降级为人读输出解析。
+        const auth = await deps.launcher.authStatus();
+        let cliState: 'running' | 'stopped' | 'not-installed' | 'unknown';
+        let cliDetail: string;
+        let binFound: boolean;
+        if (auth.parsed) {
+          binFound = true;
+          cliDetail = auth.workPath
+            ? `work_path: ${auth.workPath}`
+            : auth.detail;
+          if (auth.serviceRunning === true) cliState = 'running';
+          else if (auth.serviceInstalled === false) cliState = 'not-installed';
+          else cliState = 'stopped';
+        } else {
+          const legacy = await deps.launcher.cliServiceStatus();
+          binFound = legacy.binFound;
+          cliState = legacy.state;
+          cliDetail = legacy.detail;
+        }
         const data = {
           backend_mode: cfg.backendMode,
           effective_backend: probes.effective,
@@ -56,10 +75,15 @@ export function buildConnectionTools(deps: ToolDeps) {
             reachable: probes.cli.reachable,
             authenticated: probes.cli.authenticated,
             auto_start: cfg.cli.autoStart,
-            bin_found: cliStatus.binFound,
-            service_state: cliStatus.state,
-            service_detail: cliStatus.detail,
+            bin_found: binFound,
+            service_state: cliState,
+            service_detail: cliDetail,
             error: probes.cli.error ?? null,
+            cli_version: auth.cliVersion ?? null,
+            cli_authenticated: auth.authenticated,
+            service_manager: auth.serviceManager ?? null,
+            api_ready: auth.apiReady,
+            work_path: auth.workPath ?? null,
           },
         };
         const backend = probes.effective === 'cli' ? 'cli' : 'desktop';

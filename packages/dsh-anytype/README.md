@@ -31,26 +31,41 @@ pnpm dsh plugin --profile <profile> add link:<仓库绝对路径>/packages/dsh-a
 
 **桌面端纯检测**：插件不会尝试启动桌面应用（实测从其他进程上下文启动 Anytype.exe 会立即退出，不可靠）；桌面端不可达时切 CLI 或报可操作错误。
 
-**CLI 回退的前提（一次性 bot 初始化）**：`anytype auth create <name>` → `anytype space join <邀请链接>` → `anytype auth apikey create <name> --all-spaces --read-write` → 把 key 填进 `cliKey`。未配置 `cliKey` 时，桌面端不可达 = 无可用后端（不会启动一个没有可用 key 的 CLI 服务）。
+**CLI 回退的前提（一次性 bot 初始化，可在会话里用工具完成大半）**：
 
-**安全边界**：`cliAutoStart` 只对**已安装**的 CLI 服务执行 `service start`；插件绝不代为安装 CLI、创建 bot 账户、签发密钥或加入 space——那些是用户主权动作。被拉起的服务独立存活，插件卸载不终止。
+1. 安装 anytype-cli 并把可执行文件路径填进 `cliPath`；
+2. 会话里调 `anytype_cli_create`（账户名取自 `cliAccountName`）——创建 bot 账户（真实副作用：本机数据目录 + 系统 keyring）；
+3. 在桌面应用里把 bot 邀请进目标 space（邀请链接走 `anytype space join`，涉密不进插件）；
+4. 用 `anytype auth apikey create <name> --all-spaces --read-write` 签发 key 并填进 `cliKey`；
+5. 此后桌面端关闭时，`cliAutoStart: true` 会自动拉起：`service start` 优先，服务管理器不支持/失败回退 detached `anytype serve`。
+
+未配置 `cliKey` 时，桌面端不可达 = 无可用后端（不会启动一个没有可用 key 的 CLI 服务）。
+
+**安全边界**：`cliAutoStart` 只做最小拉起（`service start` / detached `serve`）；`anytype_cli_login` 的账户 key 经 **stdin** 传入（不进命令行、不进会话轨迹）；插件绝不代为安装 CLI、签发密钥或加入 space——那些是用户主权动作。被拉起的进程独立存活，插件卸载不终止。
+
+**CLI 内嵌 MCP（补充路径）**：anytype-cli 的 HTTP API 自带 `/mcp/full`（streamable HTTP，同一 api key）——如需原生 MCP 接入可把 dsh-mcp-client 指向它；本插件仍是精排工具路径。
 
 ## 配置（Settings → Plugins → dsh-anytype）
 
-| 字段               | 默认                     | 说明                                                     |
-| ------------------ | ------------------------ | -------------------------------------------------------- |
-| `enabled`          | `true`                   | 总开关；关闭后不注册任何工具（指引 section 保留）        |
-| `backend`          | `auto`                   | 后端选择：auto / desktop / cli                           |
-| `baseUrl`          | `http://127.0.0.1:31009` | **桌面端**本地 API 地址                                  |
-| `apiKey`           | `''`                     | **桌面端** Bearer 密钥；执行时实时读取，改动即时生效     |
-| `cliUrl`           | `http://127.0.0.1:31012` | **CLI 后端**本地 API 地址                                |
-| `cliKey`           | `''`                     | **CLI 后端** bot 密钥（空 = CLI 后端未配置）             |
-| `cliPath`          | `anytype`                | anytype-cli 可执行文件名或绝对路径                       |
-| `cliAutoStart`     | `false`                  | CLI 不可达且服务已安装时允许执行 `anytype service start` |
-| `apiVersion`       | `2025-11-08`             | `Anytype-Version` 请求头                                 |
-| `disabledGroups`   | `[]`                     | 按组停用工具（改动后需重载插件）                         |
-| `requestTimeoutMs` | `30000`                  | 单请求超时                                               |
-| `maxResponseChars` | `20000`                  | 工具结果截断上限（超限返回 `data_preview`）              |
+| 字段               | 默认                     | 说明                                                                                       |
+| ------------------ | ------------------------ | ------------------------------------------------------------------------------------------ |
+| `enabled`          | `true`                   | 总开关；关闭后不注册任何工具（指引 section 保留）                                          |
+| `backend`          | `auto`                   | 后端选择：auto / desktop / cli                                                             |
+| `baseUrl`          | `http://127.0.0.1:31009` | **桌面端**本地 API 地址                                                                    |
+| `apiKey`           | `''`                     | **桌面端** Bearer 密钥；执行时实时读取，改动即时生效                                       |
+| `cliUrl`           | `http://127.0.0.1:31012` | **CLI 后端**本地 API 地址                                                                  |
+| `cliKey`           | `''`                     | **CLI 后端** bot 密钥（空 = CLI 后端未配置）                                               |
+| `cliPath`          | `anytype`                | anytype-cli 可执行文件名或绝对路径                                                         |
+| `cliAutoStart`     | `false`                  | CLI 不可达时拉起：`service start` 优先，服务管理器不支持/失败回退 detached `anytype serve` |
+| `cliAccountKey`    | `''`                     | bot 账户 key（`anytype_cli_login` 用；经 stdin 传入，不进命令行/轨迹）                     |
+| `cliAccountName`   | `''`                     | `anytype_cli_create` 的账户名（空 = create 报可操作错误）                                  |
+| `cliNetworkConfig` | `''`                     | 自建网络配置 YAML 路径（login/create 的 `--network-config`）                               |
+| `cliRootPath`      | `''`                     | 账户数据根路径；仅 CLI 交互模式支持，机读模式暂不生效（保留字段）                          |
+| `cliListenAddress` | `127.0.0.1:31012`        | login/create/serve 共用的 JSON API 监听地址                                                |
+| `apiVersion`       | `2025-11-08`             | `Anytype-Version` 请求头                                                                   |
+| `disabledGroups`   | `[]`                     | 按组停用工具（改动后需重载插件）                                                           |
+| `requestTimeoutMs` | `30000`                  | 单请求超时                                                                                 |
+| `maxResponseChars` | `20000`                  | 工具结果截断上限（超限返回 `data_preview`）                                                |
 
 ## 工具清单（27 个，10 组）
 

@@ -49,7 +49,8 @@ export function anytypeGuidanceSection(enabled: boolean): PromptSection {
 - **desktop** = the Anytype desktop app (port 31009) — the user's main account, live local vault.
 - **cli** = anytype-cli (port 31012) — a SEPARATE bot account with its own synced data; it only sees spaces the bot joined. Keys are NOT interchangeable between backends.
 - Mode \`auto\` prefers desktop and only switches to cli on a connection failure (never on auth errors). Every tool result carries a \`backend\` field — check it before claiming things about "the user's notes".
-- Start with \`anytype_status\`: it reports reachability/authentication of both backends, CLI install & service state, and the effective backend. Use it FIRST when any anytype_* tool fails with a connection error.
+- Start with \`anytype_status\`: it reports reachability/authentication of both backends, CLI install & service state (via the CLI's machine-readable interface), and the effective backend. Use it FIRST when any anytype_* tool fails with a connection error.
+- **CLI account tools** (\`anytype_cli_login\` / \`anytype_cli_create\`) operate on the local CLI bot account with parameters from the plugin settings (account key fed via stdin). They touch ONLY the CLI data plane — never the desktop vault.
 
 ## How to use the tools
 
@@ -154,6 +155,9 @@ export type {
 } from './client.ts';
 export { cliAutoStartHint, CliLauncher } from './launcher.ts';
 export type {
+  CliAuthResult,
+  CliJsonEnvelope,
+  CliRuntimeStatus,
   CliServiceStatus,
   CliStartResult,
   LauncherConfig,
