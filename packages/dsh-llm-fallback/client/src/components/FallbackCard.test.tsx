@@ -4,7 +4,7 @@
  * dsh-open-in-zed 先例）——证明两个渲染位、加载态、勾选→脏→保存的
  * mutate 载荷、revision 冲突与只读降级。
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { DICT } from '../dict.ts';
@@ -15,6 +15,14 @@ import type {
   RemoteSessionFace,
   TFn,
 } from '../types.ts';
+
+/** Radix ScrollArea 依赖 ResizeObserver（jsdom 未实现），空实现垫片。 */
+class ResizeObserverStub {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+vi.stubGlobal('ResizeObserver', ResizeObserverStub);
 
 /** Poll until the probe passes (React 19 render is concurrent). */
 async function waitFor(probe: () => boolean): Promise<void> {
@@ -89,6 +97,8 @@ describe('FallbackCard 渲染', () => {
     root = null;
     host?.remove();
     host = null;
+    vi.unstubAllGlobals();
+    vi.stubGlobal('ResizeObserver', ResizeObserverStub);
   });
 
   /** 挂载一卡片（React 19 并发渲染，断言配合 waitFor 轮询）。 */
@@ -137,13 +147,13 @@ describe('FallbackCard 渲染', () => {
         ),
       ),
     );
-    // 勾选 prov/m1(目录中的模型行)
+    // 勾选 prov/m1(目录中的模型行;Radix Checkbox 渲染为 role=checkbox 按钮)
     const modelLabel = [...div.querySelectorAll('label')].find((l) =>
       (l.textContent ?? '').includes('Model One'),
     );
-    const checkbox = modelLabel?.querySelector('input');
+    const checkbox = modelLabel?.querySelector('button[role="checkbox"]');
     expect(checkbox).not.toBeNull();
-    checkbox!.click();
+    (checkbox as HTMLButtonElement).click();
     // 队列出现候选 + 脏状态提示
     await waitFor(() => div.textContent!.includes('prov / m1'));
     expect(div.textContent).toContain(t('dirty'));
@@ -177,8 +187,8 @@ describe('FallbackCard 渲染', () => {
     );
     const checkbox = [...div.querySelectorAll('label')]
       .find((l) => (l.textContent ?? '').includes('Model One'))
-      ?.querySelector('input');
-    checkbox!.click();
+      ?.querySelector('button[role="checkbox"]');
+    (checkbox as HTMLButtonElement).click();
     await waitFor(() => div.textContent!.includes(t('dirty')));
     // 别处修改:revision 2(fake.push 同步调 setSnap,React 重渲染是调度的
     // ——与真实宿主的推送节奏一致;这里等一拍让卡片重渲染到新快照再点保存)

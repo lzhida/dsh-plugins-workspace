@@ -15,6 +15,9 @@
  * - 模型目录共享（useModelCatalog）；
  * - locale 快照订阅（useLocaleTick）驱动语言切换即时重渲染。
  *
+ * 样式体系：Tailwind 工具类（shadcn/ui 语义 token，theme.css 映射宿主
+ * --dsw-alias-*），文本色在卡片根节点显式声明，不依赖宿主容器继承链。
+ *
  * @module dsh-llm-fallback/client/components/FallbackCard
  */
 
@@ -36,10 +39,10 @@ import type {
   RemoteSessionFace,
   TFn,
 } from '../types.ts';
-import { S } from '../styles.ts';
-import { CheckRow, NumberRow } from './fields.tsx';
+import { NumberRow, SwitchRow } from './fields.tsx';
 import { CatalogPicker, type CatalogData } from './CatalogPicker.tsx';
 import { QueueSection } from './QueueSection.tsx';
+import { Button } from './ui/button.tsx';
 
 /** 配置卡 props（t 由 plugin 层注入；scope/session 来自客户端上下文）。 */
 export interface FallbackCardProps extends CardProps {
@@ -171,7 +174,9 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
   if (snap.status !== 'ready') {
     const notice =
       snap.status === 'unavailable' ? t('unavailable') : t('loading');
-    return <div style={S.notice}>{notice}</div>;
+    return (
+      <div className="py-1 text-[13px] text-muted-foreground">{notice}</div>
+    );
   }
 
   const selected = toSelectedMap(view.queue);
@@ -190,10 +195,10 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
             : null;
 
   return (
-    <div style={S.card}>
-      <div style={S.hint}>{t('intro')}</div>
+    <div className="flex flex-col gap-4 py-1 text-foreground">
+      <div className="text-[13px] text-muted-foreground">{t('intro')}</div>
 
-      <CheckRow
+      <SwitchRow
         checked={view.enabled}
         disabled={!writable || busy}
         onChange={() => patchDraft(() => ({ enabled: !view.enabled }))}
@@ -238,7 +243,7 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
         onChange={(n) => patchDraft(() => ({ maxRetries: n }))}
       />
 
-      <CheckRow
+      <SwitchRow
         checked={view.cooldownEnabled}
         disabled={!writable || busy}
         onChange={() =>
@@ -256,25 +261,15 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
         onChange={(n) => patchDraft(() => ({ cooldownMs: n }))}
       />
 
-      <div style={S.row}>
-        <div style={S.hint}>{statusText}</div>
-        <div style={S.actions}>
-          <button
-            type="button"
-            style={S.btn}
-            disabled={!dirty || busy}
-            onClick={discard}
-          >
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-[13px] text-muted-foreground">{statusText}</div>
+        <div className="flex gap-2">
+          <Button variant="outline" disabled={!dirty || busy} onClick={discard}>
             {t('discard')}
-          </button>
-          <button
-            type="button"
-            style={S.primaryBtn}
-            disabled={!dirty || busy || !writable}
-            onClick={save}
-          >
+          </Button>
+          <Button disabled={!dirty || busy || !writable} onClick={save}>
             {busy ? t('saving') : t('save')}
-          </button>
+          </Button>
         </div>
       </div>
     </div>
