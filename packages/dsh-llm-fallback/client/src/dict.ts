@@ -29,6 +29,11 @@ export const DICT: Dict = {
     moveUp: '上移',
     moveDown: '下移',
     remove: '移除',
+    stale: '已失效',
+    staleHint:
+      '该模型已不在宿主模型目录中(被删除或模型 id 变更),请求会失败;请移除或在下方目录重新勾选',
+    clearStale: '清除失效项',
+    clearStaleHint: '把所有已不在目录中的候选从队列移除(保存后生效)',
     catalog: '可用模型',
     catalogLoading: '正在加载模型目录…',
     catalogError: '模型目录加载失败',
@@ -73,6 +78,12 @@ export const DICT: Dict = {
     moveUp: 'Move up',
     moveDown: 'Move down',
     remove: 'Remove',
+    stale: 'Unavailable',
+    staleHint:
+      'This model is no longer in the host catalog (removed, or its model id changed) and requests to it will fail — remove it or re-pick from the catalog below',
+    clearStale: 'Remove unavailable',
+    clearStaleHint:
+      'Remove every candidate that is no longer in the catalog from the queue (takes effect on save)',
     catalog: 'Available models',
     catalogLoading: 'Loading model catalog…',
     catalogError: 'Model catalog failed to load',

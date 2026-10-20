@@ -91,10 +91,20 @@ export interface CatalogGroup {
   models: CatalogModel[];
 }
 
+/** 目录查询失败的 provider（宿主把它隔离在 failures，不进 groups）。 */
+export interface CatalogProviderFailure {
+  id: string;
+  name: string;
+  message: string;
+}
+
 /** modelCatalog 响应面（宿主 Result 包装）。 */
 export interface ModelCatalogResponse {
   ok: boolean;
-  value?: { groups?: CatalogGroup[] };
+  value?: {
+    groups?: CatalogGroup[];
+    failures?: CatalogProviderFailure[];
+  };
 }
 
 /** remote.session 面本卡只取模型目录。 */

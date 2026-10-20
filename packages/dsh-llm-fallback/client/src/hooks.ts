@@ -36,11 +36,22 @@ export function useLocaleTick(locale: LocaleFace | undefined): number {
   return tick;
 }
 
-/** 模型目录加载状态机。 */
+/**
+ * 模型目录加载状态机。
+ *
+ * `ready` 态额外携带 `unverified`：目录查询**失败**的 provider id 集
+ * （宿主 buildModelCatalog 把 listModels 抛错的 provider 隔离进 failures
+ * 而非 groups）。这些 provider 的队列条目无法验证是否存在，失效判定
+ * （stale 标记）必须跳过它们，避免 provider 瞬时故障把健康条目误标。
+ */
 export type CatalogState =
   | { status: 'idle'; groups: CatalogGroup[] }
   | { status: 'loading'; groups: CatalogGroup[] }
-  | { status: 'ready'; groups: CatalogGroup[] }
+  | {
+      status: 'ready';
+      groups: CatalogGroup[];
+      unverified: ReadonlySet<string>;
+    }
   | { status: 'error'; groups: CatalogGroup[] };
 
 /**
@@ -62,7 +73,13 @@ export function useModelCatalog(session: RemoteSessionFace | undefined): {
       .then(() => session?.modelCatalog())
       .then((response) => {
         if (response && response.ok) {
-          setCat({ status: 'ready', groups: response.value?.groups ?? [] });
+          setCat({
+            status: 'ready',
+            groups: response.value?.groups ?? [],
+            unverified: new Set(
+              (response.value?.failures ?? []).map((f) => f.id),
+            ),
+          });
         } else {
           setCat((prev) => ({ status: 'error', groups: prev.groups }));
         }

@@ -24,6 +24,11 @@
 import * as React from 'react';
 import { useLocaleTick, useModelCatalog } from '../hooks.ts';
 import {
+  pruneStaleRoutes,
+  staleRouteKeys,
+  type CatalogSnapshotLike,
+} from '../lib/catalog.ts';
+import {
   beginDraft,
   buildMutations,
   isDirty,
@@ -91,6 +96,16 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
     [cat, reload],
   );
 
+  // 失效判定目录快照：仅目录 ready 时提供（loading/error/idle → null，
+  // 绝不误标）；含查询失败的 provider 集（这些 provider 的条目不标失效）。
+  const catalogSnapshot = React.useMemo<CatalogSnapshotLike | null>(
+    () =>
+      cat.status === 'ready'
+        ? { groups: cat.groups, unverifiedProviders: cat.unverified }
+        : null,
+    [cat],
+  );
+
   // 快照 → 已保存视图 → 叠加草稿 → 保存闸。
   const saved = React.useMemo(
     () => readSavedSettings(snap.value, snap.revision),
@@ -142,6 +157,15 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
     patchDraft(() => ({ queue: base }));
   }
 
+  /** 一键清理失效条目：显式草稿动作（仍需保存生效）。无可清理项时 no-op。 */
+  function clearStale(): void {
+    if (!writable || busy) return;
+    const base = ensureDraft().queue;
+    const kept = pruneStaleRoutes(catalogSnapshot, base);
+    if (kept === base) return;
+    patchDraft(() => ({ queue: kept }));
+  }
+
   function discard(): void {
     setDraft(null);
     setError(null);
@@ -154,10 +178,19 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
       setError('conflict');
       return;
     }
+    // 保存路径剔除失效条目（分支 B）：写入载荷不含"不在当前目录"的候选
+    // ——剔除是本次显式保存动作的一部分，不做任何服务端/后台静默剔除。
+    // 目录不可用（catalogSnapshot null）时 pruneStaleRoutes 原样返回，
+    // 行为与旧版一致。
+    const staleCount = staleRouteKeys(catalogSnapshot, view.queue).size;
+    const effView =
+      staleCount > 0
+        ? { ...view, queue: pruneStaleRoutes(catalogSnapshot, view.queue) }
+        : view;
     setBusy(true);
     setError(null);
     scope
-      .mutate(buildMutations(view), revision)
+      .mutate(buildMutations(effView), revision)
       .then(() => {
         setBusy(false);
         discard();
@@ -209,10 +242,12 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
       <QueueSection
         t={t}
         queue={view.queue}
+        catalog={catalogSnapshot}
         writable={writable}
         busy={busy}
         onMove={move}
         onRemove={removeAt}
+        onClearStale={clearStale}
       />
 
       <CatalogPicker
