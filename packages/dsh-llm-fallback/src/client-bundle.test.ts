@@ -4,7 +4,6 @@ import { runInNewContext } from 'node:vm';
 import { describe, expect, it } from 'vitest';
 import { PKG_NAME } from '../client/src/constants.ts';
 import { DICT } from '../client/src/dict.ts';
-import { T, LEGACY_GRAY_PREFIX } from '../client/src/styles.ts';
 import {
   filteredCatalogGroups,
   modelMatches,
@@ -35,11 +34,35 @@ describe('dsh-llm-fallback client 契约', () => {
     // plugins.bundle.config 插槽 keyed by 包名，不一致则详情页不渲染配置卡。
     // （同一常量两用，上断言已覆盖；此处再锁 exports['./client'] 产物路径。）
     expect(pkg.exports['./client']).toBe('./client/index.js');
-    // 构建链：client 产物由 scripts/build-client.ts 打出（防构建脚本被误删）。
+    // 构建链：client 产物由 scripts/build-client.ts 打出（防构建脚本被误删），
+    // 且脚本包含 Tailwind CSS 管线（theme.css 编译 + @tailwindcss/cli）。
     expect(pkg.scripts['build:client']).toContain('scripts/build-client.ts');
     const buildScript = readPackageFile('../scripts/build-client.ts');
     expect(buildScript).toContain('client/src/main.tsx');
     expect(buildScript).toContain('client/index.js');
+    expect(buildScript).toContain('client/src/theme.css');
+    expect(buildScript).toContain('@tailwindcss/cli');
+  });
+
+  it('shadcn/ui 新依赖全部声明在 package.json devDependencies', () => {
+    const pkg = JSON.parse(readPackageFile('../package.json')) as {
+      devDependencies?: Record<string, string>;
+    };
+    const declared = Object.keys(pkg.devDependencies ?? {});
+    // 样式与组件体系依赖：Tailwind v4 + Radix 原语 + CVA 工具链。
+    // 均为构建期依赖（bundle 进产物），保持 devDependencies 不进运行时。
+    for (const name of [
+      'tailwindcss',
+      '@tailwindcss/cli',
+      'class-variance-authority',
+      'clsx',
+      'tailwind-merge',
+      '@radix-ui/react-switch',
+      '@radix-ui/react-checkbox',
+      '@radix-ui/react-scroll-area',
+    ]) {
+      expect(declared, `${name} 应声明在 devDependencies`).toContain(name);
+    }
   });
 
   it('ENTRY_NS 与 cordis.patch.yml 的条目 id 同步（设置 namespace 契约）', () => {
@@ -54,20 +77,80 @@ describe('dsh-llm-fallback client 契约', () => {
     const source = readPackageFile('../client/index.js');
     const registered: Array<{
       id: string;
-      factory: (require: () => unknown) => unknown;
+      factory: (require: (spec: string) => unknown) => unknown;
     }> = [];
-    // 产物顶层只执行 load 注册；模块体（含 react require）在 factory 闭包
-    // 内，materialize 时经宿主模块表解析。
-    const reactStub = {
-      createElement: () => null,
-      useState: () => [null, () => undefined],
-      useEffect: () => undefined,
-      useMemo: (compute: () => unknown) => compute(),
-      useCallback: (fn: unknown) => fn,
-      useReducer: () => [null, () => undefined],
-      useRef: () => ({ current: null }),
+    // 产物顶层只执行 load 注册；模块体（含 react require 与 <style> 注入）
+    // 在 factory 闭包内，materialize 时经宿主模块表解析。
+    // react 桩：Radix 经 esbuild __toESM 互操作消费 react（按
+    // getOwnPropertyNames 复制属性），因此必须提供真实属性对象而非 Proxy；
+    // 模块作用域只创建组件/Context 不渲染，工厂透传、hooks 返回安全值。
+    const REACT_EXPORT_NAMES = [
+      'Children',
+      'Component',
+      'Fragment',
+      'Profiler',
+      'PureComponent',
+      'StrictMode',
+      'Suspense',
+      'cloneElement',
+      'createContext',
+      'createElement',
+      'createFactory',
+      'createRef',
+      'forwardRef',
+      'isValidElement',
+      'lazy',
+      'memo',
+      'startTransition',
+      'unstable_act',
+      'useCallback',
+      'useContext',
+      'useDebugValue',
+      'useDeferredValue',
+      'useEffect',
+      'useId',
+      'useImperativeHandle',
+      'useInsertionEffect',
+      'useLayoutEffect',
+      'useMemo',
+      'useOptimistic',
+      'useReducer',
+      'useRef',
+      'useState',
+      'useSyncExternalStore',
+      'useTransition',
+      'version',
+    ];
+    const reactStub: Record<string, unknown> = {};
+    for (const name of REACT_EXPORT_NAMES) {
+      if (name === 'Fragment' || name === 'StrictMode') {
+        reactStub[name] = null;
+      } else if (name === 'createContext') {
+        reactStub[name] = () => ({ Provider: null, Consumer: null });
+      } else if (name === 'forwardRef' || name === 'memo') {
+        reactStub[name] = (fn: unknown) => fn;
+      } else if (name === 'useRef') {
+        reactStub[name] = () => ({ current: null });
+      } else if (name === 'useMemo') {
+        reactStub[name] = (compute: () => unknown) => compute();
+      } else if (name === 'useCallback') {
+        reactStub[name] = (fn: unknown) => fn;
+      } else if (name === 'useState' || name === 'useReducer') {
+        reactStub[name] = () => [null, () => undefined];
+      } else if (name.startsWith('use')) {
+        reactStub[name] = () => undefined;
+      } else {
+        reactStub[name] = () => null;
+      }
+    }
+    // Radix 组件（react-primitive）经 jsx-runtime 与 react-dom 解析；
+    // 宿主 seed 表提供两者，沙箱里给同形空实现即可完成 materialize。
+    const jsxRuntimeStub = {
+      jsx: () => null,
+      jsxs: () => null,
       Fragment: null,
     };
+    const reactDomStub = { flushSync: (fn: () => void) => fn() };
     const sandbox: Record<string, unknown> = {
       __ModuleLoader__: {
         load: (definition: (typeof registered)[number]) => {
@@ -85,7 +168,12 @@ describe('dsh-llm-fallback client 契约', () => {
     expect(source).toContain(pkg.name);
     // materialize：factory 执行（组件渲染路径由 FallbackCard.test.tsx 与
     // e2e 浏览器级验证覆盖）。
-    const exports = registration.factory(() => reactStub) as {
+    const exports = registration.factory((spec: string) => {
+      if (spec === 'react') return reactStub;
+      if (spec === 'react/jsx-runtime') return jsxRuntimeStub;
+      if (spec === 'react-dom') return reactDomStub;
+      throw new Error(`沙箱未实现的宿主模块请求: ${spec}`);
+    }) as {
       name: string;
       inject: string[];
       apply: unknown;
@@ -114,19 +202,35 @@ describe('配置卡字典与主题', () => {
     }
   });
 
-  it('颜色接入 dsh 主题 token（暗色模式可读），不再硬编码灰阶', () => {
-    // 客户端 Theme inspect 提供方列出的 alias token：
-    // 文本 / 次级文本 / 两级边框 / 抬升表面 / 品牌色（明暗双模式各有定义）。
-    expect(T.text).toBe('var(--dsw-alias-label-primary)');
-    expect(T.textSecondary).toBe('var(--dsw-alias-label-secondary)');
-    expect(T.border).toBe('var(--dsw-alias-border-l1)');
-    expect(T.borderStrong).toBe('var(--dsw-alias-border-l2)');
-    expect(T.surface).toBe('var(--dsw-alias-bg-layer-1)');
-    expect(T.brand).toBe('var(--dsw-alias-brand-primary)');
-    // 旧硬编码灰阶 rgba(128,128,128,*) 是暗色模式混色看不清的根因，防回归。
-    expect(LEGACY_GRAY_PREFIX).toBe('rgba(128,128,128');
+  it('样式产物接入 dsh 主题 token（明暗双模式），不再硬编码灰阶', () => {
+    // Tailwind 语义 token 经 @theme inline 全部内联为宿主 --dsw-alias-*
+    // var() 引用（客户端 Theme inspect 提供方列出的 alias token，明暗
+    // 双模式各有定义）；产物即样式注入字符串的载体，直接断言。
     const client = readPackageFile('../client/index.js');
+    for (const token of [
+      '--dsw-alias-label-primary',
+      '--dsw-alias-label-secondary',
+      '--dsw-alias-border-l1',
+      '--dsw-alias-border-l2',
+      '--dsw-alias-bg-layer-1',
+      '--dsw-alias-brand-primary',
+      '--dsw-alias-switch-thumb',
+    ]) {
+      expect(client, `bundle 应引用 ${token}`).toContain(token);
+    }
+    // 旧硬编码灰阶 rgba(128,128,128,*) 是暗色模式混色看不清的根因，防回归。
     expect(client).not.toContain('rgba(128,128,128');
+  });
+
+  it('bundle 无第二份 React（react / react-dom external 纪律）', () => {
+    const client = readPackageFile('../client/index.js');
+    // 模块体保持 factory 内 require，由宿主 seed 表解析宿主副本；
+    // 出现 react-dom 生产包 license 头 = 打包了第二份 React（hooks 跨副本
+    // 调用会崩），构建断言之外再测一道。
+    expect(client).toContain('require("react")');
+    expect(client).not.toContain('react-dom.production');
+    // Tailwind 产物已内联且带样式挂载标记（theme.ts 运行时注入）。
+    expect(client).toContain('data-plugin-css');
   });
 });
 

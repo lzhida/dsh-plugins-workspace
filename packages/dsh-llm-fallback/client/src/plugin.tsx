@@ -35,6 +35,8 @@ import {
 } from './constants.ts';
 import { DICT } from './dict.ts';
 import { FallbackCard } from './components/FallbackCard.tsx';
+// 样式挂载副作用：factory materialize 即同步注入 <style>（theme.ts 模块体）。
+import './theme.ts';
 import type { CardProps, ClientContext, TFn } from './types.ts';
 
 /** 客户端插件名。 */
