@@ -27,7 +27,10 @@ export function buildTypeTools(deps: ToolDeps) {
         'List object types defined in a space (type key, name, layout, properties). The type key is what anytype_create_object expects.',
       parameters: {
         space_id: { type: 'string', required: true, description: 'Space id.' },
-        limit: { type: 'integer', description: 'Page size (API default 25).' },
+        limit: {
+          type: 'integer',
+          description: 'Page size (API default 25, max 1000).',
+        },
         offset: {
           type: 'integer',
           description: 'Pagination offset (API default 0).',
@@ -271,7 +274,10 @@ export function buildTypeTools(deps: ToolDeps) {
       parameters: {
         space_id: { type: 'string', required: true, description: 'Space id.' },
         type: { type: 'string', description: 'Filter by type key.' },
-        limit: { type: 'integer', description: 'Page size (API default 25).' },
+        limit: {
+          type: 'integer',
+          description: 'Page size (API default 25, max 1000).',
+        },
         offset: {
           type: 'integer',
           description: 'Pagination offset (API default 0).',

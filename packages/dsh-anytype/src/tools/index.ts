@@ -2,8 +2,8 @@
  * 工具组装：按组构建全部工具定义，并给出「组 → 工具」映射供注册层
  * 按 `disabledGroups` 过滤。
  *
- * 组与工具清单（26 个）：
- * - connection: anytype_whoami
+ * 组与工具清单（30 个）：
+ * - connection: anytype_whoami, anytype_status
  * - search:     anytype_search, anytype_list_objects
  * - space:      anytype_list_spaces, anytype_get_space, anytype_create_space,
  *               anytype_update_space
@@ -12,7 +12,9 @@
  * - collection: anytype_create_collection, anytype_list_collection_objects
  * - type:       anytype_list_types, anytype_get_type, anytype_create_type,
  *               anytype_update_type, anytype_delete_type, anytype_list_templates
- * - property:   anytype_list_properties, anytype_list_property_options
+ * - property:   anytype_list_properties, anytype_list_property_options,
+ *               anytype_create_property, anytype_update_property,
+ *               anytype_delete_property
  * - member:     anytype_list_members, anytype_get_member_me
  * - schema:     anytype_get_schema, anytype_get_op_schema
  * - generic:    anytype_request

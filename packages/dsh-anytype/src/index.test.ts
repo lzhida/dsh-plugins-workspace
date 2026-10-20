@@ -65,14 +65,17 @@ describe('dsh-anytype', () => {
     expect(console.log).toHaveBeenCalledWith(`[${name}] plugin loaded`);
   });
 
-  it('默认配置注册 27 个工具 + 1 个指引 section，且 effect 清理链完整', () => {
+  it('默认配置注册 30 个工具 + 1 个指引 section，且 effect 清理链完整', () => {
     const { ctx, registered, sections, cleanups } = stubCtx();
     apply(ctx, undefined);
-    expect(registered).toHaveLength(27);
+    expect(registered).toHaveLength(30);
     const names = registered.map((r) => r.name);
     expect(names).toContain('anytype_whoami');
     expect(names).toContain('anytype_status');
     expect(names).toContain('anytype_search');
+    expect(names).toContain('anytype_create_property');
+    expect(names).toContain('anytype_update_property');
+    expect(names).toContain('anytype_delete_property');
     expect(names).toContain('anytype_request');
     // effect 数 = section 1（register 的 disposer 不走 effect）
     expect(sections).toHaveLength(1);
@@ -97,7 +100,7 @@ describe('dsh-anytype', () => {
   it('disabledGroups 过滤对应组的工具（search 组 2 个 + space 组 4 个）', () => {
     const { ctx, registered } = stubCtx();
     apply(ctx, { disabledGroups: ['search', 'space'] });
-    expect(registered).toHaveLength(27 - 2 - 4);
+    expect(registered).toHaveLength(30 - 2 - 4);
     const names = registered.map((r) => r.name);
     expect(names).not.toContain('anytype_search');
     expect(names).not.toContain('anytype_list_objects');
@@ -111,7 +114,7 @@ describe('dsh-anytype', () => {
     expect(() =>
       apply(ctx, { requestTimeoutMs: 'not-a-number' }),
     ).not.toThrow();
-    expect(registered).toHaveLength(27);
+    expect(registered).toHaveLength(30);
   });
 
   it('Config schema 已导出（loader 投影设置面板的契约）', async () => {

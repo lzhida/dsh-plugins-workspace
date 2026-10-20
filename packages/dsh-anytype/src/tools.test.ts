@@ -77,7 +77,7 @@ async function run(
 }
 
 describe('dsh-anytype tools', () => {
-  it('按组注册 27 个工具（组缺失即清单漂移）', () => {
+  it('按组注册 30 个工具（组缺失即清单漂移）', () => {
     const { deps } = makeDeps();
     const grouped = buildGroupedTools(deps);
     const counts = Object.fromEntries(
@@ -90,12 +90,12 @@ describe('dsh-anytype tools', () => {
       object: 4,
       collection: 2,
       type: 6,
-      property: 2,
+      property: 5,
       member: 2,
       schema: 2,
       generic: 1,
     });
-    expect(flatTools(deps)).toHaveLength(27);
+    expect(flatTools(deps)).toHaveLength(30);
   });
 
   it('anytype_status：桌面端探测结果组装', async () => {
@@ -217,6 +217,89 @@ describe('dsh-anytype tools', () => {
     );
   });
 
+  it('anytype_create_property：body 收 name/format，key/options 仅在提供时携带', async () => {
+    const { deps, calls } = makeDeps();
+    await run(deps, calls, 'anytype_create_property', {
+      space_id: 's1',
+      name: 'Priority',
+      format: 'select',
+      key: 'priority',
+      options: [{ name: 'P0', color: 'red' }],
+    });
+    expect(calls.at(-1)?.init.method).toBe('POST');
+    expect(calls.at(-1)?.url).toBe(
+      'http://127.0.0.1:31009/v2/spaces/s1/properties',
+    );
+    expect(JSON.parse(calls.at(-1)?.init.body as string)).toEqual({
+      name: 'Priority',
+      format: 'select',
+      key: 'priority',
+      options: [{ name: 'P0', color: 'red' }],
+    });
+
+    // key/options 省略时不发送 undefined 键（registry 对成功值要求无损 JSON）
+    await run(deps, calls, 'anytype_create_property', {
+      space_id: 's1',
+      name: 'Due date',
+      format: 'date',
+    });
+    expect(JSON.parse(calls.at(-1)?.init.body as string)).toEqual({
+      name: 'Due date',
+      format: 'date',
+    });
+  });
+
+  it('anytype_update_property：PATCH 仅发 name（key 冻结不变）', async () => {
+    const { deps, calls } = makeDeps();
+    await run(deps, calls, 'anytype_update_property', {
+      space_id: 's1',
+      key: 'priority',
+      name: 'Urgency',
+    });
+    expect(calls.at(-1)?.init.method).toBe('PATCH');
+    expect(calls.at(-1)?.url).toBe(
+      'http://127.0.0.1:31009/v2/spaces/s1/properties/priority',
+    );
+    expect(JSON.parse(calls.at(-1)?.init.body as string)).toEqual({
+      name: 'Urgency',
+    });
+  });
+
+  it('anytype_delete_property：DELETE + dry_run 查询', async () => {
+    const { deps, calls } = makeDeps();
+    await run(deps, calls, 'anytype_delete_property', {
+      space_id: 's1',
+      key: 'priority',
+      dry_run: true,
+    });
+    expect(calls.at(-1)?.init.method).toBe('DELETE');
+    expect(calls.at(-1)?.url).toBe(
+      'http://127.0.0.1:31009/v2/spaces/s1/properties/priority?dry_run=true',
+    );
+  });
+
+  it('属性写工具描述声明 v2 能力边界（提示词契约，防回归删除）', () => {
+    const { deps } = makeDeps();
+    const desc = (name: string): string => {
+      const tool = flatTools(deps).find((t) => t.name === name);
+      if (!tool) throw new Error(`tool not registered: ${name}`);
+      return tool.description ?? '';
+    };
+    // PATCH 只收 name：key 是身份、format 不可变、无选项改名/删色
+    expect(desc('anytype_update_property')).toMatch(
+      /ONLY change the display name/,
+    );
+    expect(desc('anytype_update_property')).toMatch(/does not change/);
+    expect(desc('anytype_update_property')).toMatch(/no rename\/recolor/);
+    // create：内联 options + 选项铸造边界（create_missing_options）+ 选项只读
+    expect(desc('anytype_create_property')).toMatch(
+      /create_missing_options=true/,
+    );
+    expect(desc('anytype_create_property')).toMatch(/read-only after creation/);
+    // delete：归档进 Bin 可恢复
+    expect(desc('anytype_delete_property')).toMatch(/archived into the Bin/);
+  });
+
   it('anytype_update_type：扁平字段与 ops 互斥，两者皆缺报可操作错误', async () => {
     const { deps, calls } = makeDeps();
     await run(deps, calls, 'anytype_update_type', {
@@ -317,6 +400,9 @@ describe('dsh-anytype tools', () => {
       'anytype_create_object',
       'anytype_update_object',
       'anytype_delete_object',
+      'anytype_create_property',
+      'anytype_update_property',
+      'anytype_delete_property',
       'anytype_request',
     ]) {
       const tool = tools.find((t) => t.name === name);

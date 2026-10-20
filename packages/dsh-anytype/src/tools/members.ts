@@ -17,7 +17,10 @@ export function buildMemberTools(deps: ToolDeps) {
       description: 'List members of a space (id, name, role/permissions).',
       parameters: {
         space_id: { type: 'string', required: true, description: 'Space id.' },
-        limit: { type: 'integer', description: 'Page size (API default 25).' },
+        limit: {
+          type: 'integer',
+          description: 'Page size (API default 25, max 1000).',
+        },
         offset: {
           type: 'integer',
           description: 'Pagination offset (API default 0).',
