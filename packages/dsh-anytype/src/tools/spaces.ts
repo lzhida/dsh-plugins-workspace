@@ -21,7 +21,10 @@ export function buildSpaceTools(deps: ToolDeps) {
       description:
         'List all granted spaces (id, name, icon). Grab a space_id here before calling space-scoped tools.',
       parameters: {
-        limit: { type: 'integer', description: 'Page size (API default 25).' },
+        limit: {
+          type: 'integer',
+          description: 'Page size (API default 25, max 1000).',
+        },
         offset: {
           type: 'integer',
           description: 'Pagination offset (API default 0).',

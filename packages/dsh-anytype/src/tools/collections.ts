@@ -66,7 +66,10 @@ export function buildCollectionTools(deps: ToolDeps) {
           description:
             'Optional comma-separated field list to trim the response.',
         },
-        limit: { type: 'integer', description: 'Page size (API default 25).' },
+        limit: {
+          type: 'integer',
+          description: 'Page size (API default 25, max 1000).',
+        },
         offset: {
           type: 'integer',
           description: 'Pagination offset (API default 0).',

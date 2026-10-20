@@ -19,8 +19,8 @@
  * - `disabledGroups`：按组停用工具（connection/search/space/object/collection/
  *   type/property/member/schema/generic），控制工具面板体积。
  * - `requestTimeoutMs`：单请求超时（与调用方取消信号组合生效）。
- * - `maxResponseChars`：工具结果文本截断上限——超限时 `data` 被替换为
- *   `_truncated` 预览，保护模型上下文。
+ * - `maxResponseChars`：工具结果文本截断上限——超限时 `data` 键被移除，
+ *   改以 `truncated: true` + `data_preview` 携带预览文本，保护模型上下文。
  */
 
 import Schema from '@deepseek-ai/schemastery';

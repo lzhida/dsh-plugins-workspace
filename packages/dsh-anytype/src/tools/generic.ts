@@ -5,6 +5,10 @@
  * discussion / validate 等），保证「完整」：专用工具没暴露的能力
  * （如文件上传、聊天消息、widget 布局）都经这里直达。
  *
+ * 已知文件面/流式限制（已写入工具描述）：multipart 上传不可发
+ * （POST /v2/files 仅 JSON url 形态可达）、GET files content 二进制
+ * 按文本损坏、/messages/stream 为 SSE 会挂至超时。
+ *
  * 安全白名单（execute 内强制）：
  * - 只允许 `/v2/` 前缀（v1 旧 API 不在封装范围）；
  * - 拒绝 `/v2/auth/` 密钥管理端点（challenge/api_keys 轮换是用户在
@@ -53,7 +57,7 @@ export function buildGenericTools(deps: ToolDeps) {
     defineTool({
       name: 'anytype_request',
       description:
-        'Generic Anytype v2 API passthrough for endpoints without a dedicated tool: chats & messages, file upload/download, widgets, queries, object discussion, validate, etc. Only /v2/ paths are allowed; /v2/auth/* is blocked. method+path are required; pass query as an object and body as a JSON value (schema from anytype_get_schema).',
+        'Generic Anytype v2 API passthrough for endpoints without a dedicated tool: chats & messages, file upload/download, widgets, queries, object discussion, validate, etc. Only /v2/ paths are allowed; /v2/auth/* is blocked. method+path are required; pass query as an object and body as a JSON value (schema from anytype_get_schema). Known limits: POST /v2/files only works in its JSON url form (multipart/form-data bodies cannot be sent); GET /v2/files/{id}/content returns binary data decoded as corrupted text; /messages/stream is SSE and hangs until the request times out.',
       parameters: {
         method: {
           type: 'string',
@@ -79,7 +83,8 @@ export function buildGenericTools(deps: ToolDeps) {
         },
         expected_etag: {
           type: 'string',
-          description: 'ETag from a previous read; sent as If-Match.',
+          description:
+            'ETag from a previous read; sent as If-Match. Not for chats: chat/message concurrency uses order-id/last_state_id, not ETags.',
         },
       },
       output: outputSpec(),

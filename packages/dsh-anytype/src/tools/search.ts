@@ -35,7 +35,7 @@ export function buildSearchTools(deps: ToolDeps) {
         },
         limit: {
           type: 'integer',
-          description: 'Page size (API default 25).',
+          description: 'Page size (API default 25, max 1000).',
         },
         offset: {
           type: 'integer',
@@ -81,7 +81,10 @@ export function buildSearchTools(deps: ToolDeps) {
           required: true,
           description: 'Target space id.',
         },
-        limit: { type: 'integer', description: 'Page size (API default 25).' },
+        limit: {
+          type: 'integer',
+          description: 'Page size (API default 25, max 1000).',
+        },
         offset: {
           type: 'integer',
           description: 'Pagination offset (API default 0).',
