@@ -184,6 +184,26 @@ describe('dsh-anytype tools', () => {
     expect(headers['If-Match']).toBe('"e0"');
   });
 
+  it('anytype_update_space：PATCH 改名/描述，无 expected_etag 参数且不发送 If-Match', async () => {
+    const { deps, calls } = makeDeps();
+    const tool = toolByName(deps, 'anytype_update_space');
+    // 实测（2026-10-20，Anytype 活体）：spaces PATCH 参数区无 If-Match，
+    // space 读不返回 etag，带过期 If-Match 也被服务端忽略仍 200 ——
+    // 工具面不得承诺乐观锁（详见 README「space 无乐观锁」段）。
+    expect(Object.keys(tool.parameters ?? {})).not.toContain('expected_etag');
+    await run(deps, calls, 'anytype_update_space', {
+      space_id: 's1',
+      name: 'Renamed',
+    });
+    expect(calls.at(-1)?.init.method).toBe('PATCH');
+    expect(calls.at(-1)?.url).toBe('http://127.0.0.1:31009/v2/spaces/s1');
+    expect(JSON.parse(calls.at(-1)?.init.body as string)).toEqual({
+      name: 'Renamed',
+    });
+    const headers = calls.at(-1)?.init.headers as Record<string, string>;
+    expect(headers['If-Match']).toBeUndefined();
+  });
+
   it('anytype_delete_object：DELETE + dry_run 查询', async () => {
     const { deps, calls } = makeDeps();
     await run(deps, calls, 'anytype_delete_object', {

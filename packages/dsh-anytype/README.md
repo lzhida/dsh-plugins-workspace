@@ -48,7 +48,8 @@ pnpm dsh plugin --profile <profile> add link:<仓库绝对路径>/packages/dsh-a
 设计要点：
 
 - **v2 自描述编辑**：`anytype_update_object` 的 ops 与 AnyBlock 文档成员不硬编码，agent 用 `anytype_get_op_schema` / `anytype_get_schema` 运行时取真值；
-- **乐观锁**：读工具回传 `etag`，写工具接受 `expected_etag`（映射 `If-Match`）——e2e 实测三次连续写入（4d33c8ca → 883c2064 → 09691893）无冲突；
+- **乐观锁（object/type）**：读工具回传响应 `etag`，`anytype_update_object` / `anytype_update_type` / `anytype_request` 接受 `expected_etag`（映射 `If-Match`）——e2e 实测三次连续写入（4d33c8ca → 883c2064 → 09691893）无冲突；
+- **space 无乐观锁（实测）**：Anytype v2 spec 的 spaces PATCH 参数区没有 `If-Match`，space 读也不返回 etag；实测带过期 `If-Match` 的 `PATCH /v2/spaces/{id}?dry_run=true` 仍 200（服务端静默忽略）——`anytype_update_space` 因此不提供 `expected_etag`，并发改名无服务端保护。各端点能力以本地 `/v2/docs/openapi.json` 自省为准（v2 为 pre-release，未来版本可能给 spaces 补 etag）；
 - **只读并行**：读类工具声明 `isConcurrencySafe`，可与同批读调用并行调度；
 - **错误可操作**：连接失败提示「Anytype 应用未运行？」；API 错误透传 `status + code + issues + hints`——实测模型能凭错误 hint 自行纠错重试。
 

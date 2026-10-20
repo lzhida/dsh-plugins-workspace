@@ -1,6 +1,6 @@
 {
   "name": "@lzhida/dsh-anytype",
-  "description": "dsh-anytype 插件：把 Anytype v2 本地 API（官方 anytype-mcp 的后端，默认 http://127.0.0.1:31009）封装为一组 dsh 原生工具——whoami/全局与空间搜索/空间/对象(创建·ops 编辑·归档)/集合/类型与模板/属性/成员/schema 发现，外加 anytype_request 逃生舱覆盖 chats/files/widgets/queries 等长尾端点。API key 走设置面板（volatile 热生效），写操作支持 If-Match 乐观锁。",
+  "description": "dsh-anytype 插件：把 Anytype v2 本地 API（官方 anytype-mcp 的后端，默认 http://127.0.0.1:31009）封装为一组 dsh 原生工具——whoami/全局与空间搜索/空间/对象(创建·ops 编辑·归档)/集合/类型与模板/属性/成员/schema 发现，外加 anytype_request 逃生舱覆盖 chats/files/widgets/queries 等长尾端点。API key 走设置面板（volatile 热生效），object/type 写操作支持 If-Match 乐观锁（spaces PATCH 规范不支持，实测服务端忽略）。",
   "version": "0.1.0",
   "private": true,
   "license": "MIT",

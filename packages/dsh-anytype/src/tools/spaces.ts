@@ -3,7 +3,10 @@
  * anytype_update_space。
  *
  * 对应 `GET|POST /v2/spaces` 与 `GET|PATCH /v2/spaces/{space_id}`。
- * 写操作支持 `expected_etag`（映射 `If-Match`）——先读后写防并发覆盖。
+ * 乐观锁例外：Anytype v2 spec 的 spaces PATCH 参数区没有 `If-Match`，space
+ * 读也不返回 etag；实测（2026-10-20，活体）带过期 `If-Match` 的 PATCH 仍
+ * 200——服务端静默忽略。因此 `anytype_update_space` 不提供 `expected_etag`
+ * （object/type 组的 If-Match 乐观锁经活体验证有效，不受影响）。
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
@@ -75,15 +78,11 @@ export function buildSpaceTools(deps: ToolDeps) {
     defineTool({
       name: 'anytype_update_space',
       description:
-        'Rename a space and/or change its description. Pass expected_etag (from anytype_get_space) to fail instead of overwriting concurrent changes.',
+        'Rename a space and/or change its description. No optimistic locking: the Anytype v2 spaces PATCH spec has no If-Match and space reads return no ETag (the server silently ignores an If-Match header), so concurrent edits are not guarded server-side.',
       parameters: {
         space_id: { type: 'string', required: true, description: 'Space id.' },
         name: { type: 'string', description: 'New space name.' },
         description: { type: 'string', description: 'New space description.' },
-        expected_etag: {
-          type: 'string',
-          description: 'ETag from a previous read; sent as If-Match.',
-        },
       },
       output: outputSpec(),
       async execute(args, exec) {
@@ -102,7 +101,6 @@ export function buildSpaceTools(deps: ToolDeps) {
           `/v2/spaces/${enc(args.space_id)}`,
           {
             body,
-            expectedEtag: args.expected_etag,
           },
         );
       },
