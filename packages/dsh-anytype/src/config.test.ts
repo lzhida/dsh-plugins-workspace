@@ -1,5 +1,5 @@
 /**
- * config.ts 测试：默认值、volatile 解包、双后端归一化、组过滤与数值回退。
+ * config.ts 测试：默认值、volatile 解包、baseUrl 归一化、组过滤与数值回退。
  */
 
 import { describe, expect, it } from 'vitest';
@@ -7,8 +7,6 @@ import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_API_VERSION,
   DEFAULT_BASE_URL,
-  DEFAULT_CLI_BIN,
-  DEFAULT_CLI_URL,
   DEFAULT_MAX_RESPONSE_CHARS,
   DEFAULT_REQUEST_TIMEOUT_MS,
   resolveConfig,
@@ -24,16 +22,12 @@ function fakeVolatile(value: unknown): { get: () => unknown } {
 }
 
 describe('dsh-anytype config', () => {
-  it('undefined 输入回落全默认（auto 模式、desktop 默认地址、CLI 未配置）', () => {
+  it('undefined 输入回落全默认（enabled、默认地址、无停用组）', () => {
     const cfg = resolveConfig(undefined);
     expect(cfg.enabled).toBe(true);
-    expect(cfg.backendMode).toBe('auto');
-    expect(cfg.desktop.url).toBe(DEFAULT_BASE_URL);
-    expect(cfg.desktop.key).toBe('');
-    expect(cfg.cli.url).toBe(DEFAULT_CLI_URL);
-    expect(cfg.cli.key).toBe('');
-    expect(cfg.cli.binPath).toBe(DEFAULT_CLI_BIN);
-    expect(cfg.cli.autoStart).toBe(false);
+    expect(cfg.baseUrl).toBe(DEFAULT_BASE_URL);
+    expect(cfg.apiKey).toBe('');
+    expect(cfg.apiVersion).toBe(DEFAULT_API_VERSION);
     expect(cfg.disabledGroups.size).toBe(0);
     expect(cfg.requestTimeoutMs).toBe(DEFAULT_REQUEST_TIMEOUT_MS);
     expect(cfg.maxResponseChars).toBe(DEFAULT_MAX_RESPONSE_CHARS);
@@ -43,12 +37,10 @@ describe('dsh-anytype config', () => {
     const cfg = resolveConfig({
       enabled: fakeVolatile(true),
       apiKey: fakeVolatile(' vk '),
-      cliKey: fakeVolatile(' bot '),
       disabledGroups: fakeVolatile(['search']),
     });
     expect(cfg.enabled).toBe(true);
-    expect(cfg.desktop.key).toBe('vk');
-    expect(cfg.cli.key).toBe('bot');
+    expect(cfg.apiKey).toBe('vk');
     expect(cfg.disabledGroups.has('search')).toBe(true);
   });
 
@@ -62,45 +54,22 @@ describe('dsh-anytype config', () => {
     expect(unwrapVolatile(42)).toBe(42);
   });
 
-  it('双后端 URL 各自归一化：去尾斜杠；非法值回落各自默认', () => {
-    const ok = resolveConfig({
-      baseUrl: 'http://localhost:31009/',
-      cliUrl: 'http://127.0.0.1:39999/',
-    });
-    expect(ok.desktop.url).toBe('http://localhost:31009');
-    expect(ok.cli.url).toBe('http://127.0.0.1:39999');
-    const bad = resolveConfig({ baseUrl: 'ftp://x', cliUrl: 'not a url' });
-    expect(bad.desktop.url).toBe(DEFAULT_BASE_URL);
-    expect(bad.cli.url).toBe(DEFAULT_CLI_URL);
+  it('baseUrl 归一化：去尾斜杠；非法值回落默认地址', () => {
+    expect(resolveConfig({ baseUrl: 'http://localhost:31009/' }).baseUrl).toBe(
+      'http://localhost:31009',
+    );
+    expect(resolveConfig({ baseUrl: 'ftp://x' }).baseUrl).toBe(
+      DEFAULT_BASE_URL,
+    );
+    expect(resolveConfig({ baseUrl: 'not a url' }).baseUrl).toBe(
+      DEFAULT_BASE_URL,
+    );
+    expect(resolveConfig({ baseUrl: '' }).baseUrl).toBe(DEFAULT_BASE_URL);
   });
 
-  it('backendMode 只认 auto/desktop/cli，其余回落 auto', () => {
-    expect(resolveConfig({ backend: 'cli' }).backendMode).toBe('cli');
-    expect(resolveConfig({ backend: 'desktop' }).backendMode).toBe('desktop');
-    expect(resolveConfig({ backend: 'auto' }).backendMode).toBe('auto');
-    expect(resolveConfig({ backend: 'bogus' }).backendMode).toBe('auto');
-    expect(resolveConfig({ backend: 42 }).backendMode).toBe('auto');
-  });
-
-  it('cliPath trim；空回落默认二进制名', () => {
-    const cfg = resolveConfig({ cliPath: '  ' });
-    expect(cfg.cli.binPath).toBe(DEFAULT_CLI_BIN);
-  });
-
-  it('cliAutoStart 仅字面 true 生效', () => {
-    expect(resolveConfig({ cliAutoStart: true }).cli.autoStart).toBe(true);
-    expect(resolveConfig({ cliAutoStart: 'yes' }).cli.autoStart).toBe(false);
-    expect(resolveConfig({ cliAutoStart: 1 }).cli.autoStart).toBe(false);
-  });
-
-  it('apiKey/cliKey trim；空 apiVersion 回落默认', () => {
-    const cfg = resolveConfig({
-      apiKey: '  k  ',
-      cliKey: 123,
-      apiVersion: '  ',
-    });
-    expect(cfg.desktop.key).toBe('k');
-    expect(cfg.cli.key).toBe('123');
+  it('apiKey/apiVersion trim；空 apiVersion 回落默认', () => {
+    const cfg = resolveConfig({ apiKey: '  k  ', apiVersion: '  ' });
+    expect(cfg.apiKey).toBe('k');
     expect(cfg.apiVersion).toBe(DEFAULT_API_VERSION);
   });
 

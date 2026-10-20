@@ -42,24 +42,16 @@ export const SECTION_ORDER = 2960;
 /** 构造 agent 使用指引 section（纯函数，测试直连）。 */
 export function anytypeGuidanceSection(enabled: boolean): PromptSection {
   const text = enabled
-    ? `Anytype tools (anytype_*) are available: they talk to local Anytype servers (v2 API) with the keys configured in Settings → Plugins → dsh-anytype.
+    ? `Anytype tools (anytype_*) are available: they talk to the local Anytype desktop app (v2 API) with the key configured in Settings → Plugins → dsh-anytype.
 
-## Two backends, one data-plane warning
+## How to use them
 
-- **desktop** = the Anytype desktop app (port 31009) — the user's main account, live local vault.
-- **cli** = anytype-cli (port 31012) — a SEPARATE bot account with its own synced data; it only sees spaces the bot joined. Keys are NOT interchangeable between backends.
-- Mode \`auto\` prefers desktop and only switches to cli on a connection failure (never on auth errors). Every tool result carries a \`backend\` field — check it before claiming things about "the user's notes".
-- Start with \`anytype_status\`: it reports reachability/authentication of both backends, CLI install & service state (via the CLI's machine-readable interface), and the effective backend. Use it FIRST when any anytype_* tool fails with a connection error.
-- **CLI account tools** (\`anytype_cli_login\` / \`anytype_cli_create\`) operate on the local CLI bot account with parameters from the plugin settings (account key fed via stdin). They touch ONLY the CLI data plane — never the desktop vault.
-
-## How to use the tools
-
-- **Start with discovery**: anytype_whoami verifies the key; anytype_list_spaces gives the space_id every space-scoped tool needs; anytype_search finds objects across spaces; anytype_list_types lists type keys for anytype_create_object.
+- **Start with discovery**: anytype_whoami verifies the key; anytype_status diagnoses the desktop backend (reachability/authentication) — use it FIRST when any anytype_* tool fails with a connection error; anytype_list_spaces gives the space_id every space-scoped tool needs; anytype_search finds objects across spaces; anytype_list_types lists type keys for anytype_create_object.
 - **Read before write**: anytype_get_object returns the current content and its ETag; pass that ETag as expected_etag on update calls to fail instead of overwriting concurrent edits.
 - **Edits are ops**: anytype_update_object applies an ordered ops array atomically. ALWAYS fetch the op's member schema with anytype_get_op_schema(op) first (set_properties, insert_blocks, add_items, replace_text, ...) — do not guess op fields.
 - **Schemas are runtime truth**: for full AnyBlock documents, template/type documents, or exotic request bodies, fetch anytype_get_schema(kind) first; anytype_request is the generic passthrough for endpoints without a dedicated tool (chats, files, widgets, queries — /v2/ only, /v2/auth/* blocked).
 - **Large responses truncate**: results beyond the configured character budget come back as a data_preview — narrow with limit/offset/fields and page instead of retrying blindly.
-- **Errors are actionable**: AnytypeError messages carry status + code + hints; connection-refused usually means no backend is running (desktop app closed AND CLI service stopped).`
+- **Errors are actionable**: AnytypeError messages carry status + code + hints; connection-refused usually means the Anytype desktop app is not running.`
     : `The dsh-anytype plugin is installed but tool registration is disabled (enabled=false in its settings) or all groups are excluded. No anytype_* tools exist in this session. The user can enable them in Settings → Plugins → dsh-anytype (plugin reload required).`;
   return {
     name: SECTION_NAME,
@@ -128,43 +120,18 @@ export function apply(ctx: Context, configInput?: unknown): void {
 // re-export：loader 通过 `plugin.Config` 读 schemastery schema 生成设置面板
 // （collectConfigSchemas）；不 re-export 会让设置面板不渲染本插件字段。
 export { resolveConfig, Config } from './config.ts';
-export type {
-  BackendMode,
-  CliBackendSettings,
-  DesktopBackendSettings,
-  ResolvedConfig,
-  ToolGroup,
-} from './config.ts';
+export type { ResolvedConfig, ToolGroup } from './config.ts';
 export {
   DEFAULT_API_VERSION,
   DEFAULT_BASE_URL,
-  DEFAULT_CLI_BIN,
-  DEFAULT_CLI_URL,
   DEFAULT_MAX_RESPONSE_CHARS,
   DEFAULT_REQUEST_TIMEOUT_MS,
   TOOL_GROUPS,
 } from './config.ts';
 export { AnytypeClient, AnytypeError } from './client.ts';
 export type {
+  AnytypeClientOptions,
   AnytypeResult,
   AnytypeToolValue,
-  BackendEndpoint,
-  BackendProbeResult,
-  ClientConfig,
-  UnreachableHook,
 } from './client.ts';
-export { cliAutoStartHint, CliLauncher } from './launcher.ts';
-export type {
-  CliAuthResult,
-  CliJsonEnvelope,
-  CliRuntimeStatus,
-  CliServiceStatus,
-  CliStartResult,
-  LauncherConfig,
-} from './launcher.ts';
-export {
-  buildTools,
-  buildGroupedTools,
-  createUnreachableHook,
-  toClientConfig,
-} from './tools/index.ts';
+export { buildTools, buildGroupedTools } from './tools/index.ts';

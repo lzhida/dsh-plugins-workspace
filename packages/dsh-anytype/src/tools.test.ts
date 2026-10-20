@@ -7,9 +7,7 @@ import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools';
 import { describe, expect, it } from 'vitest';
 
 import { AnytypeClient } from './client.ts';
-import type { ClientConfig } from './client.ts';
 import { resolveConfig } from './config.ts';
-import type { CliLauncher, CliRuntimeStatus } from './launcher.ts';
 import { assertAllowedPath } from './tools/generic.ts';
 import { buildGroupedTools } from './tools/index.ts';
 import type { ToolDeps } from './tools/shared.ts';
@@ -19,53 +17,17 @@ interface CapturedCall {
   init: RequestInit;
 }
 
-/** CLI 服务管理器假体（authStatus 返回机读解析样例）。 */
-function stubLauncher(overrides?: Partial<CliRuntimeStatus>): CliLauncher {
-  const auth: CliRuntimeStatus = {
-    parsed: true,
-    state: 'unavailable',
-    cliVersion: 'v0.5.0',
-    authenticated: false,
-    apiReady: false,
-    serviceManager: 'unsupported',
-    serviceInstalled: false,
-    serviceRunning: false,
-    serviceHealth: 'not_running',
-    workPath: 'C:\\x\\anytype',
-    errorCode: 'rpc_unavailable',
-    detail: '',
-    ...overrides,
-  };
-  return {
-    authStatus: () => Promise.resolve(auth),
-    cliServiceStatus: () =>
-      Promise.resolve({
-        binFound: false,
-        state: 'not-installed',
-        detail: 'not installed',
-      }),
-    startCliService: () => Promise.resolve('not-installed'),
-    login: () =>
-      Promise.resolve({ ok: true, state: 'ready', detail: '', account: {} }),
-    create: () =>
-      Promise.resolve({ ok: true, state: 'ready', detail: '', account: {} }),
-    serveStart: () => Promise.resolve('started'),
-  } as unknown as CliLauncher;
-}
-
-/** 组装带捕获 fetch 的 deps（desktop 命中）。 */
+/** 组装带捕获 fetch 的 deps。 */
 function makeDeps(): { deps: ToolDeps; calls: CapturedCall[] } {
   const calls: CapturedCall[] = [];
-  const clientCfg: ClientConfig = {
-    apiVersion: '2025-11-08',
-    timeoutMs: 5000,
-    backendMode: 'auto',
-    desktop: { url: 'http://127.0.0.1:31009', key: 'test-key' },
-    cli: { url: 'http://127.0.0.1:31012', key: '' },
-  };
   const deps: ToolDeps = {
     client: new AnytypeClient(
-      () => clientCfg,
+      () => ({
+        baseUrl: 'http://127.0.0.1:31009',
+        apiKey: 'test-key',
+        apiVersion: '2025-11-08',
+        timeoutMs: 5000,
+      }),
       async (url, init) => {
         calls.push({ url, init });
         return new Response(JSON.stringify({ echoed: true }), {
@@ -75,7 +37,6 @@ function makeDeps(): { deps: ToolDeps; calls: CapturedCall[] } {
       },
     ),
     config: () => resolveConfig(undefined),
-    launcher: stubLauncher(),
   };
   return { deps, calls };
 }
@@ -116,7 +77,7 @@ async function run(
 }
 
 describe('dsh-anytype tools', () => {
-  it('按组注册 29 个工具（组缺失即清单漂移）', () => {
+  it('按组注册 27 个工具（组缺失即清单漂移）', () => {
     const { deps } = makeDeps();
     const grouped = buildGroupedTools(deps);
     const counts = Object.fromEntries(
@@ -133,51 +94,24 @@ describe('dsh-anytype tools', () => {
       member: 2,
       schema: 2,
       generic: 1,
-      'cli-auth': 2,
     });
-    expect(flatTools(deps)).toHaveLength(29);
+    expect(flatTools(deps)).toHaveLength(27);
   });
 
-  it('anytype_status：组装双后端探测 + CLI 机读状态 + 生效后端', async () => {
+  it('anytype_status：桌面端探测结果组装', async () => {
     const { deps } = makeDeps();
     const value = (await toolByName(deps, 'anytype_status').execute(
       {},
       stubExec(),
     )) as { status: number; data: Record<string, unknown> };
     expect(value.status).toBe(200);
-    expect(value.data.backend_mode).toBe('auto');
-    // 桌面端假 fetch 返回 200 → 生效后端 desktop
-    expect(value.data.effective_backend).toBe('desktop');
-    const desktop = value.data.desktop as Record<string, unknown>;
-    expect(desktop.configured).toBe(true);
-    expect(desktop.reachable).toBe(true);
-    expect(desktop.note).toContain('detection-only');
-    const cli = value.data.cli as Record<string, unknown>;
-    expect(cli.configured).toBe(false);
-    // 机读解析：serviceInstalled=false → not-installed；富字段来自 authStatus
-    expect(cli.service_state).toBe('not-installed');
-    expect(cli.cli_version).toBe('v0.5.0');
-    expect(cli.cli_authenticated).toBe(false);
-    expect(cli.service_manager).toBe('unsupported');
-    expect(cli.work_path).toBe('C:\\x\\anytype');
-  });
-
-  it('anytype_cli_login/create：无参数执行并透传 launcher 结果', async () => {
-    const { deps } = makeDeps();
-    const login = (await toolByName(deps, 'anytype_cli_login').execute(
-      {},
-      stubExec(),
-    )) as { status: number; data: Record<string, unknown> };
-    expect(login.status).toBe(200);
-    expect(login.data.ok).toBe(true);
-    expect(login.data.state).toBe('ready');
-
-    const create = (await toolByName(deps, 'anytype_cli_create').execute(
-      {},
-      stubExec(),
-    )) as { status: number; data: Record<string, unknown> };
-    expect(create.status).toBe(200);
-    expect(create.data.ok).toBe(true);
+    // 桌面端假 fetch 返回 200 → 可达且已认证
+    expect(value.data.url).toBe('http://127.0.0.1:31009');
+    expect(value.data.configured).toBe(true);
+    expect(value.data.reachable).toBe(true);
+    expect(value.data.authenticated).toBe(true);
+    expect(value.data.error).toBeNull();
+    expect(value.data.note).toContain('detection-only');
   });
 
   it('anytype_search：无 space_id 走全局 /v2/search，有则走空间内路径', async () => {

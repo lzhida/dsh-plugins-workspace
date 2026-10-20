@@ -4,9 +4,8 @@
  * - `GET /v2/auth/whoami` —— 密钥身份/权限/空间授权概览，Anytype 工具链的
  *   诊断第一站：401（key 失效）、403（scope 不足）、连接失败等配置问题的
  *   最短验证路径；
- * - `anytype_status` —— 双后端（桌面端 31009 / anytype-cli 31012）实时探测：
- *   可达性、鉴权态、CLI 安装与服务状态、当前生效后端。后端连不上时的
- *   标准诊断入口。
+ * - `anytype_status` —— 桌面端后端（31009）实时探测：配置/可达/鉴权态。
+ *   连接失败时的标准诊断入口。
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
@@ -31,66 +30,22 @@ export function buildConnectionTools(deps: ToolDeps) {
     defineTool({
       name: 'anytype_status',
       description:
-        'Diagnose both Anytype backends: desktop app (port 31009) and anytype-cli (port 31012, separate bot-account data plane). Reports reachability, authentication, CLI install/service state, and which backend is currently effective. Use this FIRST when any anytype_* tool fails with a connection error.',
+        'Diagnose the Anytype desktop backend (port 31009): configuration, reachability and authentication of the local API. Use this FIRST when any anytype_* tool fails with a connection error — it distinguishes "app not running" from "key invalid".',
       parameters: {},
       output: outputSpec(),
       isConcurrencySafe: () => true,
       async execute(_args, exec) {
         const cfg = deps.config();
-        const probes = await deps.client.probeAll(exec.signal);
-        // CLI 段：优先机读 `--json service status`（认证态/服务管理器/版本），
-        // 二进制缺失或老版本无 --json 时降级为人读输出解析。
-        const auth = await deps.launcher.authStatus();
-        let cliState: 'running' | 'stopped' | 'not-installed' | 'unknown';
-        let cliDetail: string;
-        let binFound: boolean;
-        if (auth.parsed) {
-          binFound = true;
-          cliDetail = auth.workPath
-            ? `work_path: ${auth.workPath}`
-            : auth.detail;
-          if (auth.serviceRunning === true) cliState = 'running';
-          else if (auth.serviceInstalled === false) cliState = 'not-installed';
-          else cliState = 'stopped';
-        } else {
-          const legacy = await deps.launcher.cliServiceStatus();
-          binFound = legacy.binFound;
-          cliState = legacy.state;
-          cliDetail = legacy.detail;
-        }
+        const probe = await deps.client.probeDesktop(exec.signal);
         const data = {
-          backend_mode: cfg.backendMode,
-          effective_backend: probes.effective,
-          desktop: {
-            url: probes.desktop.url,
-            configured: probes.desktop.configured,
-            reachable: probes.desktop.reachable,
-            authenticated: probes.desktop.authenticated,
-            error: probes.desktop.error ?? null,
-            note: 'desktop is detection-only — start the Anytype desktop app yourself',
-          },
-          cli: {
-            url: probes.cli.url,
-            configured: probes.cli.configured,
-            reachable: probes.cli.reachable,
-            authenticated: probes.cli.authenticated,
-            auto_start: cfg.cli.autoStart,
-            bin_found: binFound,
-            service_state: cliState,
-            service_detail: cliDetail,
-            error: probes.cli.error ?? null,
-            cli_version: auth.cliVersion ?? null,
-            cli_authenticated: auth.authenticated,
-            service_manager: auth.serviceManager ?? null,
-            api_ready: auth.apiReady,
-            work_path: auth.workPath ?? null,
-          },
+          url: cfg.baseUrl,
+          configured: probe.configured,
+          reachable: probe.reachable,
+          authenticated: probe.authenticated,
+          error: probe.error ?? null,
+          note: 'desktop is detection-only — start the Anytype desktop app yourself',
         };
-        const backend = probes.effective === 'cli' ? 'cli' : 'desktop';
-        return toToolValue(
-          { status: 200, data, backend },
-          cfg.maxResponseChars,
-        );
+        return toToolValue({ status: 200, data }, cfg.maxResponseChars);
       },
     }),
   ];
