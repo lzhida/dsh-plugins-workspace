@@ -791,6 +791,22 @@ describe('isFailureRetryable', () => {
       ),
     ).toBe(true);
   });
+
+  it('默认码表命中 UNKNOWN_MODEL(失效候选:模型被删除/id 变更)', () => {
+    // 回归:pi-ai 适配器对配置中不存在的模型在请求构建期抛此码
+    // (`pi-ai provider "X" has no configured model "Y"`)——用户在 dsh 侧
+    // 删除模型或改其 id 后,队列残留的失效候选必然命中。默认白名单不含
+    // 它时链推进透传上游,整链在失效候选上中断。
+    expect(
+      isFailureRetryable(
+        stubFailure(
+          'UNKNOWN_MODEL',
+          'pi-ai provider "my-gw" has no configured model "old-model"',
+        ),
+        new Set(DEFAULT_RETRYABLE_CODES),
+      ),
+    ).toBe(true);
+  });
 });
 
 describe('stateFor', () => {
@@ -1507,6 +1523,92 @@ describe('agent/request-error listener', () => {
       async () => ({ provider: 'e2e-broken', model: 'broken-model' }),
     );
     expect(nextSeed).toEqual({ provider: 'openai', model: 'gpt-4o' });
+  });
+
+  it('默认 + UNKNOWN_MODEL(失效候选:模型已从 provider 删除)→ 跳到下一候选并写 llm/retry 轨迹,整链不中断', async () => {
+    // 失效候选兜底回归:pi-ai 适配器对配置中不存在的模型在请求构建期抛
+    // LlmError(`pi-ai provider "X" has no configured model "Y"`,
+    // 'UNKNOWN_MODEL')——用户在 dsh 侧删除模型/改 id 后,队列残留候选必然
+    // 命中。该失败确定性复现,同候选重试无意义;默认白名单不含此码时
+    // isFailureRetryable=false → 透传上游,整链在失效候选上中断(旧缺陷)。
+    // 修复后:失效候选首失败即按预算跳下一候选,且切换留 llm/retry(+started)
+    // 轨迹。场景:会话模型失败切到队列里的失效候选(my-gw/old-model)→
+    // UNKNOWN_MODEL → 再跳到 openai/gpt-4o。
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['my-gw/old-model', 'openai/gpt-4o'],
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const reqListener = findListener(listeners, 'agent/request');
+    const errListener = findListener(listeners, 'agent/request-error');
+    const { agent, appends } = stubAgent();
+    // 1) request:捕获会话指定模型 pageModel = deepseek/deepseek-chat
+    await callListener(
+      reqListener,
+      { turn: 7, step: 2, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    // 2) 会话模型首失败 → 切到队列第 1 项(失效候选)
+    await callListener(
+      errListener,
+      {
+        turn: 7,
+        step: 2,
+        provider: 'deepseek',
+        failure: stubFailure('RATE_LIMIT'),
+        signal: new AbortController().signal,
+      },
+      async () => undefined,
+    );
+    let seed = await callListener(
+      reqListener,
+      { turn: 7, step: 2, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    expect(seed).toEqual({ provider: 'my-gw', model: 'old-model' });
+    // 3) 失效候选失败:UNKNOWN_MODEL(白名单命中)→ 跳下一候选并留轨迹
+    const failure = stubFailure(
+      'UNKNOWN_MODEL',
+      'pi-ai provider "my-gw" has no configured model "old-model"',
+    );
+    const result = await callListener(
+      errListener,
+      {
+        turn: 7,
+        step: 2,
+        provider: 'my-gw',
+        failure,
+        signal: new AbortController().signal,
+        agent,
+      },
+      async () => undefined,
+    );
+    // 失效候选被跳过:返回 retry(loop 将以队列下一候选重发)
+    expect(result).toEqual({ kind: 'retry' });
+
+    // 轨迹:切换留官方 llm/retry + llm/retry-started 事件,target=新候选
+    expect(appends.map((a) => a.type)).toEqual([
+      'llm/retry',
+      'llm/retry-started',
+    ]);
+    expect(appends[0]?.data).toMatchObject({
+      turn: 7,
+      step: 2,
+      provider: 'my-gw',
+      policyKey: 'llm-fallback',
+      failure,
+      targetProvider: 'openai',
+      targetModel: 'gpt-4o',
+    });
+
+    // 状态已推进:下一请求的 seed 被改写为队列第 2 项(整链未中断)
+    seed = await callListener(
+      reqListener,
+      { turn: 7, step: 2, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    expect(seed).toEqual({ provider: 'openai', model: 'gpt-4o' });
   });
 
   it('默认(自动档,无策略预算 0)+ upstream={retry} → 首失败即覆盖切换(不再有 immediately 档)', async () => {

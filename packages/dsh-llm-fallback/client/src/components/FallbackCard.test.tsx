@@ -86,6 +86,30 @@ function fakeSession(): RemoteSessionFace {
   };
 }
 
+/**
+ * remote.session 假体（可定制）：groups + failures 可注入,ok=false 模拟
+ * 目录加载失败(stale 判定的"不误标"路径)。failures 条目 = 宿主把
+ * listModels 抛错的 provider 隔离进 failures 而非 groups 的形态。
+ */
+function fakeSessionOf(
+  groups: Array<{ id: string; models: Array<{ id: string; name?: string }> }>,
+  failures: Array<{ id: string; name: string; message: string }> = [],
+  ok = true,
+): RemoteSessionFace {
+  return {
+    modelCatalog: async () => ({ ok, value: { groups, failures } }),
+  };
+}
+
+/** 已保存配置:队列含一个有效候选与一个失效候选(prov/ghost 不在目录)。 */
+const QUEUE_WITH_GHOST = {
+  enabled: true,
+  fallbackChains: [
+    { provider: 'prov', model: 'm1', displayName: 'prov/m1' },
+    { provider: 'prov', model: 'ghost', displayName: 'prov/ghost' },
+  ],
+};
+
 const t: TFn = (key) => DICT.zh[key] ?? key;
 
 describe('FallbackCard 渲染', () => {
@@ -154,8 +178,8 @@ describe('FallbackCard 渲染', () => {
     const checkbox = modelLabel?.querySelector('button[role="checkbox"]');
     expect(checkbox).not.toBeNull();
     (checkbox as HTMLButtonElement).click();
-    // 队列出现候选 + 脏状态提示
-    await waitFor(() => div.textContent!.includes('prov / m1'));
+    // 队列出现候选(显示名实时取目录 name,路由键作副文本) + 脏状态提示
+    await waitFor(() => div.textContent!.includes('prov/m1'));
     expect(div.textContent).toContain(t('dirty'));
     // 保存
     const saveButton = [...div.querySelectorAll('button')].find(
@@ -212,5 +236,105 @@ describe('FallbackCard 渲染', () => {
       (b) => b.textContent === t('save') || b.textContent === t('saving'),
     );
     expect(saveButton?.disabled).toBe(true);
+  });
+
+  it('失效条目渲染失效徽标,有效条目不标;显示名实时取目录 name', async () => {
+    const { scope } = fakeScope({ value: QUEUE_WITH_GHOST });
+    const div = mount(
+      <FallbackCard t={t} scope={scope} session={fakeSession()} />,
+    );
+    // 两条候选都渲染(显示名实时解析:目录 name + 路由键副文本)
+    await waitFor(() => div.textContent!.includes('prov/ghost'));
+    expect(div.textContent).toContain('Model One');
+    // 失效徽标只出现在 ghost 行(m1 行无徽标);目录异步加载,徽标等它就绪
+    const staleBadges = () =>
+      [...div.querySelectorAll('span')].filter(
+        (s) => s.textContent === t('stale'),
+      );
+    await waitFor(() => staleBadges().length === 1);
+    // 徽标所在行含 ghost 路由键(失效行),不含 m1(有效行)
+    const staleRow = staleBadges()[0]!.closest('div.rounded-md');
+    expect(staleRow?.textContent).toContain('prov/ghost');
+    expect(staleRow?.textContent).not.toContain('Model One');
+  });
+
+  it('目录加载失败(ok=false)→ 不标失效(不误标)', async () => {
+    const { scope } = fakeScope({ value: QUEUE_WITH_GHOST });
+    const div = mount(
+      <FallbackCard
+        t={t}
+        scope={scope}
+        session={fakeSessionOf([], [], false)}
+      />,
+    );
+    // 队列照常渲染(条目文本回退路由键)
+    await waitFor(() => div.textContent!.includes('prov/ghost'));
+    // 目录加载失败文案出现,stale 徽标绝不出现
+    await waitFor(() => div.textContent!.includes(t('catalogError')));
+    expect(div.textContent).not.toContain(t('stale'));
+  });
+
+  it('一键清理:失效条目从队列移除并变脏,保存载荷不含失效项', async () => {
+    const fake = fakeScope({ value: QUEUE_WITH_GHOST });
+    const div = mount(
+      <FallbackCard t={t} scope={fake.scope} session={fakeSession()} />,
+    );
+    await waitFor(() =>
+      Boolean(
+        [...div.querySelectorAll('button')].find((b) =>
+          (b.getAttribute('aria-label') ?? '').startsWith(t('clearStale')),
+        ),
+      ),
+    );
+    // 清理按钮带失效计数
+    const clearButton = [...div.querySelectorAll('button')].find((b) =>
+      (b.getAttribute('aria-label') ?? '').startsWith(t('clearStale')),
+    )!;
+    expect(clearButton.textContent).toContain('(1)');
+    clearButton.click();
+    // ghost 从队列消失,m1 保留,进入脏状态
+    await waitFor(
+      () =>
+        !div.textContent!.includes('prov/ghost') &&
+        div.textContent!.includes('prov/m1'),
+    );
+    expect(div.textContent).toContain(t('dirty'));
+    // 保存 → 载荷只含有效候选
+    const saveButton = [...div.querySelectorAll('button')].find(
+      (b) => b.textContent === t('save'),
+    )!;
+    saveButton.click();
+    await waitFor(() => fake.mutations.length > 0);
+    const chains = fake.mutations[0]!.ops.find(
+      (op) => op.path[0] === 'fallbackChains',
+    );
+    expect(chains?.value).toEqual([{ provider: 'prov', model: 'm1' }]);
+  });
+
+  it('保存路径剔除:用户编辑其他字段时直接保存,写入载荷自动不含失效项', async () => {
+    const fake = fakeScope({ value: QUEUE_WITH_GHOST });
+    const div = mount(
+      <FallbackCard t={t} scope={fake.scope} session={fakeSession()} />,
+    );
+    await waitFor(() => div.textContent!.includes('prov/ghost'));
+    // 用户切换 enabled 开关(与失效项无关的编辑)→ dirty
+    const enabledSwitch = [...div.querySelectorAll('button[role="switch"]')][0];
+    expect(enabledSwitch).toBeDefined();
+    (enabledSwitch as HTMLButtonElement).click();
+    await waitFor(() => div.textContent!.includes(t('dirty')));
+    // 直接保存(未点清理)→ 载荷仍剔除失效项(显式保存动作的一部分)
+    const saveButton = [...div.querySelectorAll('button')].find(
+      (b) => b.textContent === t('save'),
+    )!;
+    saveButton.click();
+    await waitFor(() => fake.mutations.length > 0);
+    const chains = fake.mutations[0]!.ops.find(
+      (op) => op.path[0] === 'fallbackChains',
+    );
+    expect(chains?.value).toEqual([{ provider: 'prov', model: 'm1' }]);
+    const enabledOp = fake.mutations[0]!.ops.find(
+      (op) => op.path[0] === 'enabled',
+    );
+    expect(enabledOp?.value).toBe(false);
   });
 });

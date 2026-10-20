@@ -181,11 +181,21 @@ function setDescription<F extends { description(text: string): F }>(
  *   `provider "X" model "Y" does not support reasoning effort "Z"`)。该失败
  *   对同一模型是确定性的——同 provider 重试必然复现(宿主官方重试码表因此
  *   不含它),切到可能支持该 effort 的下一候选是唯一有意义的恢复路径。
+ * - `UNKNOWN_MODEL`——pi-ai 适配器对配置中不存在的模型在请求构建期抛出
+ *   (`pi-ai provider "X" has no configured model "Y"`):用户在 dsh 侧删除
+ *   模型或改其 id 后,回退队列残留的失效候选必然命中此码。与
+ *   UNSUPPORTED_REASONING_EFFORT 同理是确定性失败——同候选重试必然复现,
+ *   切到下一候选是唯一有意义的恢复路径;不加它则链推进透传上游,整链在
+ *   失效候选上中断。注意边界:网关侧(非本地配置)的模型不存在按 HTTP
+ *   状态/消息分类为 INVALID_REQUEST(400)或 PI_AI_ERROR(404),不在此
+ *   白名单——INVALID_REQUEST 太宽泛(真 400 参数错误会被无意义切换),
+ *   该场景由客户端失效标记 + 显式保存剔除兜底。
  *
  * 历史:0.3.1 及之前默认含 omp 系码 `NETWORK` / `SERVER_ERROR`,宿主两套适配器
  * 均不产出这两个码,导致 "Connection error."(`TRANSPORT`)与 5xx(`SERVER`)
  * 不触发切换;0.3.2 起修正,并对存量用户配置做旧码→新码的并集别名
  * (见 RETRYABLE_CODE_ALIASES)。0.4.1 补入 `UNSUPPORTED_REASONING_EFFORT`。
+ * 0.6.0 补入 `UNKNOWN_MODEL`(失效候选兜底)。
  */
 export const DEFAULT_RETRYABLE_CODES: readonly string[] = [
   'RATE_LIMIT',
@@ -197,6 +207,7 @@ export const DEFAULT_RETRYABLE_CODES: readonly string[] = [
   'TIMEOUT',
   'TRANSPORT',
   'UNSUPPORTED_REASONING_EFFORT',
+  'UNKNOWN_MODEL',
 ] as const;
 
 /**

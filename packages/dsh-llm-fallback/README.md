@@ -13,6 +13,7 @@ dsh 的模型回退插件：拦截全局 LLM 调用，**会话页面指定的模
 - [配置](#配置)
 - [每候选重试次数（retriesBeforeSwitch）](#每候选重试次数retriesbeforeswitch)
 - [失败码白名单](#失败码白名单)
+- [模型目录与失效候选](#模型目录与失效候选)
 - [行为](#行为)
 - [轨迹可见性](#轨迹可见性)
 - [已知限制](#已知限制)
@@ -123,7 +124,7 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 
 ## 失败码白名单
 
-插件只按 `LlmFailure.code` 路由（宿主约定：route on code, never parse message）。默认白名单是宿主官方重试码（`EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT`）的超集——多出配额与上下文类，切模型正是这些失败的本职出路；另含 `UNSUPPORTED_REASONING_EFFORT`（模型不支持所请求的 reasoning effort），该失败对同一模型是确定性的、同 provider 重试必复现，切下一候选是唯一有意义的恢复路径。
+插件只按 `LlmFailure.code` 路由（宿主约定：route on code, never parse message）。默认白名单是宿主官方重试码（`EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT`）的超集——多出配额与上下文类，切模型正是这些失败的本职出路；另含两类**确定性失败**，同模型重试必复现，切下一候选是唯一有意义的恢复路径：`UNSUPPORTED_REASONING_EFFORT`（模型不支持所请求的 reasoning effort）与 `UNKNOWN_MODEL`（候选模型已从 provider 配置中删除或 id 变更——回退队列的[失效候选兜底](#模型目录与失效候选)）。
 
 | 失败场景                                         | 宿主 `code`                                       | 默认可切换                            |
 | ------------------------------------------------ | ------------------------------------------------- | ------------------------------------- |
@@ -135,10 +136,20 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 | 空响应（正常结束但零内容块）                     | `EMPTY_RESPONSE`                                  | ✅                                    |
 | 流空闲 / 请求超时                                | `TIMEOUT`                                         | ✅                                    |
 | 模型不支持所请求的 reasoning effort              | `UNSUPPORTED_REASONING_EFFORT`                    | ✅ 同模型重试必复现，切可能支持的候选 |
+| 候选模型已从 provider 配置删除 / id 变更         | `UNKNOWN_MODEL`                                   | ✅ 同模型重试必复现，切下一候选       |
 | 鉴权 / 请求构造 / 凭据错误                       | `AUTH` / `INVALID_REQUEST` / `INVALID_CREDENTIAL` | ❌ 换模型无解，立即上抛               |
 | 其他 HTTP 状态                                   | `HTTP_<status>`（如 `HTTP_502`）                  | ❌ 可自行加入白名单                   |
 
 存量配置兼容：0.3.1 及之前版本的默认白名单误含宿主不产出的 `NETWORK` / `SERVER_ERROR`，导致连接类与 5xx 失败不触发切换；升级到 0.3.2+ 后，运行时会对你已保存的自定义白名单按并集自动补入 `TRANSPORT` / `SERVER`（旧码保留无害），无需手动改配置。
+
+## 模型目录与失效候选
+
+dsh 侧的模型身份是**字面 `provider/model` 路由键**：deepseek 与 pi-ai 适配器的模型条目都以 `id` 为请求路由键、`name` 仅为选择器显示名。对队列条目这意味着两种变化、两种处理：
+
+- **显示名重命名（改 `name`，id 不变）→ 自动跟随**：队列显示名实时从宿主模型目录（`session.modelCatalog()`）解析，目录命中时显示 `name`、未命中或目录不可用时回退 `provider/model` 路由键——在 dsh 侧重命名模型后，配置卡无需重新保存即跟随新名。
+- **删除模型 / 改 `id`（无稳定键，与"删除+新增"不可区分）→ 失效标记 + 显式剔除**：目录加载成功时，不在当前目录中的队列条目渲染「已失效」徽标，区块提供「清除失效项」一键清理（写入草稿，仍需保存生效）；**任何保存动作的写入载荷都会自动剔除失效条目**。目录加载失败或某 provider 的目录查询失败时保守处理——绝不误标、绝不剔除。
+
+服务端兜底：失效候选请求会在 pi-ai 适配器构建期抛 `UNKNOWN_MODEL`（默认白名单内，见[失败码白名单](#失败码白名单)），链推进首失败即跳下一候选并留 `llm/retry` 轨迹——即使配置未在 UI 清理，运行时也不会卡死在失效候选上。插件绝不做服务端静默剔除：配置的删除只发生在你显式保存时。
 
 ## 行为
 
