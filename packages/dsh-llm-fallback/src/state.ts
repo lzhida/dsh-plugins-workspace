@@ -42,6 +42,14 @@ export interface FallbackState {
    */
   candidateFailures: number;
   /**
+   * 本 step 是否已发生过一次切换(one-shot 标志,perTurn=false 单次切换档消费)。
+   * 只在切换动作真正生效处置位(index.ts agent/request-error 切换提交点)——
+   * 官方 `dsh-llm-retry` 透传与预算内代执行重试不消耗名额;agent/request 的
+   * 冷却起点改写(无候选失败,纯效率优化)同样不算切换。perTurn=false 时本
+   * 标志置位后同 step 不再切换;新 step 由 stateFor 重建状态天然重置。
+   */
+  switched: boolean;
+  /**
    * 会话页面指定的模型(事实主模型)。由 index.ts 的 agent/request 监听器在
    * 尚未切换(index<0)时从 proposedConfig 捕获——agent/request-error 的
    * payload 只带 provider 不带 model,LlmFailure 亦然,故只能在此记录。
@@ -342,6 +350,30 @@ export function backoffDelayMs(
   return Math.max(0, Math.floor(capped * (1 + jitter)));
 }
 
+/**
+ * 清理与 `key` 不同 turn 的全部 step 状态(key 形如 `turn:step`,由 index.ts
+ * 的监听器以 `${turn}:${step}` 拼出)。
+ *
+ * 每 step 的回退状态在一次失败推进后就死掉,却从不清理,超长会话下按 step
+ * 数无上界缓增;在 stateFor 的创建分支(新 turn 首次请求建态时)调用本函数,
+ * 按 turn 前缀移除其余 turn 的全部旧 step 键——表上界收敛为「单 turn 的
+ * step 数」。同 turn 的旧 step 键保留(单 turn 内 step 串行,总量有限,删除
+ * 无额外收益)。冷却表是独立的 Map,与本函数无关,跨 step 冷却语义不受影响。
+ *
+ * 防御:key 缺 `:`(非 `turn:step` 形态,正常不会发生)时前缀为空串,直接
+ * 返回不删任何键——清理绝不因异常输入误删。
+ */
+export function purgeStaleTurnStates(
+  states: Map<StepKey, FallbackState>,
+  key: StepKey,
+): void {
+  const turnPrefix = key.slice(0, key.indexOf(':') + 1);
+  if (turnPrefix === '') return;
+  for (const existing of states.keys()) {
+    if (!existing.startsWith(turnPrefix)) states.delete(existing);
+  }
+}
+
 /** 取出或惰性初始化该 step 的回退状态(index=-1:尚未切换,在会话指定模型上)。 */
 export function stateFor(
   states: Map<StepKey, FallbackState>,
@@ -350,12 +382,16 @@ export function stateFor(
 ): FallbackState {
   let s = states.get(key);
   if (!s) {
+    // 新键首次建态:清理其他 turn 的旧 step 状态(见 purgeStaleTurnStates)。
+    // 只在创建分支触发——已存在键的常规读取不扫描、零成本。
+    purgeStaleTurnStates(states, key);
     s = {
       chain,
       index: -1,
       retries: 0,
       exhausted: false,
       candidateFailures: 0,
+      switched: false,
     };
     states.set(key, s);
   }
