@@ -7,7 +7,9 @@
  * - 成功值统一为 `{status, data, etag?}`（超限时 `truncated` + `data_preview`），
  *   由 `runRequest` 产出、`outputSpec` 渲染；
  * - 失败直接抛 `AnytypeError`（message 即可操作文本），registry 以 isError 呈现；
- * - 只读工具声明 `isConcurrencySafe: true`，可与其他读工具并行调度。
+ * - 只读工具声明 `isConcurrencySafe: true`，可与其他读工具并行调度；
+ * - 写工具统一带 `dry_run`（预演）与 `idempotency_key`（防重）两个可选参数，
+ *   语义见 `DRY_RUN_PARAM` / `IDEMPOTENCY_KEY_PARAM` 与 README「写路径安全」段。
  */
 
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools';
@@ -19,6 +21,32 @@ import type {
 } from '../client.ts';
 import { renderValue, toToolValue } from '../client.ts';
 import type { ResolvedConfig, ToolGroup } from '../config.ts';
+
+/**
+ * `dry_run` 参数的共享描述（预演语义）。
+ *
+ * 规范语义：写操作加 `?dry_run=true` 只校验并回报结果、不落库；创建类
+ * 预演返 200（提交返 201），更新/删除类预演与提交同为 200——靠响应体的
+ * `dry_run: true` 布尔字段区分（实测 2026-10-21，Anytype 活体）。
+ */
+export const DRY_RUN_PARAM: { type: 'boolean'; description: string } = {
+  type: 'boolean',
+  description:
+    "true = preview only: the request is validated and reported but NOT committed (nothing is created, updated or deleted). A previewed create returns 200 where a real create returns 201; previewed updates and deletes also return 200, so read the response body's dry_run flag to tell a preview from a commit.",
+};
+
+/**
+ * `idempotency_key` 参数的共享描述（防重语义）。
+ *
+ * 规范语义：服务端按「key + 请求体」绑定——同 key 同 body 重复提交重放已存
+ * 响应（不会重复创建），同 key 换 body 返 409 `idempotency_conflict`。
+ * 因此**重试同一请求必须复用同一个 key**，换了请求内容才换新 key。
+ */
+export const IDEMPOTENCY_KEY_PARAM: { type: 'string'; description: string } = {
+  type: 'string',
+  description:
+    'Optional idempotency key (any unique string, e.g. a uuid). The server binds it to the request body: retrying the SAME request with the SAME key replays the stored response instead of creating a duplicate, while reusing a key with a DIFFERENT body returns 409 idempotency_conflict. Generate a fresh key per distinct request and reuse it verbatim when retrying the same one.',
+};
 
 /** 工具构建依赖（由 index.ts 在 apply 闭包里组装）。 */
 export interface ToolDeps {

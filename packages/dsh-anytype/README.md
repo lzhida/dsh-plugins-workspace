@@ -32,18 +32,20 @@ pnpm dsh plugin --profile <profile> add link:<仓库绝对路径>/packages/dsh-a
 
 ## 工具清单（30 个，10 组）
 
-| 组         | 工具                                                                                                                                                     |
-| ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| connection | `anytype_whoami`、`anytype_status`（桌面端可达性/鉴权探测——连接问题诊断第一站）                                                                          |
-| search     | `anytype_search`（全局/空间二合一）、`anytype_list_objects`                                                                                              |
-| space      | `anytype_list_spaces` / `anytype_get_space` / `anytype_create_space` / `anytype_update_space`                                                            |
-| object     | `anytype_get_object` / `anytype_create_object`（shortcut body）/ `anytype_update_object`（ops）/ `anytype_delete_object`                                 |
-| collection | `anytype_create_collection` / `anytype_list_collection_objects`                                                                                          |
-| type       | `anytype_list_types` / `anytype_get_type` / `anytype_create_type` / `anytype_update_type` / `anytype_delete_type` / `anytype_list_templates`             |
-| property   | `anytype_list_properties` / `anytype_list_property_options` / `anytype_create_property` / `anytype_update_property`（仅改名）/ `anytype_delete_property` |
-| member     | `anytype_list_members` / `anytype_get_member_me`                                                                                                         |
-| schema     | `anytype_get_schema` / `anytype_get_op_schema`（15 种编辑 op 的运行时 schema）                                                                           |
-| generic    | `anytype_request`（逃生舱：chats / files / widgets / queries / discussion / validate 等；仅放行 `/v2/`，拒绝 `/v2/auth/*`）                              |
+| 组         | 工具                                                                                                                                                         |
+| ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| connection | `anytype_whoami`、`anytype_status`（桌面端可达性/鉴权探测——连接问题诊断第一站）                                                                              |
+| search     | `anytype_search`（全局/空间二合一）、`anytype_list_objects`                                                                                                  |
+| space      | `anytype_list_spaces` / `anytype_get_space` / `anytype_create_space`✎ / `anytype_update_space`✎                                                              |
+| object     | `anytype_get_object` / `anytype_create_object`（shortcut body）✎ / `anytype_update_object`（ops）✎ / `anytype_delete_object`✎                                |
+| collection | `anytype_create_collection`✎ / `anytype_list_collection_objects`                                                                                             |
+| type       | `anytype_list_types` / `anytype_get_type` / `anytype_create_type`✎ / `anytype_update_type`✎ / `anytype_delete_type`✎ / `anytype_list_templates`              |
+| property   | `anytype_list_properties` / `anytype_list_property_options` / `anytype_create_property`✎ / `anytype_update_property`（仅改名）✎ / `anytype_delete_property`✎ |
+| member     | `anytype_list_members` / `anytype_get_member_me`                                                                                                             |
+| schema     | `anytype_get_schema` / `anytype_get_op_schema`（15 种编辑 op 的运行时 schema）                                                                               |
+| generic    | `anytype_request`（逃生舱：chats / files / widgets / queries / discussion / validate 等；仅放行 `/v2/`，拒绝 `/v2/auth/*`）✎                                 |
+
+✎ = 写工具，统一带 `dry_run`（预演）与 `idempotency_key`（防重）两个可选参数——详见下文「写路径安全」。
 
 设计要点：
 
@@ -54,11 +56,57 @@ pnpm dsh plugin --profile <profile> add link:<仓库绝对路径>/packages/dsh-a
 - **只读并行**：读类工具声明 `isConcurrencySafe`，可与同批读调用并行调度；
 - **错误可操作**：连接失败提示「Anytype 应用未运行？」；API 错误透传 `status + code + issues + hints`——实测模型能凭错误 hint 自行纠错重试。
 
+### 写路径安全（dry_run 预演 + Idempotency-Key 防重）
+
+所有写类工具（`create_space` / `update_space` / `create_object` / `update_object` / `delete_object` / `create_collection` / `create_type` / `update_type` / `delete_type` / `create_property` / `update_property` / `delete_property`，以及逃生舱 `anytype_request`）统一暴露两个可选参数：
+
+| 参数              | 映射                 | 语义                                                                                                                                             |
+| ----------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `dry_run`         | `?dry_run=true`      | **预演**：只校验并回报结果，不落库。创建类预演返 **200**（提交返 **201**）；更新/删除类预演与提交同为 200，靠响应体 `dry_run: true` 布尔字段区分 |
+| `idempotency_key` | `Idempotency-Key` 头 | **防重**：服务端按「key + 请求体」绑定——同 key 同 body 重复提交**重放已存响应**（不重复创建），同 key 换 body 返 **409 `idempotency_conflict`**  |
+
+**重试用法**：重试**同一请求**必须复用**同一个 key**（否则失去防重意义）；换了请求内容才换新 key（建议 uuid）。这是插件「不做自动重试」这一决策能成立的前提——重试由 agent/上层决策，插件只提供防重原语。
+
+**覆盖面与诚实边界**（活体实测 2026-10-21 + 上游 spec 双源核对）：
+
+- `dry_run` 覆盖面广——v2 spec 对几乎全部资源 mutation 都声明了该参数（26/55 operation），插件暴露的工具端点全部在列；
+- `Idempotency-Key` 的 **spec 声明面窄于服务端实际覆盖面**：spec 只在 spaces / chats / widgets / discussion / `POST /v2/validate` 上声明，但**活体实测服务端对 objects / types / properties / collections 的 mutation 同样强制执行该头**（同 key 换 body 返 409）。因此插件统一透传该头——这正是「防重复创建」的真实保障来源；
+- `Idempotency-Key` **不出现在任何 GET/HEAD**，`POST /v2/search` 与空间内 search 也不接受（规范明示「Search requests do not」）；
+- **409 是共享错误码**：既可能是幂等冲突（同 key 换 body），也可能是并发冲突（stale `If-Match` etag，object/type 组）。错误链已透传 `status + code + message`，不做特判——按 message 语义区分即可；
+- **`idempotency_conflict` 不是 spec 里枚举的 code**（spec 的 `Error.code` 是自由字符串），只能依赖 409 + message，不要对 code 做精确匹配。
+
+### 不做自动重试 / 退避（明确留白）
+
+插件**刻意不实现**自动重试与退避：
+
+- 服务端自 2025-05-20 起默认限速 **sustained 1 rps / burst 60**（`ANYTYPE_API_DISABLE_RATE_LIMIT=1` 可关），429 是预期内会发生的现实场景；
+- 但**重试策略应由调用方决定**——不同写操作的幂等性、可重试性与代价差异很大，插件内建退避会掩盖真实语义并可能放大写操作；
+- 插件的职责边界是**提供安全原语**（`dry_run` 预演 + `idempotency_key` 防重 + `expected_etag` 乐观锁），把「要不要重试、重试几次、隔多久」交给 agent 层判断。
+
+> 这是**有意为之的留白**，不是遗漏——后续若要立卡做重试层，必须先定义「哪些错误可重试」与「幂等键的生成/复用责任」两个语义问题，否则会与本卡的防重语义冲突。
+
 实测踩坑点（已固化进工具描述/参数约束）：
 
 - `anytype_get_object` 的 `format` 只接受 `md` / `anyblock`（已做成 enum），传 `markdown` 会 400；
 - `insert_blocks` 的 `markdown` 字符串里换行必须是真实换行符——写成 `\n` 字面量会被并进同一段落；精确控制层级时改传 `blocks` 块数组；
-- 文件面/流式限制（已写入 `anytype_request` 描述）：multipart 上传不可发（`POST /v2/files` 仅 JSON url 形态理论可达）、`GET /v2/files/{id}/content` 二进制按文本损坏、`/messages/stream` 为 SSE 会挂至请求超时。
+- 文件面/流式限制（已写入 `anytype_request` 描述）：multipart 上传不可发（`POST /v2/files` 仅 JSON url 形态理论可达）、`GET /v2/files/{id}/content` 二进制按文本损坏、`/messages/stream` 为 SSE 会挂至请求超时；
+- `set_properties` op 的成员是 `set` / `unset` / `add` / `remove`（不是 `properties`）——传 `properties` 会 400 `json: unknown field`，成员结构以 `anytype_get_op_schema('set_properties')` 为准；
+- **`DELETE /v2/spaces/{id}/objects/{oid}` 只删本 key 创建的对象**（`not_created_by_this_key` 403）——应用内/导入/他人建的对象一律拒绝，dry_run 预演也不豁免；
+- **活体 spec 与上游 spec 可能漂移**：本机活体 `/v2/docs/openapi.json` 有 55 operation（比上游 main 多一个 `POST /v2/spaces/{id}/chats/{chat_id}/status`）——v2 为 pre-release，能力面以本地 spec 自省为准，不要凭记忆或凭旧快照铺开。
+
+### 幂等与预演的活体实测（2026-10-21，Anytype 桌面端在线）
+
+实测方法：全部用 `dry_run=true`（零副作用）+ `POST /v2/validate`（本身无副作用），跑完复核 space 内对象/类型/属性总数无变化。
+
+| 观测                                         | 结论                                                                      |
+| -------------------------------------------- | ------------------------------------------------------------------------- |
+| `POST /v2/spaces/{id}/objects?dry_run=true`  | 200，body `{"type":"page","dry_run":true}`；对象总数不变——预演零副作用 ✅ |
+| `POST /v2/spaces?dry_run=true`               | 200，body `{"name":"probe-space","dry_run":true}`；空间总数不变 ✅        |
+| 同 key + 同 body 重复请求                    | 200 且响应**逐字节一致**——「同 key 同 body 重放已存响应」语义成立 ✅      |
+| 同 key + **不同** body                       | **409 `idempotency_conflict`**（message: 同一 key 已用于不同请求体）✅    |
+| 不带 key + 不同 body                         | 200 正常——不带 key 不触发幂等层 ✅                                        |
+| spec **未声明** Idempotency-Key 的端点带该头 | 仍返 409 幂等冲突——**服务端实际强制面比 spec 声明面更广** ✅              |
+| `POST /v2/spaces/{id}/search` 带该头         | 200 不报错，但 search 不绑定 key（规范明示 search 不接受该头）            |
 
 ## 关于 anytype-cli（暂不支持的说明）
 

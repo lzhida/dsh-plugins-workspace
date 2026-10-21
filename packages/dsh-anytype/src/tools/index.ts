@@ -18,6 +18,10 @@
  * - member:     anytype_list_members, anytype_get_member_me
  * - schema:     anytype_get_schema, anytype_get_op_schema
  * - generic:    anytype_request
+ *
+ * 写工具（create / update / delete 三族与逃生舱 anytype_request）统一暴露
+ * `dry_run`（预演）与 `idempotency_key`（防重）两个可选参数——见
+ * tools/shared.ts 的 DRY_RUN_PARAM / IDEMPOTENCY_KEY_PARAM。
  */
 
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools';

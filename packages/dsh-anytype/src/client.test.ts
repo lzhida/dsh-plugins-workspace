@@ -108,6 +108,71 @@ describe('dsh-anytype client', () => {
       expect(headers['If-Match']).toBe('"v6"');
       expect(result.etag).toBe('"v7"');
     });
+
+    it('idempotencyKey 映射为 Idempotency-Key 头（防重键注入）', async () => {
+      const { fetchImpl, calls } = captureFetch(
+        () =>
+          new Response(JSON.stringify({ id: 'o1' }), {
+            status: 201,
+            headers: { 'content-type': 'application/json' },
+          }),
+      );
+      const client = clientWith(fetchImpl);
+      await client.request('POST', '/v2/spaces/s1/objects', {
+        body: { type: 'page' },
+        idempotencyKey: 'key-abc-123',
+        signal: noSignal,
+      });
+
+      const headers = calls[0]?.init.headers as Record<string, string>;
+      expect(headers['Idempotency-Key']).toBe('key-abc-123');
+    });
+
+    it('未给 idempotencyKey（或空串）时不发 Idempotency-Key 头', async () => {
+      const { fetchImpl, calls } = captureFetch(
+        () =>
+          new Response(JSON.stringify({ ok: true }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+      );
+      const client = clientWith(fetchImpl);
+
+      await client.request('POST', '/v2/spaces/s1/objects', {
+        body: { type: 'page' },
+        signal: noSignal,
+      });
+      await client.request('POST', '/v2/spaces/s1/objects', {
+        body: { type: 'page' },
+        idempotencyKey: '',
+        signal: noSignal,
+      });
+
+      for (const call of calls) {
+        const headers = call.init.headers as Record<string, string>;
+        expect(headers['Idempotency-Key']).toBeUndefined();
+      }
+    });
+
+    it('dry_run 走 query 序列化（预演不落库）', async () => {
+      const { fetchImpl, calls } = captureFetch(
+        () =>
+          new Response(JSON.stringify({ dry_run: true }), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+      );
+      const client = clientWith(fetchImpl);
+      await client.request('POST', '/v2/spaces/s1/objects', {
+        body: { type: 'page' },
+        query: { dry_run: true },
+        signal: noSignal,
+      });
+
+      expect(calls[0]?.url).toBe(
+        'http://127.0.0.1:31009/v2/spaces/s1/objects?dry_run=true',
+      );
+    });
   });
 
   describe('错误归一', () => {

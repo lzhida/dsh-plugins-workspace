@@ -5,13 +5,16 @@
  * - create/update 暴露扁平字段的常用子集（icon 走 anytype_request 逃生舱）；
  * - update 支持两种互斥形态：扁平字段（整体替换 property_definitions 语义见
  *   API 描述）或 ops 信封（add_property 等，op schema 走 anytype_get_op_schema）；
- * - create 的完整请求体（含 AnyBlock document 形态）同样可经 anytype_request。
+ * - create 的完整请求体（含 AnyBlock document 形态）同样可经 anytype_request；
+ * - 三个写工具统一带 `dry_run`（预演不落库）与 `idempotency_key`（防重）。
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
 import {
+  DRY_RUN_PARAM,
   enc,
+  IDEMPOTENCY_KEY_PARAM,
   outputSpec,
   pickPatchBody,
   runRequest,
@@ -76,7 +79,7 @@ export function buildTypeTools(deps: ToolDeps) {
     defineTool({
       name: 'anytype_create_type',
       description:
-        'Create an object type in a space. name is required; api_key derives from it when omitted ([a-zA-Z0-9_]). property_definitions lists the field set — unknown names mint properties (create_missing_options=true adds missing select options).',
+        'Create an object type in a space. name is required; api_key derives from it when omitted ([a-zA-Z0-9_]). property_definitions lists the field set — unknown names mint properties (create_missing_options=true adds missing select options). Pass dry_run=true to validate without creating the type.',
       parameters: {
         space_id: {
           type: 'string',
@@ -128,6 +131,8 @@ export function buildTypeTools(deps: ToolDeps) {
           description:
             'true = create missing select/multi_select options instead of refusing.',
         },
+        dry_run: DRY_RUN_PARAM,
+        idempotency_key: IDEMPOTENCY_KEY_PARAM,
       },
       output: outputSpec(),
       async execute(args, exec) {
@@ -150,7 +155,11 @@ export function buildTypeTools(deps: ToolDeps) {
           `/v2/spaces/${enc(args.space_id)}/types`,
           {
             body,
-            query: { create_missing_options: args.create_missing_options },
+            query: {
+              create_missing_options: args.create_missing_options,
+              dry_run: args.dry_run,
+            },
+            idempotencyKey: args.idempotency_key,
           },
         );
       },
@@ -211,6 +220,8 @@ export function buildTypeTools(deps: ToolDeps) {
           description:
             'true = create missing select options instead of refusing.',
         },
+        dry_run: DRY_RUN_PARAM,
+        idempotency_key: IDEMPOTENCY_KEY_PARAM,
       },
       output: outputSpec(),
       async execute(args, exec) {
@@ -235,7 +246,11 @@ export function buildTypeTools(deps: ToolDeps) {
           {
             body,
             expectedEtag: args.expected_etag,
-            query: { create_missing_options: args.create_missing_options },
+            query: {
+              create_missing_options: args.create_missing_options,
+              dry_run: args.dry_run,
+            },
+            idempotencyKey: args.idempotency_key,
           },
         );
       },
@@ -251,10 +266,8 @@ export function buildTypeTools(deps: ToolDeps) {
           required: true,
           description: 'Type key (or id).',
         },
-        dry_run: {
-          type: 'boolean',
-          description: 'true = validate without deleting.',
-        },
+        dry_run: DRY_RUN_PARAM,
+        idempotency_key: IDEMPOTENCY_KEY_PARAM,
       },
       output: outputSpec(),
       async execute(args, exec) {
@@ -263,7 +276,10 @@ export function buildTypeTools(deps: ToolDeps) {
           exec,
           'DELETE',
           `/v2/spaces/${enc(args.space_id)}/types/${enc(args.type)}`,
-          { query: { dry_run: args.dry_run } },
+          {
+            query: { dry_run: args.dry_run },
+            idempotencyKey: args.idempotency_key,
+          },
         );
       },
     }),
