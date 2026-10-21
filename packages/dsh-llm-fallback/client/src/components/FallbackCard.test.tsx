@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { DICT } from '../dict.ts';
+import { DEFAULT_TIME_WINDOW_RULES } from '../lib/settings.ts';
 import { FallbackCard } from './FallbackCard.tsx';
 import type {
   ConfigSnapshot,
@@ -164,7 +165,7 @@ describe('FallbackCard 渲染', () => {
     expect(div.textContent).toBe(t('loading'));
   });
 
-  it('勾选模型 → 脏状态 → 保存调用 mutate 携带 6 个 op 与正确 revision', async () => {
+  it('勾选模型 → 脏状态 → 保存调用 mutate 携带 8 个 op(含时间窗)与正确 revision', async () => {
     const fake = fakeScope();
     const div = mount(
       <FallbackCard t={t} scope={fake.scope} session={fakeSession()} />,
@@ -196,11 +197,77 @@ describe('FallbackCard 渲染', () => {
     await waitFor(() => fake.mutations.length > 0);
     const mutation = fake.mutations[0];
     expect(mutation.revision).toBe(1);
-    expect(mutation.ops).toHaveLength(6);
+    // 保存载荷与配置字段同步:6 个基础字段 + 时间窗两字段 = 8 op
+    expect(mutation.ops).toHaveLength(8);
     const chains = mutation.ops.find((op) => op.path[0] === 'fallbackChains');
     expect(chains?.value).toEqual([{ provider: 'prov', model: 'm1' }]);
+    const twEnabled = mutation.ops.find(
+      (op) => op.path[0] === 'timeWindowEnabled',
+    );
+    expect(twEnabled?.value).toBe(false);
+    const twRules = mutation.ops.find((op) => op.path[0] === 'timeWindowRules');
+    expect(twRules?.value).toEqual([]);
     // 保存成功后草稿丢弃,脏状态消失
     await waitFor(() => !div.textContent!.includes(t('dirty')));
+  });
+
+  it('时间窗开关开启时自动填入官方预置模板,保存载荷同步携带(冲突检测同链路)', async () => {
+    const fake = fakeScope();
+    const div = mount(
+      <FallbackCard t={t} scope={fake.scope} session={fakeSession()} />,
+    );
+    await waitFor(() => div.textContent!.includes(t('timeWindowEnabled')));
+    // 时间窗开关(aria-label 与冷却/总开关区分)
+    const twSwitch = [...div.querySelectorAll('button[role="switch"]')].find(
+      (b) => b.getAttribute('aria-label') === t('timeWindowEnabled'),
+    );
+    expect(twSwitch).toBeDefined();
+    (twSwitch as HTMLButtonElement).click();
+    // D3 预置:规则为空时开启 → 自动填入官方模板(match 输入已带 deepseek-*)
+    await waitFor(() =>
+      Boolean(div.querySelector(`input[aria-label^="${t('twMatchLabel')}"]`)),
+    );
+    const matchInput = div.querySelector(
+      `input[aria-label^="${t('twMatchLabel')}"]`,
+    ) as HTMLInputElement;
+    expect(matchInput.value).toBe('deepseek-*');
+    expect(div.textContent).toContain(t('dirty'));
+    // 保存 → 8 op,timeWindowEnabled=true + 预置规则原样写出
+    const saveButton = [...div.querySelectorAll('button')].find(
+      (b) => b.textContent === t('save'),
+    )!;
+    saveButton.click();
+    await waitFor(() => fake.mutations.length > 0);
+    expect(fake.mutations[0]!.ops).toHaveLength(8);
+    const enabledOp = fake.mutations[0]!.ops.find(
+      (op) => op.path[0] === 'timeWindowEnabled',
+    );
+    expect(enabledOp?.value).toBe(true);
+    const rulesOp = fake.mutations[0]!.ops.find(
+      (op) => op.path[0] === 'timeWindowRules',
+    );
+    expect(rulesOp?.value).toEqual(DEFAULT_TIME_WINDOW_RULES);
+  });
+
+  it('时间窗规则非法(空 match / 空 窗口)时保存被阻止并提示', async () => {
+    const fake = fakeScope({
+      value: {
+        timeWindowEnabled: true,
+        timeWindowRules: [{ match: '', action: 'block', windows: [] }],
+      },
+    });
+    const div = mount(
+      <FallbackCard t={t} scope={fake.scope} session={fakeSession()} />,
+    );
+    await waitFor(() => div.textContent!.includes(t('twInvalid')));
+    // 非法态直接可见(保存闸提示);点击保存 → 不产生 mutate
+    const saveButton = [...div.querySelectorAll('button')].find(
+      (b) => b.textContent === t('save'),
+    )!;
+    saveButton.click();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(fake.mutations).toHaveLength(0);
+    expect(div.textContent).toContain(t('twInvalid'));
   });
 
   it('草稿期间快照 revision 变化 → 保存显示冲突文案', async () => {

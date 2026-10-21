@@ -35,6 +35,14 @@
  * - `retryableCodes`:视为可重试的失败码(白名单;默认对齐 dsh 宿主官方重试码
  *   `dsh-llm` 的 DEFAULT_RETRYABLE_CODES,并保留配额/上下文类超集)
  * - `perTurn`:同一 step(`turn:step`)内是否允许多次切换;`false` = 至多切换一次(one-shot)
+ * - `timeWindowEnabled` / `timeWindowRules`:时间窗切换/错峰优先(0.6.0 起,
+ *   默认关闭零迁移)——「时间窗=预填冷却表」:窗口内按规则动作把候选经既有
+ *   `markCooldown` 通道预填进冷却表(到期 = 窗口结束),窗口结束由既有惰性
+ *   过期自动恢复优先级,不引入定时器。窗口为宿主机本地时区的 `HH:mm` 半开
+ *   区间(跨夜回绕,相等 = 全天);`block`(高峰避让)冷却命中 provider 的
+ *   候选,`prefer`(错峰反向)冷却未命中候选(错峰时段自动优先 DeepSeek)。
+ *   语义与解析见 src/schedule.ts;全部候选被预填冷却时降级回原顺序放行
+ *   (对齐冷却哲学「绝不吞掉全部候选」)
  *
  * 主模型语义(0.5.0 起):插件配置里没有"主模型"——dsh 会话页面指定的模型
  * 就是事实主模型。回退推进时自动跳过与会话模型相同的队列项(用户把会话模型
@@ -62,6 +70,12 @@
  */
 
 import Schema from '@deepseek-ai/schemastery';
+
+import {
+  type ResolvedTimeWindow,
+  DEFAULT_TIME_WINDOW_RULES,
+  resolveTimeWindow,
+} from './schedule.ts';
 
 // ── volatile(设置面板可编辑字段)支持 ────────────────────────────────
 //
@@ -329,6 +343,13 @@ export interface ResolvedConfig {
   cooldownMs: number;
   retryableCodes: ReadonlySet<string>;
   perTurn: boolean;
+  /**
+   * 时间窗切换/错峰优先(0.6.0 起,「时间窗=预填冷却表」):窗口内按规则
+   * 动作把候选预填进冷却表(到期 = 窗口结束),窗口结束由既有惰性过期自动
+   * 恢复优先级。语义与解析见 src/schedule.ts;默认关闭(enabled=false)——
+   * 存量用户零行为变化。
+   */
+  timeWindow: ResolvedTimeWindow;
 }
 
 /**
@@ -361,6 +382,8 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     cooldownMs?: unknown;
     retryableCodes?: unknown;
     perTurn?: unknown;
+    timeWindowEnabled?: unknown;
+    timeWindowRules?: unknown;
   };
   const enabled = raw.enabled !== false; // 默认 true
   // fallbackChains 接受形态:旧 string[]('provider/model')与新 Object[] 混用;
@@ -416,6 +439,13 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     if (alias !== undefined) retryableCodes.add(alias);
   }
   const perTurn = raw.perTurn !== false; // 默认 true
+  // 时间窗切换/错峰优先:enabled 默认关(timeWindowEnabled === true 才开);
+  // 规则非法时 resolveTimeWindow 抛错 → resolveConfig 整体失败 → listener
+  // 保留 last-good 配置(与链项错误同风格)。
+  const timeWindow = resolveTimeWindow(
+    raw.timeWindowEnabled,
+    raw.timeWindowRules,
+  );
 
   return {
     enabled,
@@ -429,6 +459,7 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     cooldownMs,
     retryableCodes,
     perTurn,
+    timeWindow,
   };
 }
 
@@ -460,6 +491,49 @@ const ChainEntrySchema = Schema.object({
     desc(
       'Optional note shown as a subtitle or tooltip in the settings UI',
       '可选备注,设置界面里作为副标题或提示展示',
+    ),
+  ),
+});
+
+/** 单条时间窗的 schemastery schema(`HH:mm` 半开区间;跨夜/全天语义见 schedule.ts)。 */
+const TimeWindowWindowSchema = Schema.object({
+  start: setDescription(
+    Schema.string().default('08:30'),
+    desc(
+      'Window start "HH:mm" in host local time',
+      '窗口起点 "HH:mm"(宿主机本地时区)',
+    ),
+  ),
+  end: setDescription(
+    Schema.string().default('00:30'),
+    desc(
+      'Window end "HH:mm" — half-open [start,end); start > end wraps midnight; start == end means all day',
+      '窗口终点 "HH:mm"——半开区间 [start,end);起点>终点 = 跨夜;相等 = 全天',
+    ),
+  ),
+});
+
+/** 单条时间窗规则的 schemastery schema(全局窗口 + provider 匹配规则,D4 形态)。 */
+const TimeWindowRuleSchema = Schema.object({
+  match: setDescription(
+    Schema.string().default('deepseek-*'),
+    desc(
+      'Provider match pattern: exact id ("deepseek-account"), prefix wildcard ("deepseek-*") or "*" (all)',
+      'provider 匹配模式:精确 id("deepseek-account")、前缀通配("deepseek-*")或 "*"(全部)',
+    ),
+  ),
+  action: setDescription(
+    Schema.string().default('block'),
+    desc(
+      '"block" = cool matched candidates during the window (peak avoidance); "prefer" = cool NON-matched candidates (off-peak: prefer DeepSeek automatically)',
+      '"block" = 窗口内冷却命中的候选(高峰避让);"prefer" = 窗口内冷却不命中的候选(错峰时段自动优先 DeepSeek)',
+    ),
+  ),
+  windows: setDescription(
+    Schema.array(TimeWindowWindowSchema).default([]),
+    desc(
+      'Time windows; any active window prefills the cooldown table (expiry = window end, lazy expiry restores priority)',
+      '时段窗口列表;任一生效窗口即预填冷却表(到期 = 窗口结束,惰性过期自动恢复优先级)',
     ),
   ),
 });
@@ -569,6 +643,31 @@ export const Config = Schema.object({
       desc(
         'Within one llm/stream call, allow falling back to the next candidate; if false, fall back is one-shot per request',
         '同一次 llm/stream 调用内允许多次切换;false = 每次请求至多切换一次',
+      ),
+    ),
+  ),
+  timeWindowEnabled: volatileField(
+    setDescription(
+      Schema.boolean().default(false),
+      desc(
+        'Time-window switching / off-peak priority: during configured windows, matched candidates are prefilled into the failure-cooldown table (expiry = window end) so requests transparently switch away; when the window ends the existing lazy expiry restores priority automatically. Off by default — zero behavior change until enabled',
+        '时间窗切换/错峰优先:配置的窗口内,按规则把候选预填进失败冷却表(到期 = 窗口结束),请求透明切走;窗口结束由既有惰性过期自动恢复优先级。默认关闭——开启前零行为变化',
+      ),
+    ),
+  ),
+  timeWindowRules: volatileField(
+    setDescription(
+      Schema.array(TimeWindowRuleSchema).default(
+        // schemastery default 需要可变形态:从只读预置常量深拷贝出可变数组
+        DEFAULT_TIME_WINDOW_RULES.map((rule) => ({
+          match: rule.match,
+          action: rule.action,
+          windows: rule.windows.map((w) => ({ start: w.start, end: w.end })),
+        })),
+      ),
+      desc(
+        'Time-window rules (global window + provider match pattern): "block" cools matched providers during the window (peak avoidance, e.g. deepseek-* 08:30-00:30); "prefer" cools NON-matched providers (off-peak reverse priority, e.g. deepseek-* 00:30-08:30 half-price window). Windows are "HH:mm" half-open in host local time; start > end wraps midnight; start == end = all day',
+        '时间窗规则(全局窗口 + provider 匹配模式):"block" 在窗口内冷却命中的 provider(高峰避让,如 deepseek-* 08:30-00:30);"prefer" 冷却不命中的 provider(错峰反向优先,如 deepseek-* 00:30-08:30 官方半价时段)。窗口为宿主机本地时区 "HH:mm" 半开区间;起点>终点 = 跨夜;相等 = 全天',
       ),
     ),
   ),

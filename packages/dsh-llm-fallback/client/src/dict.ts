@@ -55,6 +55,28 @@ export const DICT: Dict = {
     cooldownMs: '冷却窗口时长(毫秒)',
     cooldownMsHint:
       '失败模型保持跳过的时长,窗口过后重新验证并恢复其优先级;0 = 立即过期(等效禁用)',
+    timeWindowEnabled: '时间窗切换/错峰优先',
+    timeWindowEnabledHint:
+      '配置的窗口内,按规则把候选预填进失败冷却表(到期 = 窗口结束),请求自动改写切走;窗口结束由惰性过期自动恢复优先级,无需定时器',
+    timeWindowRules: '时间窗规则(provider 匹配 + 时段窗口)',
+    timeWindowRulesHint:
+      'block = 窗口内冷却命中的 provider(高峰避让);prefer = 冷却未命中的 provider(错峰自动优先 DeepSeek)。窗口按宿主机本地时区判定:HH:mm 半开区间,起点>终点 = 跨夜,相等 = 全天',
+    twMatchLabel: 'provider 匹配',
+    twMatchPlaceholder: 'deepseek-account / deepseek-* / *',
+    twActionBlock: '高峰避让',
+    twActionPrefer: '错峰优先',
+    twWindowStart: '窗口起点',
+    twWindowEnd: '窗口终点',
+    twAddRule: '添加规则',
+    twAddWindow: '添加窗口',
+    twRemoveRule: '删除规则',
+    twRemoveWindow: '删除窗口',
+    twPreset: '填入官方模板',
+    twPresetHint:
+      '官方错峰默认:高峰 08:30–00:30 避让 deepseek-*;错峰 00:30–08:30(官方半价)优先 deepseek-*',
+    twEmpty: '暂无规则;可填入官方模板或手动添加',
+    twInvalid:
+      '时间窗规则无效:provider 匹配不能为空,且每条规则至少要有一个合法的 HH:mm 窗口',
     save: '保存',
     discard: '放弃修改',
     saving: '保存中…',
@@ -105,6 +127,28 @@ export const DICT: Dict = {
     cooldownMs: 'Cooldown window (ms)',
     cooldownMsHint:
       'How long a failed model stays skipped before being re-verified and restored to its priority position; 0 = expire immediately (disabled)',
+    timeWindowEnabled: 'Time-window switching / off-peak priority',
+    timeWindowEnabledHint:
+      'During configured windows, candidates matching the rules are prefilled into the failure-cooldown table (expiry = window end) so requests switch away transparently; when a window ends the existing lazy expiry restores priority — no timers',
+    timeWindowRules: 'Time-window rules (provider match + windows)',
+    timeWindowRulesHint:
+      'block = cool matched providers during the window (peak avoidance); prefer = cool NON-matched providers (off-peak: prefer DeepSeek automatically). Windows follow the host local timezone: "HH:mm" half-open; start > end wraps midnight; start == end = all day',
+    twMatchLabel: 'Provider match',
+    twMatchPlaceholder: 'deepseek-account / deepseek-* / *',
+    twActionBlock: 'Peak avoidance',
+    twActionPrefer: 'Off-peak priority',
+    twWindowStart: 'Window start',
+    twWindowEnd: 'Window end',
+    twAddRule: 'Add rule',
+    twAddWindow: 'Add window',
+    twRemoveRule: 'Remove rule',
+    twRemoveWindow: 'Remove window',
+    twPreset: 'Use official preset',
+    twPresetHint:
+      'Official off-peak defaults: avoid deepseek-* during peak 08:30–00:30; prefer deepseek-* during off-peak 00:30–08:30 (official half-price window)',
+    twEmpty: 'No rules yet — use the official preset or add one manually',
+    twInvalid:
+      'Invalid time-window rule: provider match must not be empty, and every rule needs at least one valid "HH:mm" window',
     save: 'Save',
     discard: 'Discard',
     saving: 'Saving…',

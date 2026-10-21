@@ -2216,6 +2216,8 @@ describe('Config schema', () => {
       'cooldownMs',
       'retryableCodes',
       'perTurn',
+      'timeWindowEnabled',
+      'timeWindowRules',
     ];
     for (const field of fields) {
       expect(dict[field], `missing field ${field}`).toBeDefined();
@@ -2306,6 +2308,8 @@ describe('Config schema 国际化(desc i18n 映射)', () => {
       'cooldownMs',
       'retryableCodes',
       'perTurn',
+      'timeWindowEnabled',
+      'timeWindowRules',
     ];
     for (const fieldName of fields) {
       const node = fieldOf(fieldName);

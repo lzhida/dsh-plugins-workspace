@@ -103,6 +103,23 @@ describe('dsh-llm-fallback README', () => {
     expect(readme).toContain('`turn:step` 共享键位');
   });
 
+  it('时间窗切换与错峰优先小节锚定核心语义(预填冷却表/官方窗口/本地时区/与冷却关系)', () => {
+    // 时段计划 v2(0.6.0):文档必须说清「时间窗=预填冷却表」机制、官方
+    // 错峰预置窗口、宿主本地时区语义,以及与失败冷却的关系(同一冷却表
+    // 承载、取更晚到期、共用全冷降级兜底)。
+    expect(readme).toContain('## 时间窗切换与错峰优先');
+    expect(readme).toContain('预填冷却表');
+    expect(readme).toContain('惰性过期');
+    expect(readme).toContain('08:30–00:30');
+    expect(readme).toContain('00:30–08:30');
+    expect(readme).toContain('宿主机本地时区');
+    expect(readme).toContain('`deepseek-*`');
+    expect(readme).toContain('与冷却跳过的关系');
+    expect(readme).toContain('绝不吞掉全部候选');
+    expect(readme).toContain('`timeWindowEnabled`');
+    expect(readme).toContain('`timeWindowRules`');
+  });
+
   it('已按开源 README 结构收敛:不再包含版本历史 / 适配版本内部表', () => {
     expect(readme).not.toContain('## 版本历史');
     expect(readme).not.toContain('## 适配版本');
