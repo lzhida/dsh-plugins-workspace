@@ -14,7 +14,10 @@ export interface Candidate {
   model: string;
 }
 
-/** step 标识:`turn:step`,来自 agent/request 与 agent/request-error 的 payload。 */
+/**
+ * step 标识:`<sessionId>:<turn>:<step>`(会话隔离)或降级形态
+ * `turn:step`(payload 无 agent/session.id 时),由 stepStateKey 统一构造。
+ */
 export type StepKey = string;
 
 /**
@@ -351,26 +354,62 @@ export function backoffDelayMs(
 }
 
 /**
- * 清理与 `key` 不同 turn 的全部 step 状态(key 形如 `turn:step`,由 index.ts
- * 的监听器以 `${turn}:${step}` 拼出)。
+ * 构造 step 状态键:`<sessionId>:<turn>:<step>`(会话隔离)。
+ *
+ * 旧键位 `turn:step` 不含会话标识,多会话并发时同号 turn 共享同一状态
+ * (切换进度互相串扰),且新 turn 建态清理可能误清其他会话的在途状态。
+ * 会话标识取自 `agent/request(-error)` payload 的 `agent.session.id`
+ * (官方类型两个 payload 均带 `agent: Agent`);缺失(旧宿主 / 非 agent
+ * 作用域 dispatch)时降级为无会话段的 `turn:step` 形态——与旧行为兼容,
+ * 多会话退化为共享键位(优雅降级,非崩溃)。
+ */
+export function stepStateKey(
+  sessionId: string | undefined,
+  turn: number,
+  step: number,
+): StepKey {
+  return sessionId ? `${sessionId}:${turn}:${step}` : `${turn}:${step}`;
+}
+
+/** 自右解析 step 键 → 会话段与 turn 段;非 `turn:step` 形态返回 null。 */
+function parseStepKey(key: StepKey): { session: string; turn: string } | null {
+  const stepColon = key.lastIndexOf(':');
+  if (stepColon < 0) return null;
+  const turnColon = key.lastIndexOf(':', stepColon - 1);
+  return {
+    session: turnColon < 0 ? '' : key.slice(0, turnColon),
+    turn: key.slice(turnColon + 1, stepColon),
+  };
+}
+
+/**
+ * 清理与 `key` 同会话、不同 turn 的全部 step 状态(key 由 stepStateKey
+ * 构造:`<sessionId>:<turn>:<step>` 或降级 `turn:step`)。
  *
  * 每 step 的回退状态在一次失败推进后就死掉,却从不清理,超长会话下按 step
  * 数无上界缓增;在 stateFor 的创建分支(新 turn 首次请求建态时)调用本函数,
- * 按 turn 前缀移除其余 turn 的全部旧 step 键——表上界收敛为「单 turn 的
- * step 数」。同 turn 的旧 step 键保留(单 turn 内 step 串行,总量有限,删除
- * 无额外收益)。冷却表是独立的 Map,与本函数无关,跨 step 冷却语义不受影响。
+ * 按「同会话异 turn」移除旧 step 键——单会话内表上界收敛为其当前 turn 的
+ * step 数。**会话隔离**:其他会话的键位(含同号 turn)一律保留——跨会话
+ * 互不清理,否则并发会话的新 turn 建态会误清他会在途状态;代价是每会话在
+ * 其最末 turn 后遗留少量状态(上界 ≈ 会话数 × 单 turn step 数,每项小对象,
+ * 宿主重启即清零)。无会话段的降级键视为空串会话,只清同桶异 turn,
+ * 不波及会话键。冷却表是独立的 Map,与本函数无关,跨 step 冷却语义不受影响。
  *
- * 防御:key 缺 `:`(非 `turn:step` 形态,正常不会发生)时前缀为空串,直接
- * 返回不删任何键——清理绝不因异常输入误删。
+ * 防御:key 缺 `:`(非 `turn:step` 形态,正常不会发生)时无法定位 turn,
+ * 直接返回不删任何键;表内异常形态键解析失败时跳过——清理绝不误删。
  */
 export function purgeStaleTurnStates(
   states: Map<StepKey, FallbackState>,
   key: StepKey,
 ): void {
-  const turnPrefix = key.slice(0, key.indexOf(':') + 1);
-  if (turnPrefix === '') return;
+  const parsed = parseStepKey(key);
+  if (!parsed) return;
   for (const existing of states.keys()) {
-    if (!existing.startsWith(turnPrefix)) states.delete(existing);
+    const other = parseStepKey(existing);
+    if (!other) continue;
+    if (other.session === parsed.session && other.turn !== parsed.turn) {
+      states.delete(existing);
+    }
   }
 }
 
@@ -382,8 +421,9 @@ export function stateFor(
 ): FallbackState {
   let s = states.get(key);
   if (!s) {
-    // 新键首次建态:清理其他 turn 的旧 step 状态(见 purgeStaleTurnStates)。
-    // 只在创建分支触发——已存在键的常规读取不扫描、零成本。
+    // 新键首次建态:清理同会话其他 turn 的旧 step 状态(会话隔离,见
+    // purgeStaleTurnStates)。只在创建分支触发——已存在键的常规读取
+    // 不扫描、零成本。
     purgeStaleTurnStates(states, key);
     s = {
       chain,

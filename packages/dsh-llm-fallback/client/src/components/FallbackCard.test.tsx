@@ -24,11 +24,17 @@ class ResizeObserverStub {
 }
 vi.stubGlobal('ResizeObserver', ResizeObserverStub);
 
-/** Poll until the probe passes (React 19 render is concurrent). */
+/**
+ * Poll until the probe passes (React 19 render is concurrent).
+ *
+ * 预算 300 轮 × 20ms ≈ 6s:全量并发跑时本文件的 worker 可能被其他文件的
+ * 计算饿死数秒,原 100×10ms(≈1s)预算在争抢下会被耗尽(预存 flaky,
+ * 单文件重跑必过);探针快速通过时多出的 20ms 间隔相对秒级测试时长可忽略。
+ */
 async function waitFor(probe: () => boolean): Promise<void> {
-  for (let round = 0; round < 100; round++) {
+  for (let round = 0; round < 300; round++) {
     if (probe()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error('waitFor: condition never became true');
 }
@@ -215,9 +221,11 @@ describe('FallbackCard 渲染', () => {
     (checkbox as HTMLButtonElement).click();
     await waitFor(() => div.textContent!.includes(t('dirty')));
     // 别处修改:revision 2(fake.push 同步调 setSnap,React 重渲染是调度的
-    // ——与真实宿主的推送节奏一致;这里等一拍让卡片重渲染到新快照再点保存)
+    // ——与真实宿主的推送节奏一致;这里等一拍让卡片重渲染到新快照再点保存。
+    // 保存判定读 React state 的 snap.revision,重渲染未落地就点击会走保存
+    // 而非冲突;50ms 给并发渲染调度留裕量,与 waitFor 同属并发缓冲)
     fake.push({ revision: 2 });
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await new Promise((resolve) => setTimeout(resolve, 50));
     const saveButton = [...div.querySelectorAll('button')].find(
       (b) => b.textContent === t('save'),
     );
@@ -243,8 +251,15 @@ describe('FallbackCard 渲染', () => {
     const div = mount(
       <FallbackCard t={t} scope={scope} session={fakeSession()} />,
     );
-    // 两条候选都渲染(显示名实时解析:目录 name + 路由键副文本)
-    await waitFor(() => div.textContent!.includes('prov/ghost'));
+    // 两条候选都渲染且目录名已解析:'Model One' 来自目录异步加载
+    // (idle→loading→ready 经 effect + 微任务链),只等队列渲染(prov/ghost)
+    // 就断言目录名会与加载竞速,worker 饥饿下即 flaky——探测条件必须
+    // 覆盖断言条件,断言本身不再有竞态窗口
+    await waitFor(
+      () =>
+        div.textContent!.includes('prov/ghost') &&
+        div.textContent!.includes('Model One'),
+    );
     expect(div.textContent).toContain('Model One');
     // 失效徽标只出现在 ghost 行(m1 行无徽标);目录异步加载,徽标等它就绪
     const staleBadges = () =>
