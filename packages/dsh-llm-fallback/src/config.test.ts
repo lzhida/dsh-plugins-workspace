@@ -231,6 +231,15 @@ describe('resolveConfig', () => {
     expect(c.perTurn).toBe(true);
   });
 
+  it('perTurn=false 解析为单次切换档;仅字面 false 生效,其余形态宽容为 true(默认)', () => {
+    expect(resolveConfig({ perTurn: false }).perTurn).toBe(false);
+    expect(resolveConfig({ perTurn: true }).perTurn).toBe(true);
+    expect(resolveConfig({}).perTurn).toBe(true);
+    // 宽容解析(与 !== false 守卫一致):字符串 'false' / 数字 0 均不生效
+    expect(resolveConfig({ perTurn: 'false' }).perTurn).toBe(true);
+    expect(resolveConfig({ perTurn: 0 }).perTurn).toBe(true);
+  });
+
   it('undefined / null 输入视为空对象,默认值与 resolveConfig({}) 一致', () => {
     // 回归:loader 在全新 profile / 用户未填任何配置时传入 undefined,
     // 不应让 raw.enabled 在 config.ts:103 处抛 TypeError。
@@ -619,6 +628,7 @@ describe('nextCandidate', () => {
       retries: 0,
       exhausted: false,
       candidateFailures: 0,
+      switched: false,
       pageModel,
     };
   }

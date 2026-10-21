@@ -154,6 +154,7 @@ function initState(
     retries: 0,
     exhausted: false,
     candidateFailures: 0,
+    switched: false,
     pageModel,
   };
 }

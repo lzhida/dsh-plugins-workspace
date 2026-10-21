@@ -80,6 +80,19 @@ describe('dsh-llm-fallback README', () => {
     expect(readme).toContain('从 1 起严格连续');
   });
 
+  it('perTurn 已实装:配置表与行为段写明单次切换档,已知限制不再声称未实装', () => {
+    // 0.5.x 曾是半成品字段(schema 声明、解析存在、状态机未读);实装后
+    // 文档若再出现"预留/未实装"即为文档漂移。
+    expect(readme).not.toContain('`perTurn` 尚未实装');
+    expect(readme).not.toContain('尚未参与回退判定');
+    expect(readme).toContain('至多切换一次');
+  });
+
+  it('step 状态表已知限制已更新:写明新 turn 清理与上界,不再声称无界', () => {
+    expect(readme).not.toContain('严格意义上无上界');
+    expect(readme).toContain('新 turn');
+  });
+
   it('已按开源 README 结构收敛:不再包含版本历史 / 适配版本内部表', () => {
     expect(readme).not.toContain('## 版本历史');
     expect(readme).not.toContain('## 适配版本');

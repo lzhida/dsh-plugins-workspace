@@ -84,18 +84,18 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 
 启用插件后，在 设置 → 插件 → `@zhidal/dsh-llm-fallback` 详情页的「模型回退」配置卡中配置：
 
-| 字段                  | 类型                                                   | 默认                            | 说明                                                                                           |
-| --------------------- | ------------------------------------------------------ | ------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `enabled`             | `boolean`                                              | `true`                          | 总开关，关闭后不再拦截模型失败                                                                 |
-| `fallbackChains`      | `Array<{provider, model, displayName?, description?}>` | `[]`                            | 纯回退候选队列（不含会话指定的主模型），失败后按序切换；旧 `string[]` 形态自动归一             |
-| `retriesBeforeSwitch` | `number`                                               | `0`                             | 每候选切换前允许的同 provider 重试次数，见[每候选重试次数](#每候选重试次数retriesbeforeswitch) |
-| `maxRetries`          | `number`                                               | `0`（= 链长）                   | 单次请求最多**切换候选**次数，不含同候选重试                                                   |
-| `baseDelayMs`         | `number`                                               | `500`                           | 指数退避初值；`0` = 禁用退避（失败后立即重试/切换）                                            |
-| `maxDelayMs`          | `number`                                               | `30000`                         | 指数退避上限                                                                                   |
-| `cooldownEnabled`     | `boolean`                                              | `true`                          | 失败候选冷却跳过总开关，关闭后行为与旧版一致（每 step 都从会话模型重新开始）                   |
-| `cooldownMs`          | `number`                                               | `300000`（5 分钟）              | 失败模型的冷却窗口时长（毫秒），窗口过后自动重新验证并恢复其优先级；`0` = 立即过期（等效禁用） |
-| `retryableCodes`      | `string[]`                                             | 见[失败码白名单](#失败码白名单) | 可触发重试/切换的失败码白名单                                                                  |
-| `perTurn`             | `boolean`                                              | `true`                          | 预留字段，尚未参与回退判定，见[已知限制](#已知限制)                                            |
+| 字段                  | 类型                                                   | 默认                            | 说明                                                                                                  |
+| --------------------- | ------------------------------------------------------ | ------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `enabled`             | `boolean`                                              | `true`                          | 总开关，关闭后不再拦截模型失败                                                                        |
+| `fallbackChains`      | `Array<{provider, model, displayName?, description?}>` | `[]`                            | 纯回退候选队列（不含会话指定的主模型），失败后按序切换；旧 `string[]` 形态自动归一                    |
+| `retriesBeforeSwitch` | `number`                                               | `0`                             | 每候选切换前允许的同 provider 重试次数，见[每候选重试次数](#每候选重试次数retriesbeforeswitch)        |
+| `maxRetries`          | `number`                                               | `0`（= 链长）                   | 单次请求最多**切换候选**次数，不含同候选重试                                                          |
+| `baseDelayMs`         | `number`                                               | `500`                           | 指数退避初值；`0` = 禁用退避（失败后立即重试/切换）                                                   |
+| `maxDelayMs`          | `number`                                               | `30000`                         | 指数退避上限                                                                                          |
+| `cooldownEnabled`     | `boolean`                                              | `true`                          | 失败候选冷却跳过总开关，关闭后行为与旧版一致（每 step 都从会话模型重新开始）                          |
+| `cooldownMs`          | `number`                                               | `300000`（5 分钟）              | 失败模型的冷却窗口时长（毫秒），窗口过后自动重新验证并恢复其优先级；`0` = 立即过期（等效禁用）        |
+| `retryableCodes`      | `string[]`                                             | 见[失败码白名单](#失败码白名单) | 可触发重试/切换的失败码白名单                                                                         |
+| `perTurn`             | `boolean`                                              | `true`                          | 同一 `turn:step` 内至多切换一次候选（单次切换档）；默认 `true` = step 内允许多次切换，见[行为](#行为) |
 
 配置卡功能：启用开关；从宿主模型目录（按 provider 分组）勾选回退候选，列表限高滚动并支持按 provider 分组名 / 模型 id / 显示名搜索过滤（大小写不敏感，无命中给空态）；上移 / 下移 / 移除调整回退优先级（顺序即回退顺序，会话指定的模型不在此队列中）；设置每候选重试次数与最大切换候选数；失败候选冷却跳过开关与冷却窗口时长（毫秒）；保存 / 放弃，带 revision 冲突检测。所有改动保存后即时生效，无需重载插件。配色接入 dsh web 主题变量（`--dsw-alias-*`），明暗模式均保持文字可读。
 
@@ -154,6 +154,7 @@ dsh 侧的模型身份是**字面 `provider/model` 路由键**：deepseek 与 pi
 ## 行为
 
 - 失败码在白名单 → 计入当前候选的失败数，按每候选重试预算决策（透传官方重试 / 代执行同候选重试 / 切下一候选，见[每候选重试次数](#每候选重试次数retriesbeforeswitch)）
+- `perTurn: false`（单次切换档）：同一 `turn:step` 内至多切换一次候选——切换生效后，同 step 再次预算耗尽不再切换、透传上游决策；官方 retry 透传与预算内代执行重试不消耗名额；新 step / 新 turn 天然恢复切换名额，冷却起点改写不算切换
 - 切换路径：退避 + 切下一候选 + 返回 `{kind: 'retry'}`，loop 重发请求（`agent/request` 监听器改写 `provider/model`）
 - 回退推进永不切向会话指定的模型（它刚失败过）——把会话模型也勾进队列时该项被自动跳过
 - 失败候选冷却：切换或链耗尽时，刚失败的模型（会话指定模型或链候选）记入冷却表（`cooldownMs`，默认 5 分钟）——冷却窗内后续 step 的首个请求若起点在冷却中，直接改写为链上第一个可用候选；窗口期满自动恢复优先级。剩余候选全部在冷却中时退回正常顺序（冷却绝不吞掉全部候选）；非白名单失败与预算内的同候选重试（透传官方 / 代执行）不记冷却；`cooldownEnabled: false` 整体关闭
@@ -185,9 +186,8 @@ dsh 侧的模型身份是**字面 `provider/model` 路由键**：deepseek 与 pi
 - 自动跟随官方预算依赖 waterfall 链位：需能在 `agent/request-error` 中通过 `next()` 观察到官方 retry 的决策（以及 payload 携带的 `retryPolicy`）；自定义装载顺序导致观察不到时，自动档退化为「首失败即切」语义
 - 自定义 `retriesBeforeSwitch` 超出官方预算的部分由本插件代执行——退避用本插件配置（`baseDelayMs` / `maxDelayMs`），与官方重试的退避配置（provider `retryPolicy.backoff`）不同源，两段退避曲线在切换点可能不一致
 - 官方 `dsh-llm-retry` 本体无可配置项；provider 重试策略（`retryPolicy.maxRetries`，宿主默认 5）挂在 provider 适配器配置上（`llm-deepseek` 顶层 volatile 字段 / `llm-pi-ai` 的 `providers.<id>.retryPolicy`），可在 provider 侧直接调整，自动档实时跟随
-- `perTurn` 尚未实装：schema 有声明、配置会解析，但回退状态机未读取该字段，设 `false` 无效果
 - 冷却表存于插件进程内存（按 `provider/model` 记、跨对话共享）：宿主重启 / 插件重载后清零，重启后首轮请求会重新验证全部模型；冷却仅在插件进程内生效，多实例各自独立计时
-- 每 step 的回退状态以 `turn:step` 为 key 存内存且不清理：超长会话下按 step 数缓增（每项是小对象，量级可忽略，严格意义上无上界）
+- 每 step 的回退状态以 `turn:step` 为 key 存内存：新 turn 首次请求时清理其他 turn 的旧状态，内存上界 = 单 turn 的 step 数（每项小对象，量级可忽略）；key 不含会话标识，多会话并发时同号 turn 共享键位（现状设计，非本版引入）
 - 不实现 provider/* 通配条目、role/specificity 多链分派、同一 step 链耗尽后切回会话指定模型（新 step 天然从会话指定模型重新开始）
 
 ## 故障排查

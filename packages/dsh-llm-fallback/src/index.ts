@@ -394,6 +394,14 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
             markCooldown(cooldowns, failed, Date.now(), cfg.cooldownMs);
           }
         }
+        // perTurn=false(单次切换档):本 step 已切换过(one-shot 名额已消耗)
+        // → 不再切换,透传上游决策(官方 retry 若仍想重试则继续同候选重试,
+        // 那不是切换)。闸门挂在冷却标记之后:白名单失败耗尽预算是既成事实,
+        // 与链耗尽路径一样照常记冷却。名额只在下方切换提交处置位消耗——
+        // 官方重试透传与预算内代执行不经过此分支,不消耗名额。
+        if (!cfg.perTurn && state.switched) {
+          return upstream;
+        }
         if (!advance) {
           state.exhausted = true;
           return upstream;
@@ -447,6 +455,9 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
         state.retries = advance.retries;
         // 新候选获得完整预算:候选失败计数清零
         state.candidateFailures = 0;
+        // 切换已生效:消耗 one-shot 名额(perTurn=false 时本 step 不再切换;
+        // 退避被 abort 的路径在上方提前返回,不置位、不消耗名额)
+        state.switched = true;
         // 返回 retry → loop 会重进 prepareRequest → 我们在 agent/request 里改写 provider/model
         return { kind: 'retry' };
       },
@@ -491,6 +502,7 @@ export {
   nextCandidate,
   ourRetryChain,
   purgeExpiredCooldowns,
+  purgeStaleTurnStates,
   resolveCandidateRetryPlan,
   stateFor,
 } from './state.ts';
