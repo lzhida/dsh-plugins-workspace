@@ -31,11 +31,15 @@ import {
 import {
   beginDraft,
   buildMutations,
+  cloneRules,
+  DEFAULT_TIME_WINDOW_RULES,
   isDirty,
   readSavedSettings,
   resolveView,
+  rulesValid,
   toSelectedMap,
   type DraftState,
+  type TimeWindowRuleInput,
 } from '../lib/settings.ts';
 import type {
   CardProps,
@@ -47,6 +51,7 @@ import type {
 import { NumberRow, SwitchRow } from './fields.tsx';
 import { CatalogPicker, type CatalogData } from './CatalogPicker.tsx';
 import { QueueSection } from './QueueSection.tsx';
+import { TimeWindowSection } from './TimeWindowSection.tsx';
 import { Button } from './ui/button.tsx';
 
 /** 配置卡 props（t 由 plugin 层注入；scope/session 来自客户端上下文）。 */
@@ -66,8 +71,8 @@ export function FallbackCard(props: FallbackCardProps): React.ReactElement {
   return <FallbackCardPage {...props} />;
 }
 
-/** 保存错误态（conflict = revision 冲突）。 */
-type SaveError = 'conflict' | 'failed' | null;
+/** 保存错误态（conflict = revision 冲突；invalid = 时间窗规则非法阻止保存）。 */
+type SaveError = 'conflict' | 'failed' | 'invalid' | null;
 
 /** 完整配置表单（page 视图）。 */
 function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
@@ -166,6 +171,30 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
     patchDraft(() => ({ queue: kept }));
   }
 
+  /**
+   * 时间窗开关：开启且规则为空时自动填入官方错峰预置模板（D3 决策：
+   * 预置官方默认——高峰 08:30–00:30 避让 / 错峰 00:30–08:30 优先
+   * deepseek-*），用户可再改或一键重填。关闭不改规则（重开找回原编辑）。
+   */
+  function toggleTimeWindow(): void {
+    if (!writable || busy) return;
+    const nextEnabled = !view.timeWindowEnabled;
+    const rules =
+      nextEnabled && view.timeWindowRules.length === 0
+        ? cloneRules(DEFAULT_TIME_WINDOW_RULES)
+        : view.timeWindowRules;
+    patchDraft(() => ({
+      timeWindowEnabled: nextEnabled,
+      timeWindowRules: rules,
+    }));
+  }
+
+  /** 规则编辑（TimeWindowSection 回传整组不可变新数组）。 */
+  function changeTimeWindowRules(rules: TimeWindowRuleInput[]): void {
+    if (!writable || busy) return;
+    patchDraft(() => ({ timeWindowRules: rules }));
+  }
+
   function discard(): void {
     setDraft(null);
     setError(null);
@@ -176,6 +205,13 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
     const revision = draft?.revision ?? snap.revision;
     if (draft !== null && snap.revision !== draft.revision) {
       setError('conflict');
+      return;
+    }
+    // 时间窗规则非法 → 阻止保存并提示（对齐 v1「非法规则阻止保存」）：
+    // 宿主 resolveTimeWindow 对非法规则抛错（保留 last-good），这里在
+    // 写入前拦截，避免用户存了永远不生效的规则还以为已开启。
+    if (!rulesValid(view.timeWindowRules)) {
+      setError('invalid');
       return;
     }
     // 保存路径剔除失效条目（分支 B）：写入载荷不含"不在当前目录"的候选
@@ -214,18 +250,20 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
 
   const selected = toSelectedMap(view.queue);
 
-  // 状态行文案（只读 / 冲突 / 失败 / 保存中 / 未保存）。
+  // 状态行文案（只读 / 冲突 / 非法 / 失败 / 保存中 / 未保存）。
   const statusText: string | null = !writable
     ? t('readonly')
     : error === 'conflict'
       ? t('conflict')
-      : error === 'failed'
-        ? t('failed')
-        : busy
-          ? t('saving')
-          : dirty
-            ? t('dirty')
-            : null;
+      : error === 'invalid'
+        ? t('twInvalid')
+        : error === 'failed'
+          ? t('failed')
+          : busy
+            ? t('saving')
+            : dirty
+              ? t('dirty')
+              : null;
 
   return (
     <div className="flex flex-col gap-4 py-1 text-foreground">
@@ -294,6 +332,17 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
         value={view.cooldownMs}
         disabled={!writable || busy}
         onChange={(n) => patchDraft(() => ({ cooldownMs: n }))}
+      />
+
+      <TimeWindowSection
+        t={t}
+        enabled={view.timeWindowEnabled}
+        rules={view.timeWindowRules}
+        writable={writable}
+        busy={busy}
+        invalid={!rulesValid(view.timeWindowRules)}
+        onToggle={toggleTimeWindow}
+        onRulesChange={changeTimeWindowRules}
       />
 
       <div className="flex items-center justify-between gap-3">

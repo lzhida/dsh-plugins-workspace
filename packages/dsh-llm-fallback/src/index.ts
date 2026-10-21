@@ -95,6 +95,7 @@ import {
   type FallbackState,
   type StepKey,
   backoffDelayMs,
+  cooldownKey,
   currentEffectiveCandidate,
   firstAvailableCandidateIndex,
   isCoolingDown,
@@ -106,6 +107,7 @@ import {
   stateFor,
   stepStateKey,
 } from './state.ts';
+import { resolveTimeWindowCooldowns } from './schedule.ts';
 import {
   type TrajectoryAgent,
   FALLBACK_RETRY_POLICY_KEY,
@@ -252,9 +254,49 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
               model: seed.model,
             };
           }
+          // 时间窗预填冷却表(时段计划 v2,「时间窗=预填冷却表」):窗口内
+          // 按规则动作(block=冷却命中 provider / prefer=冷却未命中 provider)
+          // 把候选经既有 markCooldown 通道预填进冷却表(到期 = 窗口结束,
+          // 宿主本地时区);此后与失败冷却共用同一条跳过/降级路径,窗口结束
+          // 由既有惰性过期自动恢复优先级——不引入定时器、不新增扫描路径。
+          // max-merge:已有冷却条目(失败冷却或更晚窗口)到期更晚时不缩短它。
+          // 预填覆盖链候选与会话指定模型(它可能不在链上,但同样受窗口约束)。
+          if (
+            cfg.cooldownEnabled &&
+            cfg.timeWindow.enabled &&
+            cfg.timeWindow.rules.length > 0
+          ) {
+            const nowMs = Date.now();
+            const page = state.pageModel;
+            const targets =
+              page &&
+              !state.chain.some(
+                (c) => c.provider === page.provider && c.model === page.model,
+              )
+                ? [page, ...state.chain]
+                : [...state.chain];
+            const prefill = resolveTimeWindowCooldowns(
+              cfg.timeWindow.rules,
+              targets,
+              new Date(),
+            );
+            let changed = 0;
+            for (const entry of prefill) {
+              const existing = cooldowns.get(cooldownKey(entry));
+              if (existing !== undefined && existing >= entry.until) continue;
+              markCooldown(cooldowns, entry, nowMs, entry.until - nowMs);
+              changed += 1;
+            }
+            if (changed > 0) {
+              console.log(
+                `[${name}] time-window: prefilled cooldown for ${changed} candidate(s) until their window end`,
+              );
+            }
+          }
           // 冷却跳过:会话指定模型在冷却窗内 → 该 step 直接从链上第一个
           // 可用候选开始;无可用候选(全链冷却/链空)→ 保持 -1,按原语义
-          // 从会话模型开始(冷却绝不吞掉全部候选)。
+          // 从会话模型开始(冷却绝不吞掉全部候选;时间窗预填全候选时同此
+          // 降级——时间窗绝不吞掉全部候选)。
           if (cfg.cooldownEnabled) {
             const now = Date.now();
             if (isCoolingDown(cooldowns, state.pageModel, now)) {
