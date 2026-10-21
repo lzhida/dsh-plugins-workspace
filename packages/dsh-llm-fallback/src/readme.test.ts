@@ -93,6 +93,16 @@ describe('dsh-llm-fallback README', () => {
     expect(readme).toContain('新 turn');
   });
 
+  it('step 状态键含会话标识:写明会话隔离与降级形态,不再声称键不含会话标识', () => {
+    // 会话隔离实装后,文档若再声称"键不含会话标识/多会话共享键位现状"
+    // 即为漂移;降级形态(缺 agent.session.id → turn:step 共享键位)与
+    // 会话粒度遗留上界必须如实注明。
+    expect(readme).not.toContain('key 不含会话标识');
+    expect(readme).toContain('agent.session.id');
+    expect(readme).toContain('同号 turn 互不串扰');
+    expect(readme).toContain('`turn:step` 共享键位');
+  });
+
   it('已按开源 README 结构收敛:不再包含版本历史 / 适配版本内部表', () => {
     expect(readme).not.toContain('## 版本历史');
     expect(readme).not.toContain('## 适配版本');

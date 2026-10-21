@@ -69,10 +69,12 @@
  *
  * 局限性:
  * - 不实现 provider/* 通配条目、role/specificity 分派链;
- * - 不实现"跨回合切回会话指定模型"(回退状态以 turn:step 为 key,新 step
- *   天然从会话指定模型重新开始;同一 step 内链耗尽后不再回头);冷却跳过
- *   在此之上做跨 step 优化:冷却中的模型被跳过、窗口期满自动恢复优先级,
- *   不改变"新 step 从会话指定模型重新开始"的基准语义;
+ * - 不实现"跨回合切回会话指定模型"(回退状态以 `<会话id>:<turn>:<step>`
+ *   为 key——会话隔离,多会话同号 turn 互不串扰;payload 缺会话标识时
+ *   降级共享键位——新 step 天然从会话指定模型重新开始;同一 step 内链耗尽
+ *   后不再回头);冷却跳过在此之上做跨 step 优化:冷却中的模型被跳过、
+ *   窗口期满自动恢复优先级,不改变"新 step 从会话指定模型重新开始"的
+ *   基准语义;
  * - 冷却表存于插件进程内存:宿主重启 / 插件重载后清零(重启后首轮请求会
  *   重新验证全部模型);
  * - backoff 是简单指数退避 + 抖动 ±10%;
@@ -102,6 +104,7 @@ import {
   ourRetryChain,
   resolveCandidateRetryPlan,
   stateFor,
+  stepStateKey,
 } from './state.ts';
 import {
   type TrajectoryAgent,
@@ -197,7 +200,8 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
     return;
   }
 
-  // 4. per-step 回退状态:`turn:step` 当 key
+  // 4. per-step 回退状态:`<会话id>:<turn>:<step>` 当 key(会话隔离;
+  //    payload 缺 agent/session.id 时降级为无会话段的 `turn:step`)
   const states = new Map<StepKey, FallbackState>();
 
   // 4b. 失败候选冷却表(key = 'provider/model',value = 冷却到期毫秒时间戳)。
@@ -220,11 +224,23 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
     const dispose = ctx.on(
       'agent/request',
       async (
-        payload: { turn: number; step: number; signal: AbortSignal },
+        payload: {
+          turn: number;
+          step: number;
+          signal: AbortSignal;
+          /** 主体 agent:只读 session.id 作状态键会话段(可选,防御旧宿主)。 */
+          agent?: TrajectoryAgent;
+        },
         next: () => Promise<RequestConfig>,
       ): Promise<RequestConfig> => {
         const seed = await next();
-        const key: StepKey = `${payload.turn}:${payload.step}`;
+        // 键位含会话标识:多会话并发时同号 turn 的状态互不串扰(会话隔离,
+        // 见 state.ts stepStateKey;缺失时降级 `turn:step` 共享键位)
+        const key: StepKey = stepStateKey(
+          payload.agent?.session.id,
+          payload.turn,
+          payload.step,
+        );
         // 惰性创建/取出该 step 的状态(此前仅在失败时创建;现在请求阶段就建,
         // 以便在首次失败前捕获会话指定模型——error payload 不带 model)
         const cfg = current();
@@ -295,7 +311,13 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
         next: () => Promise<RequestErrorAction | undefined | void>,
       ): Promise<RequestErrorAction | undefined | void> => {
         const { turn, step, failure, signal } = payload;
-        const key: StepKey = `${turn}:${step}`;
+        // 键位与 agent/request 监听器同一构造(stepStateKey),会话段缺失
+        // 时同样降级——两侧构造一致是状态能对上的前提
+        const key: StepKey = stepStateKey(
+          payload.agent?.session.id,
+          turn,
+          step,
+        );
         // 读取当前(可能已被设置面板改过的)配置
         const cfg = current();
 
@@ -505,6 +527,7 @@ export {
   purgeStaleTurnStates,
   resolveCandidateRetryPlan,
   stateFor,
+  stepStateKey,
 } from './state.ts';
 export type {
   CandidateRetryPlan,

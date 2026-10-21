@@ -155,6 +155,7 @@ dsh 侧的模型身份是**字面 `provider/model` 路由键**：deepseek 与 pi
 
 - 失败码在白名单 → 计入当前候选的失败数，按每候选重试预算决策（透传官方重试 / 代执行同候选重试 / 切下一候选，见[每候选重试次数](#每候选重试次数retriesbeforeswitch)）
 - `perTurn: false`（单次切换档）：同一 `turn:step` 内至多切换一次候选——切换生效后，同 step 再次预算耗尽不再切换、透传上游决策；官方 retry 透传与预算内代执行重试不消耗名额；新 step / 新 turn 天然恢复切换名额，冷却起点改写不算切换
+- 回退状态按会话隔离：step 状态键含会话标识（`agent.session.id`），多会话并发时同号 turn 的键位互不共享、新 turn 的状态清理只作用于本会话；会话标识不可得（旧宿主）时优雅降级为共享键位（见[已知限制](#已知限制)）
 - 切换路径：退避 + 切下一候选 + 返回 `{kind: 'retry'}`，loop 重发请求（`agent/request` 监听器改写 `provider/model`）
 - 回退推进永不切向会话指定的模型（它刚失败过）——把会话模型也勾进队列时该项被自动跳过
 - 失败候选冷却：切换或链耗尽时，刚失败的模型（会话指定模型或链候选）记入冷却表（`cooldownMs`，默认 5 分钟）——冷却窗内后续 step 的首个请求若起点在冷却中，直接改写为链上第一个可用候选；窗口期满自动恢复优先级。剩余候选全部在冷却中时退回正常顺序（冷却绝不吞掉全部候选）；非白名单失败与预算内的同候选重试（透传官方 / 代执行）不记冷却；`cooldownEnabled: false` 整体关闭
@@ -187,7 +188,7 @@ dsh 侧的模型身份是**字面 `provider/model` 路由键**：deepseek 与 pi
 - 自定义 `retriesBeforeSwitch` 超出官方预算的部分由本插件代执行——退避用本插件配置（`baseDelayMs` / `maxDelayMs`），与官方重试的退避配置（provider `retryPolicy.backoff`）不同源，两段退避曲线在切换点可能不一致
 - 官方 `dsh-llm-retry` 本体无可配置项；provider 重试策略（`retryPolicy.maxRetries`，宿主默认 5）挂在 provider 适配器配置上（`llm-deepseek` 顶层 volatile 字段 / `llm-pi-ai` 的 `providers.<id>.retryPolicy`），可在 provider 侧直接调整，自动档实时跟随
 - 冷却表存于插件进程内存（按 `provider/model` 记、跨对话共享）：宿主重启 / 插件重载后清零，重启后首轮请求会重新验证全部模型；冷却仅在插件进程内生效，多实例各自独立计时
-- 每 step 的回退状态以 `turn:step` 为 key 存内存：新 turn 首次请求时清理其他 turn 的旧状态，内存上界 = 单 turn 的 step 数（每项小对象，量级可忽略）；key 不含会话标识，多会话并发时同号 turn 共享键位（现状设计，非本版引入）
+- 每 step 的回退状态以 `<会话id>:<turn>:<step>` 为 key 存内存（会话标识取自 `agent/request(-error)` payload 的 `agent.session.id`，缺失时降级为无会话段的 `turn:step` 共享键位）：新 turn 首次请求时清理**同会话**其他 turn 的旧状态，跨会话互不清理、同号 turn 互不串扰；每会话在其最末 turn 后遗留少量状态（上界 ≈ 会话数 × 单 turn step 数，每项小对象，宿主重启即清零，量级可忽略）
 - 不实现 provider/* 通配条目、role/specificity 多链分派、同一 step 链耗尽后切回会话指定模型（新 step 天然从会话指定模型重新开始）
 
 ## 故障排查

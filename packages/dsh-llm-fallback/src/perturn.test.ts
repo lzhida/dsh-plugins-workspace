@@ -1,10 +1,14 @@
 /**
  * perTurn 单次切换档 + step 状态表生命周期行为契约测试。
  *
- * 覆盖(需求:perTurn 半成品字段收口实装 + 每 step 状态表过期清理):
- * - purgeStaleTurnStates / stateFor 纯函数:新 turn 首次建态清掉其他 turn
- *   全部旧 step 键;同 turn 旧 step 键保留;已存在键的常规读取不触发清理;
- *   无 ':' 键安全降级不误删;新键 switched=false(one-shot 未消耗)且不跨键泄漏;
+ * 覆盖(需求:perTurn 半成品字段收口实装 + 每 step 状态表过期清理
+ * + 状态键会话隔离):
+ * - purgeStaleTurnStates / stateFor / stepStateKey 纯函数:新 turn 首次建态
+ *   清掉同会话其他 turn 全部旧 step 键;同 turn 旧 step 键保留;跨会话键位
+ *   (含同号 turn)保留;已存在键的常规读取不触发清理;无 ':' 键安全降级
+ *   不误删;新键 switched=false(one-shot 未消耗)且不跨键泄漏;
+ * - 会话隔离(apply 集成):同号 turn:step 两会话键位互不串扰;跨会话新
+ *   turn 建态清理不误删他会在途状态;会话标识缺失降级共享键位(旧行为);
  * - perTurn=false(apply 集成,真实链路):
  *   - 同 turn:step 至多切换一次:首次预算耗尽切换后,同 step 再次预算耗尽
  *     不再切换、透传上游;
@@ -28,6 +32,7 @@ import {
   type StepKey,
   purgeStaleTurnStates,
   stateFor,
+  stepStateKey,
 } from './state.ts';
 
 // ── 测试工具(沿用 config.test.ts / cooldown.test.ts 的 stubCtx 模式)──
@@ -123,6 +128,46 @@ const stepErr = (
   signal: sig(),
 });
 
+/** 带 agent 的载荷(会话标识注入;session=undefined 即降级无 agent)。 */
+const stepReqAs = (
+  session: string | undefined,
+  turn: number,
+  step: number,
+): Record<string, unknown> => ({
+  turn,
+  step,
+  signal: sig(),
+  ...(session === undefined
+    ? {}
+    : { agent: { session: { id: session, append: () => {} } } }),
+});
+const stepErrAs = (
+  session: string | undefined,
+  turn: number,
+  step: number,
+  provider: string,
+  code = 'RATE_LIMIT',
+): Record<string, unknown> => ({
+  turn,
+  step,
+  provider,
+  failure: { code, message: 'fake failure' },
+  signal: sig(),
+  ...(session === undefined
+    ? {}
+    : { agent: { session: { id: session, append: () => {} } } }),
+});
+
+/** 最小 FallbackState 假体(手工 seed 用,绕开 stateFor 的创建即清理)。 */
+const fake = (): FallbackState => ({
+  chain: chain3,
+  index: -1,
+  retries: 0,
+  exhausted: false,
+  candidateFailures: 0,
+  switched: false,
+});
+
 const chain3: ReadonlyArray<Candidate> = [
   { provider: 'a', model: 'x' },
   { provider: 'b', model: 'y' },
@@ -132,16 +177,6 @@ const chain3: ReadonlyArray<Candidate> = [
 // ── 1. step 状态表清理(纯函数)────────────────────────────────────────
 
 describe('step 状态表清理(purgeStaleTurnStates / stateFor)', () => {
-  /** 最小 FallbackState 假体(手工 seed 用,绕开 stateFor 的创建即清理)。 */
-  const fake = (): FallbackState => ({
-    chain: chain3,
-    index: -1,
-    retries: 0,
-    exhausted: false,
-    candidateFailures: 0,
-    switched: false,
-  });
-
   it('新 turn 首次建态:清掉其他 turn 的全部旧 step 键', () => {
     const states = new Map<StepKey, FallbackState>();
     states.set('1:0', fake());
@@ -192,6 +227,130 @@ describe('step 状态表清理(purgeStaleTurnStates / stateFor)', () => {
     // 同键重复读取返回同一对象,不重置已消耗的名额
     expect(stateFor(states, '1:0', chain3)).toBe(s1);
     expect(stateFor(states, '1:0', chain3).switched).toBe(true);
+  });
+});
+
+// ── 1b. step 状态键会话隔离(stepStateKey / purge / apply 集成)────────
+
+describe('step 状态键会话隔离(纯函数)', () => {
+  it('stepStateKey:有会话 id 前缀会话段,缺省降级为 turn:step 形态', () => {
+    expect(stepStateKey('sess-1', 3, 0)).toBe('sess-1:3:0');
+    expect(stepStateKey(undefined, 3, 0)).toBe('3:0');
+    expect(stepStateKey('', 3, 0)).toBe('3:0');
+  });
+
+  it('purge 会话隔离:A 新 turn 建态只清 A 旧 turn,B 会话与无会话段键保留', () => {
+    const states = new Map<StepKey, FallbackState>();
+    for (const k of ['sA:1:0', 'sA:1:1', 'sA:2:0', 'sB:1:0', 'sB:9:0', '1:0']) {
+      states.set(k, fake());
+    }
+    stateFor(states, 'sA:3:0', chain3);
+    expect([...states.keys()].sort()).toEqual([
+      '1:0',
+      'sA:3:0',
+      'sB:1:0',
+      'sB:9:0',
+    ]);
+  });
+
+  it('降级共享桶:无会话段键只清同桶异 turn,不波及会话键', () => {
+    const states = new Map<StepKey, FallbackState>();
+    for (const k of ['1:0', '2:0', 'sA:1:0']) states.set(k, fake());
+    stateFor(states, '3:0', chain3);
+    expect([...states.keys()].sort()).toEqual(['3:0', 'sA:1:0']);
+  });
+
+  it('同号 turn 跨会话交错:B 会话同号 turn 建态不误清 A 的在途状态', () => {
+    const states = new Map<StepKey, FallbackState>();
+    states.set('sA:3:0', fake()); // A 会话 turn3 在途
+    stateFor(states, 'sB:3:1', chain3); // B 会话同号 turn 新 step 建态
+    expect([...states.keys()].sort()).toEqual(['sA:3:0', 'sB:3:1']);
+  });
+});
+
+describe('多会话交错(apply 集成)', () => {
+  it('同号 turn:step 两会话互不串扰:B 首请求不被 A 的已切状态劫持', async () => {
+    // 冷却关闭:冷却表跨会话共享属既定语义,关闭以聚焦键位隔离本身
+    const { req, err } = setup({ cooldownEnabled: false });
+    const seed = { provider: 'deepseek', model: 'x' };
+    // 会话 A (1,1):失败耗尽预算 → 切 openai/a
+    await callListener(req, stepReqAs('sess-A', 1, 1), async () => ({
+      ...seed,
+    }));
+    expect(
+      await callListener(
+        err,
+        stepErrAs('sess-A', 1, 1, 'deepseek'),
+        async () => undefined,
+      ),
+    ).toEqual({ kind: 'retry' });
+    // 会话 B 同号 (1,1) 首请求:B 无回退状态 → seed 原样返回
+    // (旧实现共享键位:会命中 A 的已切状态被劫持为 openai/a)
+    expect(
+      await callListener(req, stepReqAs('sess-B', 1, 1), async () => ({
+        ...seed,
+      })),
+    ).toEqual({ ...seed });
+    // B 自己失败 → 独立完成切换
+    expect(
+      await callListener(
+        err,
+        stepErrAs('sess-B', 1, 1, 'deepseek'),
+        async () => undefined,
+      ),
+    ).toEqual({ kind: 'retry' });
+    expect(
+      await callListener(req, stepReqAs('sess-B', 1, 1), async () => ({
+        ...seed,
+      })),
+    ).toEqual({ provider: 'openai', model: 'a' });
+    // A 的状态不受 B 影响:仍改写 openai/a
+    expect(
+      await callListener(req, stepReqAs('sess-A', 1, 1), async () => ({
+        ...seed,
+      })),
+    ).toEqual({ provider: 'openai', model: 'a' });
+  });
+
+  it('跨会话新 turn 建态清理不误删他会在途状态:B 开新 turn 后 A 的切换仍生效', async () => {
+    const { req, err } = setup({ cooldownEnabled: false });
+    const seed = { provider: 'deepseek', model: 'x' };
+    // A (1,1) 切到 openai/a(状态 sA:1:1,index=0)
+    await callListener(req, stepReqAs('sess-A', 1, 1), async () => ({
+      ...seed,
+    }));
+    expect(
+      await callListener(
+        err,
+        stepErrAs('sess-A', 1, 1, 'deepseek'),
+        async () => undefined,
+      ),
+    ).toEqual({ kind: 'retry' });
+    // B 开新 turn (2,1):建态触发清理——旧实现按 turn 前缀清理会删掉
+    // A 的在途状态(风险②原始场景),新实现跨会话保留
+    await callListener(req, stepReqAs('sess-B', 2, 1), async () => ({
+      ...seed,
+    }));
+    // A 再次请求:状态未被删除 → 仍改写 openai/a(旧实现会重置回会话模型)
+    expect(
+      await callListener(req, stepReqAs('sess-A', 1, 1), async () => ({
+        ...seed,
+      })),
+    ).toEqual({ provider: 'openai', model: 'a' });
+  });
+
+  it('会话标识缺失降级:无 agent 的 payload 共享 turn:step 键位(旧行为)', async () => {
+    const { req, err } = setup({ cooldownEnabled: false });
+    const seed = { provider: 'deepseek', model: 'x' };
+    // 无 agent 载荷:降级键位无会话段(现状语义)
+    await callListener(req, stepReq(1, 1), async () => ({ ...seed }));
+    expect(
+      await callListener(err, stepErr(1, 1, 'deepseek'), async () => undefined),
+    ).toEqual({ kind: 'retry' });
+    // 同号键位命中同一状态:请求被改写为已切候选(共享键位即旧行为)
+    expect(
+      await callListener(req, stepReq(1, 1), async () => ({ ...seed })),
+    ).toEqual({ provider: 'openai', model: 'a' });
   });
 });
 

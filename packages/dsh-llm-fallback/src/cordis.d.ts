@@ -15,7 +15,18 @@
 declare module '@deepseek-ai/cordis' {
   interface Events {
     'agent/request'(
-      payload: { turn: number; step: number; signal: AbortSignal },
+      payload: {
+        turn: number;
+        step: number;
+        signal: AbortSignal;
+        /**
+         * 主体 agent(官方类型 dsh-agent runtime-types.d.ts 的
+         * 'agent/request' 声明 `agent: Agent`)。本插件只读 `session.id`
+         * 作 step 状态键的会话段(会话隔离);标可选以防御非 agent 作用域
+         * dispatch 或旧宿主。
+         */
+        agent?: { session: { id?: string } };
+      },
       next: () => Promise<{
         provider: string;
         model: string;
@@ -51,6 +62,8 @@ declare module '@deepseek-ai/cordis' {
          */
         agent?: {
           session: {
+            /** 会话标识(源 durable header;step 状态键会话段取自它)。 */
+            id?: string;
             append(type: 'llm/retry', data: unknown): unknown;
             append(type: 'llm/retry-started', data: unknown): unknown;
           };
