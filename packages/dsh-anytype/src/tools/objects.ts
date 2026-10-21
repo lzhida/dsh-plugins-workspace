@@ -6,12 +6,21 @@
  *   （markdown 由服务端解析成块；properties 是「属性名 → 值」的扁平对象）；
  * - update 走 ops 信封：`{ops: [...]}`，共 15 种 op——每个 op 的成员 schema 用
  *   `anytype_get_op_schema(op)` 运行时发现（v2 自描述编辑协议）；
- * - delete 是归档语义（可恢复），支持 `dry_run` 预演。
+ * - delete 是归档语义（可恢复）；
+ * - 三个写工具统一带 `dry_run`（预演不落库）与 `idempotency_key`（防重复
+ *   创建）——服务端按「key + 请求体」绑定，同 key 同 body 重试重放已存响应。
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
-import { enc, outputSpec, runRequest, type ToolDeps } from './shared.ts';
+import {
+  DRY_RUN_PARAM,
+  enc,
+  IDEMPOTENCY_KEY_PARAM,
+  outputSpec,
+  runRequest,
+  type ToolDeps,
+} from './shared.ts';
 
 /** 构建对象组工具。 */
 export function buildObjectTools(deps: ToolDeps) {
@@ -65,7 +74,7 @@ export function buildObjectTools(deps: ToolDeps) {
     defineTool({
       name: 'anytype_create_object',
       description:
-        'Create an object in a space. Required: type key (anytype_list_types to find one; "page" always exists) plus optionally name, markdown body (parsed server-side, max 2048 blocks), flat properties map {property: value}, and template id ("none" to skip the type default). Returns the created object receipt with its id.',
+        'Create an object in a space. Required: type key (anytype_list_types to find one; "page" always exists) plus optionally name, markdown body (parsed server-side, max 2048 blocks), flat properties map {property: value}, and template id ("none" to skip the type default). Returns the created object receipt with its id. Pass dry_run=true to validate the payload without creating anything, and idempotency_key to make a retry of the same request safe (same key + same body replays the stored response instead of creating a duplicate).',
       parameters: {
         space_id: {
           type: 'string',
@@ -97,6 +106,8 @@ export function buildObjectTools(deps: ToolDeps) {
           description:
             'Template id to start from ("none" = empty). Omit to apply the type default_template when present.',
         },
+        dry_run: DRY_RUN_PARAM,
+        idempotency_key: IDEMPOTENCY_KEY_PARAM,
       },
       output: outputSpec(),
       async execute(args, exec) {
@@ -110,14 +121,18 @@ export function buildObjectTools(deps: ToolDeps) {
           exec,
           'POST',
           `/v2/spaces/${enc(args.space_id)}/objects`,
-          { body },
+          {
+            body,
+            query: { dry_run: args.dry_run },
+            idempotencyKey: args.idempotency_key,
+          },
         );
       },
     }),
     defineTool({
       name: 'anytype_update_object',
       description:
-        "Edit one object as an ordered list of ops applied atomically (any refused op cancels all). Ops: set_properties, set_type, update_block, replace_subtree, insert_blocks, move_block, delete_block, replace_text, set_cell, update_view, insert_view, move_view, delete_view, add_items, remove_items — fetch each op's members with anytype_get_op_schema(op) BEFORE building it. Pass expected_etag (from anytype_get_object) to fail on concurrent edits.",
+        "Edit one object as an ordered list of ops applied atomically (any refused op cancels all). Ops: set_properties, set_type, update_block, replace_subtree, insert_blocks, move_block, delete_block, replace_text, set_cell, update_view, insert_view, move_view, delete_view, add_items, remove_items — fetch each op's members with anytype_get_op_schema(op) BEFORE building it. Pass expected_etag (from anytype_get_object) to fail on concurrent edits. Pass dry_run=true to validate the ops without applying them.",
       parameters: {
         space_id: { type: 'string', required: true, description: 'Space id.' },
         object_id: {
@@ -136,6 +151,8 @@ export function buildObjectTools(deps: ToolDeps) {
           type: 'string',
           description: 'ETag from a previous read; sent as If-Match.',
         },
+        dry_run: DRY_RUN_PARAM,
+        idempotency_key: IDEMPOTENCY_KEY_PARAM,
       },
       output: outputSpec(),
       async execute(args, exec) {
@@ -147,6 +164,8 @@ export function buildObjectTools(deps: ToolDeps) {
           {
             body: { ops: args.ops },
             expectedEtag: args.expected_etag,
+            query: { dry_run: args.dry_run },
+            idempotencyKey: args.idempotency_key,
           },
         );
       },
@@ -154,7 +173,7 @@ export function buildObjectTools(deps: ToolDeps) {
     defineTool({
       name: 'anytype_delete_object',
       description:
-        'Archive (soft-delete) one object — restorable in Anytype. Use dry_run=true to preview.',
+        'Archive (soft-delete) one object — restorable in Anytype. Use dry_run=true to preview. Note: only objects this API key created can be deleted.',
       parameters: {
         space_id: { type: 'string', required: true, description: 'Space id.' },
         object_id: {
@@ -162,10 +181,8 @@ export function buildObjectTools(deps: ToolDeps) {
           required: true,
           description: 'Object id.',
         },
-        dry_run: {
-          type: 'boolean',
-          description: 'true = validate without deleting.',
-        },
+        dry_run: DRY_RUN_PARAM,
+        idempotency_key: IDEMPOTENCY_KEY_PARAM,
       },
       output: outputSpec(),
       async execute(args, exec) {
@@ -174,7 +191,10 @@ export function buildObjectTools(deps: ToolDeps) {
           exec,
           'DELETE',
           `/v2/spaces/${enc(args.space_id)}/objects/${enc(args.object_id)}`,
-          { query: { dry_run: args.dry_run } },
+          {
+            query: { dry_run: args.dry_run },
+            idempotencyKey: args.idempotency_key,
+          },
         );
       },
     }),

@@ -3,7 +3,8 @@
  *
  * 职责（工具层的全部 HTTP 语义都收敛在这里）：
  * - 头部：`Authorization: Bearer <key>` + `Anytype-Version`（写请求自动补
- *   `Content-Type: application/json`，乐观锁经 `expectedEtag` 映射 `If-Match`）；
+ *   `Content-Type: application/json`，乐观锁经 `expectedEtag` 映射 `If-Match`，
+ *   防重经 `idempotencyKey` 映射 `Idempotency-Key`）；
  * - 取消与超时：`AbortSignal.any` 组合「调用方信号（exec.signal）+ 配置超时」，
  *   Node 22 原生支持；
  * - 错误归一：非 2xx 响应体（`{code, message, issues, hints}`）解析为
@@ -89,6 +90,20 @@ export interface RequestOptions {
   body?: unknown;
   /** 乐观锁：非空时映射为 `If-Match` 头。 */
   expectedEtag?: string;
+  /**
+   * 防重键：非空时映射为 `Idempotency-Key` 头。
+   *
+   * 语义（服务端实测 2026-10-21）：服务端按「key + 请求体」绑定——同 key
+   * 同 body 重复提交重放已存响应（逐字节一致），同 key 换 body 返 409
+   * `idempotency_conflict`。因此**重试必须复用同一个 key**，换请求内容才换
+   * 新 key。
+   *
+   * 覆盖面：v2 spec 只在部分端点声明该头（spaces / chats / widgets /
+   * discussion / validate），但服务端对 objects / types / properties /
+   * collections 等 mutation 同样强制执行——故此处统一透传，由调用方决定
+   * 是否给 key。
+   */
+  idempotencyKey?: string;
   /** 调用方取消信号（工具执行即 exec.signal）。 */
   signal?: AbortSignal;
 }
@@ -227,6 +242,9 @@ export class AnytypeClient {
     }
     if (opts.expectedEtag !== undefined && opts.expectedEtag.length > 0) {
       headers['If-Match'] = opts.expectedEtag;
+    }
+    if (opts.idempotencyKey !== undefined && opts.idempotencyKey.length > 0) {
+      headers['Idempotency-Key'] = opts.idempotencyKey;
     }
 
     const signals: AbortSignal[] = [AbortSignal.timeout(options.timeoutMs)];

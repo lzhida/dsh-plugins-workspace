@@ -5,15 +5,23 @@
  * 属性（property）是空间级字段定义。v2 能力边界（详见各工具描述）：
  * - create：POST body 收 name/format/key/options（select|multi_select 可内联选项）；
  * - update：PATCH 仅收 name（改名）——key 是属性身份不变，format 创建后不可变；
- * - delete：归档进 Bin 可恢复，支持 dry_run 预检；
+ * - delete：归档进 Bin 可恢复；
  * - 选项词汇创建后只读：v2 没有 v1 tags 的选项改名/删色端点，也无独立
  *   options CRUD——新选项靠 create_type/create_object 内联属性名 +
  *   create_missing_options=true 铸造，经 anytype_list_property_options 读回。
+ * - 三个写工具统一带 `dry_run`（预演不落库）与 `idempotency_key`（防重）。
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
-import { enc, outputSpec, runRequest, type ToolDeps } from './shared.ts';
+import {
+  DRY_RUN_PARAM,
+  enc,
+  IDEMPOTENCY_KEY_PARAM,
+  outputSpec,
+  runRequest,
+  type ToolDeps,
+} from './shared.ts';
 
 /** 构建属性组工具。 */
 export function buildPropertyTools(deps: ToolDeps) {
@@ -132,6 +140,8 @@ export function buildPropertyTools(deps: ToolDeps) {
           description:
             'select/multi_select only: option vocabulary to create inline, [{name, color?}], max 100 items.',
         },
+        dry_run: DRY_RUN_PARAM,
+        idempotency_key: IDEMPOTENCY_KEY_PARAM,
       },
       output: outputSpec(),
       async execute(args, exec) {
@@ -146,7 +156,11 @@ export function buildPropertyTools(deps: ToolDeps) {
           exec,
           'POST',
           `/v2/spaces/${enc(args.space_id)}/properties`,
-          { body },
+          {
+            body,
+            query: { dry_run: args.dry_run },
+            idempotencyKey: args.idempotency_key,
+          },
         );
       },
     }),
@@ -167,6 +181,8 @@ export function buildPropertyTools(deps: ToolDeps) {
           required: true,
           description: 'New display name.',
         },
+        dry_run: DRY_RUN_PARAM,
+        idempotency_key: IDEMPOTENCY_KEY_PARAM,
       },
       output: outputSpec(),
       async execute(args, exec) {
@@ -175,7 +191,11 @@ export function buildPropertyTools(deps: ToolDeps) {
           exec,
           'PATCH',
           `/v2/spaces/${enc(args.space_id)}/properties/${enc(args.key)}`,
-          { body: { name: args.name } },
+          {
+            body: { name: args.name },
+            query: { dry_run: args.dry_run },
+            idempotencyKey: args.idempotency_key,
+          },
         );
       },
     }),
@@ -190,10 +210,8 @@ export function buildPropertyTools(deps: ToolDeps) {
           required: true,
           description: 'Property key (from anytype_list_properties).',
         },
-        dry_run: {
-          type: 'boolean',
-          description: 'true = validate without deleting.',
-        },
+        dry_run: DRY_RUN_PARAM,
+        idempotency_key: IDEMPOTENCY_KEY_PARAM,
       },
       output: outputSpec(),
       async execute(args, exec) {
@@ -202,7 +220,10 @@ export function buildPropertyTools(deps: ToolDeps) {
           exec,
           'DELETE',
           `/v2/spaces/${enc(args.space_id)}/properties/${enc(args.key)}`,
-          { query: { dry_run: args.dry_run } },
+          {
+            query: { dry_run: args.dry_run },
+            idempotencyKey: args.idempotency_key,
+          },
         );
       },
     }),

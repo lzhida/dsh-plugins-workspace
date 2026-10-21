@@ -3,11 +3,19 @@
  *
  * 集合（collection）是有序对象列表；创建后条目的增删走
  * `anytype_update_object` 的 `add_items` / `remove_items` op。
+ * 创建工具带 `dry_run`（预演不落库）与 `idempotency_key`（防重）。
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
-import { enc, outputSpec, runRequest, type ToolDeps } from './shared.ts';
+import {
+  DRY_RUN_PARAM,
+  enc,
+  IDEMPOTENCY_KEY_PARAM,
+  outputSpec,
+  runRequest,
+  type ToolDeps,
+} from './shared.ts';
 
 /** 构建集合组工具。 */
 export function buildCollectionTools(deps: ToolDeps) {
@@ -15,7 +23,7 @@ export function buildCollectionTools(deps: ToolDeps) {
     defineTool({
       name: 'anytype_create_collection',
       description:
-        'Create a collection (ordered object list) in a space, optionally seeding it with member object ids. Add/remove members later via anytype_update_object with add_items/remove_items ops.',
+        'Create a collection (ordered object list) in a space, optionally seeding it with member object ids. Add/remove members later via anytype_update_object with add_items/remove_items ops. Pass dry_run=true to validate without creating, and idempotency_key to make a retry of the same request safe.',
       parameters: {
         space_id: {
           type: 'string',
@@ -32,6 +40,8 @@ export function buildCollectionTools(deps: ToolDeps) {
           items: { type: 'string' },
           description: 'Initial member object ids (max 1000).',
         },
+        dry_run: DRY_RUN_PARAM,
+        idempotency_key: IDEMPOTENCY_KEY_PARAM,
       },
       output: outputSpec(),
       async execute(args, exec) {
@@ -42,7 +52,11 @@ export function buildCollectionTools(deps: ToolDeps) {
           exec,
           'POST',
           `/v2/spaces/${enc(args.space_id)}/collections`,
-          { body },
+          {
+            body,
+            query: { dry_run: args.dry_run },
+            idempotencyKey: args.idempotency_key,
+          },
         );
       },
     }),

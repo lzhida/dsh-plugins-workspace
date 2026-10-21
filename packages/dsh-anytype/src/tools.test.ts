@@ -168,6 +168,152 @@ describe('dsh-anytype tools', () => {
     });
   });
 
+  it('写工具的 dry_run 走 query 透传（预演不落库）', async () => {
+    const { deps, calls } = makeDeps();
+    // create_object：预演 query
+    await run(deps, calls, 'anytype_create_object', {
+      space_id: 's1',
+      type: 'task',
+      dry_run: true,
+    });
+    expect(calls.at(-1)?.url).toBe(
+      'http://127.0.0.1:31009/v2/spaces/s1/objects?dry_run=true',
+    );
+
+    // update_object：预演 query
+    await run(deps, calls, 'anytype_update_object', {
+      space_id: 's1',
+      object_id: 'o1',
+      ops: [{ op: 'set_properties', set: { due: 'x' } }],
+      dry_run: true,
+    });
+    expect(calls.at(-1)?.url).toBe(
+      'http://127.0.0.1:31009/v2/spaces/s1/objects/o1?dry_run=true',
+    );
+
+    // create_space：预演 query
+    await run(deps, calls, 'anytype_create_space', {
+      name: 'S',
+      dry_run: true,
+    });
+    expect(calls.at(-1)?.url).toBe(
+      'http://127.0.0.1:31009/v2/spaces?dry_run=true',
+    );
+
+    // create_type：预演与既有 create_missing_options 共存
+    await run(deps, calls, 'anytype_create_type', {
+      space_id: 's1',
+      name: 'T',
+      create_missing_options: true,
+      dry_run: true,
+    });
+    expect(calls.at(-1)?.url).toBe(
+      'http://127.0.0.1:31009/v2/spaces/s1/types?create_missing_options=true&dry_run=true',
+    );
+
+    // create_collection / create_property：预演 query
+    await run(deps, calls, 'anytype_create_collection', {
+      space_id: 's1',
+      name: 'C',
+      dry_run: true,
+    });
+    expect(calls.at(-1)?.url).toBe(
+      'http://127.0.0.1:31009/v2/spaces/s1/collections?dry_run=true',
+    );
+    await run(deps, calls, 'anytype_create_property', {
+      space_id: 's1',
+      name: 'P',
+      format: 'text',
+      dry_run: true,
+    });
+    expect(calls.at(-1)?.url).toBe(
+      'http://127.0.0.1:31009/v2/spaces/s1/properties?dry_run=true',
+    );
+  });
+
+  it('写工具的 idempotency_key 注入 Idempotency-Key 头（防重）', async () => {
+    const { deps, calls } = makeDeps();
+    const writes: Array<[string, Record<string, unknown>]> = [
+      ['anytype_create_object', { space_id: 's1', type: 'task' }],
+      ['anytype_update_object', { space_id: 's1', object_id: 'o1', ops: [] }],
+      ['anytype_delete_object', { space_id: 's1', object_id: 'o1' }],
+      ['anytype_create_space', { name: 'S' }],
+      ['anytype_update_space', { space_id: 's1', name: 'S2' }],
+      ['anytype_create_type', { space_id: 's1', name: 'T' }],
+      ['anytype_update_type', { space_id: 's1', type: 'task', name: 'T2' }],
+      ['anytype_delete_type', { space_id: 's1', type: 'task' }],
+      ['anytype_create_collection', { space_id: 's1', name: 'C' }],
+      [
+        'anytype_create_property',
+        { space_id: 's1', name: 'P', format: 'text' },
+      ],
+      ['anytype_update_property', { space_id: 's1', key: 'p', name: 'P2' }],
+      ['anytype_delete_property', { space_id: 's1', key: 'p' }],
+    ];
+    for (const [name, args] of writes) {
+      await run(deps, calls, name, { ...args, idempotency_key: 'idem-1' });
+      const headers = calls.at(-1)?.init.headers as Record<string, string>;
+      expect(headers['Idempotency-Key']).toBe('idem-1');
+    }
+  });
+
+  it('不传 idempotency_key 时写工具不发 Idempotency-Key 头', async () => {
+    const { deps, calls } = makeDeps();
+    await run(deps, calls, 'anytype_create_object', {
+      space_id: 's1',
+      type: 'task',
+    });
+    const headers = calls.at(-1)?.init.headers as Record<string, string>;
+    expect(headers['Idempotency-Key']).toBeUndefined();
+  });
+
+  it('写工具描述声明 dry_run 预演语义与 idempotency_key 防重语义（提示词契约）', () => {
+    const { deps } = makeDeps();
+    const desc = (name: string): string => {
+      const tool = flatTools(deps).find((t) => t.name === name);
+      if (!tool) throw new Error(`tool not registered: ${name}`);
+      return tool.description ?? '';
+    };
+    const paramDesc = (name: string, param: string): string => {
+      const tool = flatTools(deps).find((t) => t.name === name);
+      if (!tool) throw new Error(`tool not registered: ${name}`);
+      // defineTool 把 parameters 编译成 JSON Schema（properties 子树）
+      const schema = tool.parameters as unknown as {
+        properties?: Record<string, { description?: string }>;
+      };
+      const spec = schema.properties?.[param];
+      if (!spec) throw new Error(`param not declared: ${name}.${param}`);
+      return spec.description ?? '';
+    };
+
+    // dry_run 预演语义：校验但不提交 + 200 vs 201
+    expect(paramDesc('anytype_create_object', 'dry_run')).toMatch(
+      /NOT committed/,
+    );
+    expect(paramDesc('anytype_create_object', 'dry_run')).toMatch(
+      /200 where a real create returns 201/,
+    );
+    // idempotency_key 防重语义：同 key 同 body 重放、换 body 409
+    expect(paramDesc('anytype_create_object', 'idempotency_key')).toMatch(
+      /replays the stored response/,
+    );
+    expect(paramDesc('anytype_create_object', 'idempotency_key')).toMatch(
+      /409 idempotency_conflict/,
+    );
+    expect(paramDesc('anytype_create_object', 'idempotency_key')).toMatch(
+      /reuse it verbatim when retrying/,
+    );
+    // 写工具描述里点名两个参数
+    expect(desc('anytype_create_object')).toMatch(/dry_run=true/);
+    expect(desc('anytype_create_object')).toMatch(/idempotency_key/);
+    expect(desc('anytype_update_object')).toMatch(/dry_run=true/);
+    expect(desc('anytype_create_space')).toMatch(/dry_run=true/);
+    expect(desc('anytype_create_space')).toMatch(/idempotency_key/);
+    expect(desc('anytype_create_collection')).toMatch(/idempotency_key/);
+    expect(desc('anytype_create_type')).toMatch(/dry_run=true/);
+    expect(desc('anytype_delete_type')).toMatch(/dry_run=true/);
+  });
+
   it('anytype_update_object：ops 信封 + expected_etag 映射 If-Match', async () => {
     const { deps, calls } = makeDeps();
     await run(deps, calls, 'anytype_update_object', {
@@ -363,6 +509,33 @@ describe('dsh-anytype tools', () => {
     });
     expect(calls.at(-1)?.url).toBe(
       'http://127.0.0.1:31009/v2/spaces/s1/widgets?limit=3',
+    );
+  });
+
+  it('anytype_request：dry_run 与 idempotency_key 透传（逃生舱写路径）', async () => {
+    const { deps, calls } = makeDeps();
+    await run(deps, calls, 'anytype_request', {
+      method: 'POST',
+      path: '/v2/spaces/s1/widgets',
+      body: { name: 'W' },
+      dry_run: true,
+      idempotency_key: 'idem-escape',
+    });
+    expect(calls.at(-1)?.url).toBe(
+      'http://127.0.0.1:31009/v2/spaces/s1/widgets?dry_run=true',
+    );
+    const headers = calls.at(-1)?.init.headers as Record<string, string>;
+    expect(headers['Idempotency-Key']).toBe('idem-escape');
+  });
+
+  it('anytype_request：不传 dry_run 时 query 保持原样（不多加键）', async () => {
+    const { deps, calls } = makeDeps();
+    await run(deps, calls, 'anytype_request', {
+      method: 'GET',
+      path: '/v2/spaces/s1/widgets',
+    });
+    expect(calls.at(-1)?.url).toBe(
+      'http://127.0.0.1:31009/v2/spaces/s1/widgets',
     );
   });
 

@@ -18,7 +18,13 @@
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
 import type { JsonValue, QueryValue } from '../client.ts';
-import { outputSpec, runRequest, type ToolDeps } from './shared.ts';
+import {
+  DRY_RUN_PARAM,
+  IDEMPOTENCY_KEY_PARAM,
+  outputSpec,
+  runRequest,
+  type ToolDeps,
+} from './shared.ts';
 
 /**
  * 校验逃生舱路径白名单；不通过时抛可操作错误。
@@ -57,7 +63,7 @@ export function buildGenericTools(deps: ToolDeps) {
     defineTool({
       name: 'anytype_request',
       description:
-        'Generic Anytype v2 API passthrough for endpoints without a dedicated tool: chats & messages, file upload/download, widgets, queries, object discussion, validate, etc. Only /v2/ paths are allowed; /v2/auth/* is blocked. method+path are required; pass query as an object and body as a JSON value (schema from anytype_get_schema). Known limits: POST /v2/files only works in its JSON url form (multipart/form-data bodies cannot be sent); GET /v2/files/{id}/content returns binary data decoded as corrupted text; /messages/stream is SSE and hangs until the request times out.',
+        'Generic Anytype v2 API passthrough for endpoints without a dedicated tool: chats & messages, file upload/download, widgets, queries, object discussion, validate, etc. Only /v2/ paths are allowed; /v2/auth/* is blocked. method+path are required; pass query as an object and body as a JSON value (schema from anytype_get_schema). Known limits: POST /v2/files only works in its JSON url form (multipart/form-data bodies cannot be sent); GET /v2/files/{id}/content returns binary data decoded as corrupted text; /messages/stream is SSE and hangs until the request times out. Write calls may add ?dry_run=true to the query to preview without committing, and idempotency_key to make a retry safe.',
       parameters: {
         method: {
           type: 'string',
@@ -76,6 +82,10 @@ export function buildGenericTools(deps: ToolDeps) {
           additionalProperties: true,
           description: 'Optional query parameters as an object.',
         },
+        dry_run: {
+          ...DRY_RUN_PARAM,
+          description: `${DRY_RUN_PARAM.description} Only for endpoints that accept it (resource mutations); read endpoints and POST /v2/validate ignore or refuse it.`,
+        },
         body: {
           type: 'json',
           description:
@@ -86,14 +96,20 @@ export function buildGenericTools(deps: ToolDeps) {
           description:
             'ETag from a previous read; sent as If-Match. Not for chats: chat/message concurrency uses order-id/last_state_id, not ETags.',
         },
+        idempotency_key: IDEMPOTENCY_KEY_PARAM,
       },
       output: outputSpec(),
       async execute(args, exec) {
         assertAllowedPath(args.path);
+        const query = normalizeQuery(args.query);
         return runRequest(deps, exec, args.method, args.path, {
-          query: normalizeQuery(args.query),
+          query:
+            query === undefined && args.dry_run === undefined
+              ? undefined
+              : { ...query, dry_run: args.dry_run },
           body: args.body,
           expectedEtag: args.expected_etag,
+          idempotencyKey: args.idempotency_key,
         });
       },
     }),
