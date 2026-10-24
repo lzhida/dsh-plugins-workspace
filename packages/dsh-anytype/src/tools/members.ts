@@ -7,7 +7,12 @@
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
-import { enc, outputSpec, runRequest, type ToolDeps } from './shared.ts';
+import {
+  enc,
+  outputSpec,
+  runRequest,
+  type ToolDeps,
+} from '@lzhida/dsh-anytype-core';
 
 /** 构建成员组工具。 */
 export function buildMemberTools(deps: ToolDeps) {

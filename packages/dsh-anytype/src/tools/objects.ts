@@ -20,7 +20,7 @@ import {
   outputSpec,
   runRequest,
   type ToolDeps,
-} from './shared.ts';
+} from '@lzhida/dsh-anytype-core';
 
 /** 构建对象组工具。 */
 export function buildObjectTools(deps: ToolDeps) {

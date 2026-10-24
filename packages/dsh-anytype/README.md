@@ -35,7 +35,7 @@ pnpm dsh plugin --profile <profile> add link:<仓库绝对路径>/packages/dsh-a
 | 组         | 工具                                                                                                                                                         |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | connection | `anytype_whoami`、`anytype_status`（桌面端可达性/鉴权探测——连接问题诊断第一站）                                                                              |
-| search     | `anytype_search`（全局/空间二合一）、`anytype_list_objects`                                                                                                  |
+| search     | `anytype_search`（全局/空间二合一，支持 `fields` 属性投影与 `filter` 过滤语法）、`anytype_list_objects`                                                      |
 | space      | `anytype_list_spaces` / `anytype_get_space` / `anytype_create_space`✎ / `anytype_update_space`✎                                                              |
 | object     | `anytype_get_object` / `anytype_create_object`（shortcut body）✎ / `anytype_update_object`（ops）✎ / `anytype_delete_object`✎                                |
 | collection | `anytype_create_collection`✎ / `anytype_list_collection_objects`                                                                                             |
@@ -55,6 +55,26 @@ pnpm dsh plugin --profile <profile> add link:<仓库绝对路径>/packages/dsh-a
 - **属性写边界（v2）**：`anytype_create_property` 建属性（name+format 必填，format 枚举 text|number|select|multi_select|date|files|checkbox|url|email|phone|objects，key 缺省从 name 派生，select/multi_select 可内联 options[]）；`anytype_update_property` 仅改名——PATCH 只收 name，key 是属性身份不变、format 创建后不可变；`anytype_delete_property` 归档进 Bin 可恢复（`dry_run=true` 预检）。选项词汇创建后只读：v2 没有 v1 tags 的选项改名/删色端点，也无独立 options CRUD——新选项靠 create_type/create_object 内联属性名 + `create_missing_options=true` 铸造，经 `anytype_list_property_options` 读回；
 - **只读并行**：读类工具声明 `isConcurrencySafe`，可与同批读调用并行调度；
 - **错误可操作**：连接失败提示「Anytype 应用未运行？」；API 错误透传 `status + code + issues + hints`——实测模型能凭错误 hint 自行纠错重试。
+
+### 搜索收窄（fields 属性投影 + filter 过滤语法）
+
+`anytype_search` 透传 SearchRequest 的两个新通道，让 agent 能用**一次窄查询**替代「全量拉取→截断→重查」循环：
+
+| 参数      | 映射             | 语义                                                                                                                                                                                                           |
+| --------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fields`  | body `fields[]`  | **属性投影**：点名要回哪些属性（如 `["name","due_date"]`）。**不加** `fields` 时响应行只有 `id`/`name`/`type` 骨架（全局搜索另加 `space_id`），**不带任何属性**；加了才把列出的属性投影进 `row.properties`     |
+| `filter`  | body `filter`    | **紧凑过滤语法**字符串，**上限 4096 字节**（服务端按 UTF-8 字节计）。语法 EBNF 见 `anytype_get_schema(kind='filters')`——如 `done = false AND due_date < currentWeek()`、`status IN ("In progress", "Blocked")` |
+| `filters` | body `filters[]` | 结构化过滤数组（既有参数）——**与 `filter` 互斥，二选一**（服务端同传返 400 `ambiguous_input`，插件工具层提前拦下并给出可操作错误）                                                                             |
+
+**关键语义澄清（2026-10-21 活体实测，纠正「fields = 响应裁剪」的直觉）**：`fields` 是**「投影哪些属性回来」**（加内容），**不是**「裁掉多余属性」（减内容）——与 `anytype_list_objects` 的 `fields`（GET query，逗号分隔字符串）语义一致：显式点名要哪些属性。因此传 `fields` 反而让响应**变大**（20 行空间搜索实测：无 `fields` 2298 字节 → `fields=["name"]` 3156 字节）。真正压体积靠 `filter`（收窄结果集）+ `limit`（分页）；`fields` 的价值是**省掉「搜到 id 再逐个 get_object」的往返**。
+
+其他活体实测结论：
+
+- `fields` 的键必须在**该 type 的已知属性集**内——传了 `type` 时按该 type 的键集校验（`type=task` 时 `description` 不合法），不传 `type` 时按空间全集校验（活体 140 个键）。未知键服务端返 400 `unknown property keys` 并附「did you mean」提示；键名可用 `anytype_list_properties` 查；
+- `filter` 超 4096 字节返 400 `validation_failed`，提示「split the query」；语法错误返 400 并指回 `GET /v2/schemas/filters`；
+- `filter` 与 `filters` 互斥由**服务端**强制（400 `ambiguous_input`，issues 同时指向 `/filter` 与 `/filters`），插件工具层复刻该校验以省一次往返；
+- 空值处理：`filter:""` 服务端按「未提供」忽略；`filters:[]`/`filters:null` 服务端会 400——插件把空过滤值一律视作「未提供」，不发无效负载；
+- 紧凑语法与结构化数组**过滤能力不等价**：紧凑语法用 `preset`（`currentWeek()` / `daysAgo(7)`）与集合字面量（`IN (...)` / `HAS ALL (...)`），结构化数组用 `date_preset` 枚举 + `condition` 字段——见 `anytype_get_schema(kind='filters')` 的对照。
 
 ### 写路径安全（dry_run 预演 + Idempotency-Key 防重）
 

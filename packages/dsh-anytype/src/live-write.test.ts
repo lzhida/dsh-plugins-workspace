@@ -15,10 +15,10 @@
  *    响应，同 key 换 body 返 409 `idempotency_conflict`。
  */
 
+import { AnytypeClient } from '@lzhida/dsh-anytype-core';
 import type { ToolRunContext } from '@deepseek-ai/dsh-tools';
 import { describe, expect, it } from 'vitest';
 
-import { AnytypeClient } from './client.ts';
 import { resolveConfig } from './config.ts';
 import { buildGroupedTools } from './tools/index.ts';
 

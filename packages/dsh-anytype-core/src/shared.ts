@@ -12,15 +12,50 @@
  *   语义见 `DRY_RUN_PARAM` / `IDEMPOTENCY_KEY_PARAM` 与 README「写路径安全」段。
  */
 
-import type { ToolRunContext } from '@deepseek-ai/dsh-tools';
-
 import type {
   AnytypeClient,
   AnytypeToolValue,
   RequestOptions,
-} from '../client.ts';
-import { renderValue, toToolValue } from '../client.ts';
-import type { ResolvedConfig, ToolGroup } from '../config.ts';
+} from './client.ts';
+import { renderValue, toToolValue } from './client.ts';
+
+/**
+ * 工具执行上下文的**最小结构视图**。
+ *
+ * 宿主 `@deepseek-ai/dsh-tools` 的 `ToolRunContext` 内含品牌类型
+ * （branded `MessageId` 等）。若本包直接 `import type` 它，pnpm 下
+ * 「本包一份 dsh-tools + 消费插件另一份 dsh-tools」会得到两个不同的
+ * 类型身份，真实上下文传进来即报不可赋值。
+ *
+ * 工具层实际只用到取消信号，故此处只声明结构化的最小视图——真实
+ * `ToolRunContext` 可直接传入（结构化兼容，绕开品牌类型身份）。
+ */
+export interface ToolRunContextLike {
+  /** 调用方取消信号（透传给 fetch）。 */
+  readonly signal: AbortSignal;
+}
+
+/**
+ * 工具层所需的**最小配置视图**。
+ *
+ * 本包不含任何插件的设置 schema（那属于各插件自身），只约定工具层真正
+ * 读取的字段。各插件把自己的 volatile 配置投影成这个视图即可：
+ * - `dsh-anytype`：`{baseUrl, apiKey, apiVersion, timeoutMs: requestTimeoutMs,
+ *   maxResponseChars}`；
+ * - `dsh-anytype-memory`：同构。
+ */
+export interface ToolConfigView {
+  /** Anytype 本地 API 地址（无尾斜杠）。 */
+  baseUrl: string;
+  /** Bearer 密钥（空串 = 未配置）。 */
+  apiKey: string;
+  /** `Anytype-Version` 请求头取值。 */
+  apiVersion: string;
+  /** 单请求超时（毫秒）——与客户端选项 `timeoutMs` 同义，取插件命名习惯。 */
+  requestTimeoutMs: number;
+  /** 工具结果文本截断上限（字符数）。 */
+  maxResponseChars: number;
+}
 
 /**
  * `dry_run` 参数的共享描述（预演语义）。
@@ -48,17 +83,12 @@ export const IDEMPOTENCY_KEY_PARAM: { type: 'string'; description: string } = {
     'Optional idempotency key (any unique string, e.g. a uuid). The server binds it to the request body: retrying the SAME request with the SAME key replays the stored response instead of creating a duplicate, while reusing a key with a DIFFERENT body returns 409 idempotency_conflict. Generate a fresh key per distinct request and reuse it verbatim when retrying the same one.',
 };
 
-/** 工具构建依赖（由 index.ts 在 apply 闭包里组装）。 */
+/** 工具构建依赖（由各插件的 index.ts 在 apply 闭包里组装）。 */
 export interface ToolDeps {
   /** HTTP 客户端（resolveOptions 每请求现读配置）。 */
   client: AnytypeClient;
-  /** volatile 配置现读入口。 */
-  config: () => ResolvedConfig;
-}
-
-/** 工具归属组（disabledGroups 过滤的粒度）。 */
-export interface GroupedDefinition {
-  group: ToolGroup;
+  /** volatile 配置现读入口（返回最小配置视图）。 */
+  config: () => ToolConfigView;
 }
 
 /**
@@ -67,7 +97,7 @@ export interface GroupedDefinition {
  */
 export async function runRequest(
   deps: ToolDeps,
-  exec: ToolRunContext,
+  exec: ToolRunContextLike,
   method: string,
   path: string,
   opts: RequestOptions = {},

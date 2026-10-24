@@ -15,7 +15,7 @@ import {
   outputSpec,
   runRequest,
   type ToolDeps,
-} from './shared.ts';
+} from '@lzhida/dsh-anytype-core';
 
 /** 构建集合组工具。 */
 export function buildCollectionTools(deps: ToolDeps) {

@@ -21,7 +21,7 @@ import {
   outputSpec,
   runRequest,
   type ToolDeps,
-} from './shared.ts';
+} from '@lzhida/dsh-anytype-core';
 
 /** 构建属性组工具。 */
 export function buildPropertyTools(deps: ToolDeps) {
