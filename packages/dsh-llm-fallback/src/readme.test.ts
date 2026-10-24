@@ -151,6 +151,59 @@ describe('dsh-llm-fallback README', () => {
     expect(readme).toContain('`timeWindowRules`');
   });
 
+  it('配置存储与持久化小节锚定落点(profile 补丁层条目 config / per-profile / 重启保留)', () => {
+    // 配置持久化落点必须写明:宿主 profile 补丁层 cordis.patch.yml 的条目
+    // config,per-profile 隔离 + 重启保留;并写明本插件不引入自有配置文件。
+    expect(readme).toContain('### 配置存储与持久化');
+    expect(readme).toContain('~/.dsh/profiles/<profile>/cordis.patch.yml');
+    expect(readme).toContain('- id: dsh-llm-fallback');
+    expect(readme).toContain('per-profile');
+    expect(readme).toContain('重启保留');
+    expect(readme).toContain('不引入任何自有配置文件或数据目录');
+  });
+
+  it('补丁层双角色与手改适用场景已说明(条目注册 / volatile 持久化 / 官方插件同落此层)', () => {
+    // 用户两问的正面回答:第三方插件配置为何落在"官方插件的配置文件"里
+    // ——同一文件是宿主统一补丁层,官方插件设置同样落此层(以 locale 为例);
+    // 手改 patch 文件的适用场景限定为预置配置。
+    expect(readme).toContain('补丁层的两个角色');
+    expect(readme).toContain('条目注册');
+    expect(readme).toContain('volatile 配置持久化');
+    expect(readme).toContain('@deepseek-ai/dsh-client-locale');
+    expect(readme).toContain('仅限**预置配置**');
+    // 组合树分层顺序(bundle → profile → home → CLI overlay)与"只写 profile 层"
+    expect(readme).toContain('bundle 层 → profile 层 → home 层');
+    expect(readme).toContain('设置面板只写 profile 层');
+  });
+
+  it('手改补丁层的生效方式写明 HMR 与重启之分(不得笼统断言"需重启")', () => {
+    // HMR 开启的 profile 实时监听补丁层文件、改动即时生效;关掉 HMR 的
+    // profile(headless/sdk/acp)才需重启宿主——笼统写"需重启"是错的。
+    expect(readme).toContain('开启 HMR 的 profile');
+    expect(readme).toContain('需重启宿主实例');
+  });
+
+  it('~/.dsh 两类文件区分与状态持久化指向 roadmap 第三档已说明', () => {
+    // 宿主托管配置 vs 插件自有数据(JSON/storage)必须各举一例;
+    // 状态持久化只引用 roadmap 第三档、不复述结论(防文档漂移)。
+    expect(readme).toContain('`~/.dsh` 下的两类文件');
+    expect(readme).toContain('宿主托管配置');
+    expect(readme).toContain('插件自有数据');
+    expect(readme).toContain('dsh-taskboard.json');
+    expect(readme).toContain('storages/');
+    expect(readme).toContain('docs/llm-fallback-roadmap.md');
+    // profile 层(可写落点)与 home 层(机器级只读)的区分
+    expect(readme).toContain('~/.dsh/cordis.patch.yml');
+  });
+
+  it('故障排查含 fallbackWhen 残留字段无害说明(与零成本升级既有段呼应)', () => {
+    // 0.2.x 旧字段 fallbackWhen 在 profile 补丁层残留属预期形态:
+    // 插件不识别、不迁移、不影响行为——与"零成本升级"承诺一致。
+    expect(readme).toContain('残留 `fallbackWhen: afterRetry`');
+    expect(readme).toContain('不会迁移它');
+    expect(readme).toContain('零成本升级');
+  });
+
   it('已按开源 README 结构收敛:不再包含版本历史 / 适配版本内部表', () => {
     expect(readme).not.toContain('## 版本历史');
     expect(readme).not.toContain('## 适配版本');

@@ -104,6 +104,52 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 
 配置卡功能：启用开关；从宿主模型目录（按 provider 分组）勾选回退候选，列表限高滚动并支持按 provider 分组名 / 模型 id / 显示名搜索过滤（大小写不敏感，无命中给空态）；上移 / 下移 / 移除调整回退优先级（顺序即回退顺序，会话指定的模型不在此队列中）；设置每候选重试次数与最大切换候选数；失败候选冷却跳过开关与冷却窗口时长（毫秒）；时间窗开关与规则编辑（provider 匹配 + 时段窗口，非法规则阻止保存，开启时自动填入官方错峰预置）；保存 / 放弃，带 revision 冲突检测。所有改动保存后即时生效，无需重载插件。配色接入 dsh web 主题变量（`--dsw-alias-*`），明暗模式均保持文字可读。
 
+### 配置存储与持久化
+
+配置卡（设置面板）保存的字段**不落在本插件的私有文件里**——宿主把它们写进当前 profile 的补丁层 `~/.dsh/profiles/<profile>/cordis.patch.yml`，形如：
+
+```yaml
+- id: dsh-llm-fallback
+  name: '@zhidal/dsh-llm-fallback'
+  config:
+    enabled: true
+    fallbackChains:
+      - provider: <provider-id>
+        model: <model-id>
+    retriesBeforeSwitch: 0
+    maxRetries: 0
+    cooldownEnabled: true
+    cooldownMs: 300000
+```
+
+- **per-profile 隔离**：补丁层按 profile 分目录存放——`web` / `desktop` / `test` 各存各的，同机多 profile 的回退队列互不影响；
+- **重启保留**：补丁层是宿主托管的配置文件，宿主重启、插件重载后配置仍在（设置面板的「保存」= 落盘 + 热生效两步）；
+- **实测口径**：以上路径与 YAML 结构按 dsh 宿主 **0.2.1-rc.2** 的实际行为核对（其他宿主版本的补丁层实现若有差异，以实测为准）。
+
+#### 补丁层的两个角色
+
+「为什么第三方插件的配置会写在官方插件的配置文件里」——同一个 `cordis.patch.yml` 同时承担两件事：
+
+1. **条目注册**：插件条目必须出现在组合树里，宿主才会加载它。本插件包内自带 bundle 层补丁（`package.json` 的 `dsh.bundle.patch` → 包内 `cordis.patch.yml`，`- insert:` 块），`dsh plugin add` 时由宿主注入，装完即在位；**未自带 bundle 层补丁的第三方插件**（以及需要额外汇总实例的 MCP 客户端等）则必须在本文件用 `- insert:` 块登记条目——注意必须 `insert`、不能平级 `- id:` 覆盖（bundle 层不存在该条目，覆盖会报 entry not found 被丢弃）；
+2. **volatile 配置持久化**：设置面板保存的插件设置一律回写到同一文件同名条目的 `config:` 下（写入的是该插件完整的一份配置——volatile 字段取新值，其余字段按当前值一并固定在该层；本插件的字段全部是 volatile，故 `config:` 就是配置卡的内容）。**官方插件也不例外**——设置 → 通用 → 语言 的偏好落在同文件的 `- id: locale`（`@deepseek-ai/dsh-client-locale`）条目 `config.preference` 下（见[国际化](#国际化i18n)）。
+
+所以这个文件是宿主的**统一用户补丁层**：官方插件与第三方插件共用它，只是条目 id 不同。
+
+组合树按 **bundle 层 → profile 层 → home 层（`~/.dsh/cordis.patch.yml`）→ 命令行 `--patch` overlay** 依次叠加（后者覆盖前者）：bundle 层是插件包自带的补丁（随 `dsh plugin add` 注入），profile 层是本节说的用户补丁层，home 层是机器级、跨 profile 的覆盖层。**设置面板只写 profile 层**——某条目若已被 home 层或命令行 overlay 覆盖，profile 层的写入会被宿主拒绝。
+
+**手改补丁层的适用场景**：仅限**预置配置**——例如为一批新机器预先落一份默认回退队列，或在无 UI 环境下批量部署。日常改配置一律走设置面板（带字段校验、失效候选剔除与 revision 冲突检测）；手改的文件绕过配置卡的合法性校验——写坏的值会在插件装载时被拒绝（保留上一次成功配置），见[行为](#行为)。生效方式随 profile 而异：开启 HMR 的 profile（web / desktop）会实时监听补丁层文件，改动即时重算生效；关掉 HMR 的 profile（headless / sdk / acp）需重启宿主实例。
+
+#### `~/.dsh` 下的两类文件
+
+| 类别         | 例子                                                                                | 谁写、是什么                                                                                |
+| ------------ | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| 宿主托管配置 | `profiles/<profile>/cordis.patch.yml`                                               | 宿主 loader 读写的组合树补丁层：条目注册 + 全部插件的 volatile 配置落点（本插件配置在这里） |
+| 插件自有数据 | `dsh-taskboard.json`（任务看板账本）、`storages/`（`dsh-storage` 模式的 JSON 存储） | 插件自己写自己读的业务数据，宿主不解析、不参与组合                                          |
+
+宿主托管配置里也有两层：**profile 层**（`~/.dsh/profiles/<profile>/cordis.patch.yml`）是设置面板的唯一可写落点，本插件的配置在这里；**home 层**（`~/.dsh/cordis.patch.yml`）是机器级、跨 profile 的覆盖层，设置面板**不写**它。
+
+本插件**不引入任何自有配置文件或数据目录**：配置只走宿主统一层（单一真相源——不存在「配置在 A 处、状态在 B 处」的双写漂移，也不在 `~/.dsh` 下撒插件私有文件），运行状态（失败候选冷却表、每 step 回退状态）只存在于插件进程内存、不落盘。取舍很清楚：**配置**要持久、要跨重启、要按 profile 隔离，交给宿主补丁层最省事；**冷却 / 健康度 / 用量**这类高频变动、随时间增长的运行状态则不适合塞进 YAML 补丁层——其持久化属于改变插件形态的远期动作（见[策略演进路线图](../../docs/llm-fallback-roadmap.md)第三档，仓库内相对链接、npm 上不可点；届时插件随之改名，不再是 fallback 语义）。
+
 ### 国际化（i18n）
 
 设置表单全程跟随 dsh 的语言配置（设置 → 通用 → 语言，偏好持久化在设置命名空间 `locale` 的 `preference` 字段，缺省依次回退浏览器语言、English）：
@@ -260,6 +306,9 @@ allowBuilds:
 
 **add 解析到旧版本**
 registry 元数据分钟级边缘缓存。安装 / 升级 / 回滚都用精确版本号 `@zhidal/dsh-llm-fallback@<version>`。
+
+**补丁层里残留 `fallbackWhen: afterRetry`（0.2.x 旧字段）**
+无害，可以放着不管。该字段是 0.2.x 的两档回退时机开关（`afterRetry` / `immediately`），0.5.0 起已被 `retriesBeforeSwitch` 取代；插件读配置时**不认识这个键、也不会迁移它**——它在 profile 补丁层里与新的 `retriesBeforeSwitch` 并存共存，既不影响行为（不报错、不改变切换时机），也不会被自动清除。这正是 README[特性](#特性)里「零成本升级」承诺的兑现形态：旧字段留着不用管，新字段照常生效。介意补丁层里有多余一行可手工删掉，但删除纯属美观，与正确性无关。
 
 **网关 408 请求超时，官方重试 5/5 耗尽后失败、插件未切换**
 在会话轨迹里找到该失败事件的 `code`（以及有无 `status` 字段），按结果分叉：
