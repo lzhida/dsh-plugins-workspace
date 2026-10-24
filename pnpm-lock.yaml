@@ -59,9 +59,33 @@ importers:
       '@deepseek-ai/schemastery':
         specifier: ^3.18.4
         version: 3.18.4
+      '@lzhida/dsh-anytype-core':
+        specifier: workspace:*
+        version: link:../dsh-anytype-core
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ^4.0.4
+        version: 4.0.4(@deepseek-ai/cordis-plugin-include@1.0.10)(@deepseek-ai/cordis-plugin-loader@1.0.6)
+      '@deepseek-ai/dsh-system-prompt':
+        specifier: 0.2.1-rc.2
+        version: 0.2.1-rc.2(@deepseek-ai/cordis@4.0.4)(@deepseek-ai/dsh-llm@0.2.1-rc.2(@deepseek-ai/cordis@4.0.4))(@deepseek-ai/dsh-scope@0.2.1-rc.2(@deepseek-ai/cordis@4.0.4))
+
+  packages/dsh-anytype-core: {}
+
+  packages/dsh-anytype-memory:
+    dependencies:
+      '@deepseek-ai/dsh-tools':
+        specifier: 0.2.1-rc.2
+        version: 0.2.1-rc.2(0ab00a8eb09daf0ab308290e757fa426)
+      '@deepseek-ai/schemastery':
+        specifier: ^3.18.4
+        version: 3.18.5
+      '@lzhida/dsh-anytype-core':
+        specifier: workspace:*
+        version: link:../dsh-anytype-core
+    devDependencies:
+      '@deepseek-ai/cordis':
+        specifier: 4.0.4
         version: 4.0.4(@deepseek-ai/cordis-plugin-include@1.0.10)(@deepseek-ai/cordis-plugin-loader@1.0.6)
       '@deepseek-ai/dsh-system-prompt':
         specifier: 0.2.1-rc.2
