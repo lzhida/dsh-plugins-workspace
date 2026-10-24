@@ -1,13 +1,17 @@
 ---
-'@lzhida/dsh-anytype-core': minor
-'@lzhida/dsh-anytype-memory': minor
 '@lzhida/dsh-anytype': minor
 ---
 
-新增 `dsh-anytype-memory` 插件（基于 Anytype 的纯本地持久记忆），并抽出共享底座 `dsh-anytype-core`。
+重构为**单包 bundle、多个插件行**的形态：把原先三个包（`dsh-anytype` / `dsh-anytype-core` / `dsh-anytype-memory`）合并为一个 `@lzhida/dsh-anytype`，装一次即激活两个插件行，连接配置只填一次。
 
-**`@lzhida/dsh-anytype-core`（新）**：从 `dsh-anytype` 抽出的共享底座——Anytype v2 本地 API 客户端（HTTP 语义、错误归一、超时/取消、`ETag`/`Idempotency-Key`/`If-Match` 三件安全原语、结果截断）与工具层公共设施（`runRequest`/`outputSpec`/`enc`/参数常量），外加 volatile 配置支持（`volatileField`/`unwrapVolatile`/`desc`）。刻意**不依赖** `@deepseek-ai/dsh-tools`：工具层只用取消信号，用结构化的最小上下文视图绕开品牌类型身份冲突（pnpm 下多副本会直接报类型不可赋值）。
+**bundle 装配**：`package.json` 声明 `dsh.bundle.patch` → 包被 `dsh plugin add` 装成 profile 的 **bundle 层**，其 `cordis.patch.yml` 作为一层自动叠加——**profile 侧不再需要手写 `insert:` 行**（此前 plain dependency 装上后静默不加载、必须手写 insert 的痛点消除）。patch 里的 `name` 用**相对路径**（`./src/entries/anytype.ts` / `./src/entries/memory.ts`），loader 会转成 file URL，故一个包内可放多个插件入口，各自导出 `name`/`apply`/`Config`，且与包被装到哪儿无关。
 
-**`@lzhida/dsh-anytype-memory`（新）**：把指定的 Anytype space 当作 agent 的持久记忆工作环境。**零本地状态**——记忆正文、属性、关系与向量全部落为 Anytype 对象，检索全部走 Anytype 自身的 `search`+`filter`+`sorts`+`fields`（含原生 `links`/`backlinks` 双向关系），不写任何本地文件、不建本地索引、不跑模型、不出网。16 个工具分 5 组：`memory_setup`（幂等建空间/类型/属性，并把属性挂进类型字段表——否则按类型过滤会拒绝该键）、write 组 6 个（`memory_write`/`update`/`link`/`supersede`/`archive`/`review`）、read 组 5 个（`memory_recall`/`get`/`list`/`search`/`stats`）、agent 组 3 个（`memory_candidates`/`set_embedding`/`suggest_links`）、diag 组 1 个（`memory_doctor`，含中文召回自检：写一次性中文探针 → 全文搜索验证 → 归档探针）。记忆模型：单类型 `memory` + `kind` 属性（fact/decision/preference/lesson/procedure/episode/summary/entity）、`status` 审核态（AI 写入默认 draft）、5 条受控边 relation、双时序 `valid_from`/`valid_to`、provenance 五件套、`content_hash` 原生幂等（`filter` 等值查）、`confidence`/`importance`/`salience`/`proof_count`/`access_count`。召回三臂（Anytype 全文 / agent 提供向量的本地余弦 / 受控边反查）→ RRF(k=60) → 乘性旁证权重（recency^0.2 × confidence^0.2 × proof^0.1）→ token 预算截断。写入纪律：写前必读、`conflicts[]` 交 agent 裁决、永不覆盖已存正文与下调置信、失效不删（`origin=user` 的人类记忆拒绝被机器自动作废）。向量由外部 agent 计算、以 `embedding` 属性（base64 Float32）承载，不同模型的向量禁止混算，返回体不含向量原文。
+**插件行与组合**：
 
-**`@lzhida/dsh-anytype`（行为不变）**：改为依赖 `@lzhida/dsh-anytype-core`，`client.ts` 与 `tools/shared.ts` 迁入 core 并保持导出面不变，30 个工具行为零回归（lint/typecheck/test 全绿）。
+- 插件行① `dsh-anytype`（30 个 `anytype_*` 工具）注册具名服务 `anytype`（`ctx.provide`），持**配置现读**的 Anytype 客户端；
+- 插件行② `dsh-anytype-memory`（16 个 `memory_*` 工具）以 `inject: ['tools','systemPrompt','anytype']` 复用同一个客户端——**apiKey/baseUrl 等连接类配置只在插件行①出现一次**，记忆行只剩语义类配置（空间/预算/默认审核态/工具组开关）；
+- 插件行③ `dsh-anytype-wiki` **留位**（LLM Wiki 知识编译管道，本次不注册）。
+
+**包内结构**：`src/core/`（共享底座：客户端 + 工具公共设施 + volatile 支持）、`src/services/anytype.ts`（具名服务）、`src/entries/{anytype,memory,wiki}.ts`（插件行）、`src/anytype/`（通用工具实现）、`src/memory/`（记忆域实现）、`src/cordis.d.ts`（`Context.anytype` 类型增强）、`src/index.ts`（包根 barrel）、`docs/bundle-architecture.md` + `docs/memory/`（11 篇）。
+
+**行为变化**：记忆插件不再持有连接配置（改为复用服务）；`memory_doctor` 报告的 `base_url` 改从共享客户端读取。`@lzhida/dsh-anytype-core` 与 `@lzhida/dsh-anytype-memory` 两个包取消（均为未发布的 private 包；原 `core` 内容内联为 `src/core/`，并经 `exports["./core"]` 对外暴露）。
