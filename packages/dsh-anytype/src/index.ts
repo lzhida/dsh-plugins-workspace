@@ -51,7 +51,7 @@ export function anytypeGuidanceSection(enabled: boolean): PromptSection {
 - **Edits are ops**: anytype_update_object applies an ordered ops array atomically. ALWAYS fetch the op's member schema with anytype_get_op_schema(op) first (set_properties, insert_blocks, add_items, replace_text, ...) — do not guess op fields.
 - **Write calls are safe to retry**: pass idempotency_key on any write when a retry is plausible — the server binds the key to the request body, so the same key with the same body replays the stored response instead of creating a duplicate, while the same key with a different body is a 409 conflict. Generate a fresh key per distinct request and reuse it verbatim when retrying that same request. Pass dry_run=true to validate a write without committing it (a previewed create returns 200 where a real create returns 201).
 - **Schemas are runtime truth**: for full AnyBlock documents, template/type documents, or exotic request bodies, fetch anytype_get_schema(kind) first; anytype_request is the generic passthrough for endpoints without a dedicated tool (chats, files, widgets, queries — /v2/ only, /v2/auth/* blocked).
-- **Large responses truncate**: results beyond the configured character budget come back as a data_preview — narrow with limit/offset/fields and page instead of retrying blindly.
+- **Large responses truncate**: results beyond the configured character budget come back as a data_preview — narrow with limit/offset and page instead of retrying blindly. anytype_search rows are minimal by default (id/name/type only); pass fields to project specific properties back (e.g. ["name","due_date"]) and filter for a compact filter string (max 4096 bytes, grammar via anytype_get_schema kind=filters) to cut the result set. filter and filters are mutually exclusive — send one.
 - **Errors are actionable**: AnytypeError messages carry status + code + hints; connection-refused usually means the Anytype desktop app is not running.`
     : `The dsh-anytype plugin is installed but tool registration is disabled (enabled=false in its settings) or all groups are excluded. No anytype_* tools exist in this session. The user can enable them in Settings → Plugins → dsh-anytype (plugin reload required).`;
   return {
@@ -129,10 +129,10 @@ export {
   DEFAULT_REQUEST_TIMEOUT_MS,
   TOOL_GROUPS,
 } from './config.ts';
-export { AnytypeClient, AnytypeError } from './client.ts';
+export { AnytypeClient, AnytypeError } from '@lzhida/dsh-anytype-core';
 export type {
   AnytypeClientOptions,
   AnytypeResult,
   AnytypeToolValue,
-} from './client.ts';
+} from '@lzhida/dsh-anytype-core';
 export { buildTools, buildGroupedTools } from './tools/index.ts';

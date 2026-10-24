@@ -15,16 +15,16 @@
  *   Anytype 应用内的人事操作，不属于 agent 职责；whoami 已有专门工具）。
  */
 
-import { defineTool } from '@deepseek-ai/dsh-tools';
-
-import type { JsonValue, QueryValue } from '../client.ts';
 import {
   DRY_RUN_PARAM,
   IDEMPOTENCY_KEY_PARAM,
   outputSpec,
   runRequest,
+  type JsonValue,
+  type QueryValue,
   type ToolDeps,
-} from './shared.ts';
+} from '@lzhida/dsh-anytype-core';
+import { defineTool } from '@deepseek-ai/dsh-tools';
 
 /**
  * 校验逃生舱路径白名单；不通过时抛可操作错误。

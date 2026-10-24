@@ -9,7 +9,12 @@
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
-import { enc, outputSpec, runRequest, type ToolDeps } from './shared.ts';
+import {
+  enc,
+  outputSpec,
+  runRequest,
+  type ToolDeps,
+} from '@lzhida/dsh-anytype-core';
 
 /** patch_object 支持的全部编辑 op（来自 OpenAPI op enum）。 */
 const EDIT_OPS = [
@@ -36,13 +41,13 @@ export function buildSchemaTools(deps: ToolDeps) {
     defineTool({
       name: 'anytype_get_schema',
       description:
-        'Fetch the JSON schema of an Anytype v2 resource kind — use it to build a full document (kind document/object), an object_type document, a template, or to learn request shapes (e.g. search_request). Read this BEFORE hand-crafting AnyBlock documents or exotic request bodies.',
+        'Fetch the JSON schema of an Anytype v2 resource kind — use it to build a full document (kind document/object), an object_type document, a template, or to learn request shapes (e.g. search for the search request body, filters for the filter grammar). Read this BEFORE hand-crafting AnyBlock documents or exotic request bodies.',
       parameters: {
         kind: {
           type: 'string',
           required: true,
           description:
-            'Schema kind, e.g. object, type_document, template, document, search_request (API lists valid kinds in its error output).',
+            'Schema kind, e.g. object, type_document, template, document, search, filters (API lists valid kinds in its error output).',
         },
       },
       output: outputSpec(),

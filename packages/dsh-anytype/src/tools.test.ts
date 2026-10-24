@@ -3,14 +3,13 @@
  * 用捕获式 fetch 假体断言「参数 → HTTP 请求」的映射与安全策略。
  */
 
+import { AnytypeClient, type ToolDeps } from '@lzhida/dsh-anytype-core';
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools';
 import { describe, expect, it } from 'vitest';
 
-import { AnytypeClient } from './client.ts';
 import { resolveConfig } from './config.ts';
 import { assertAllowedPath } from './tools/generic.ts';
 import { buildGroupedTools } from './tools/index.ts';
-import type { ToolDeps } from './tools/shared.ts';
 
 interface CapturedCall {
   url: string;
@@ -133,6 +132,141 @@ describe('dsh-anytype tools', () => {
       query: 'llm',
       type: 'task',
     });
+  });
+
+  it('anytype_search：fields 进 POST body（属性投影）', async () => {
+    const { deps, calls } = makeDeps();
+    await run(deps, calls, 'anytype_search', {
+      query: 'llm',
+      fields: ['name', 'due_date'],
+    });
+    expect(calls.at(-1)?.init.method).toBe('POST');
+    // fields 属于请求体（不是 query）——服务端据此把列出的属性投影回每行
+    expect(JSON.parse(calls.at(-1)?.init.body as string)).toEqual({
+      query: 'llm',
+      fields: ['name', 'due_date'],
+    });
+    // 不传 fields 时不发送该键（活体语义：此时行只有 id/name/type 骨架）
+    await run(deps, calls, 'anytype_search', { query: 'llm' });
+    expect(JSON.parse(calls.at(-1)?.init.body as string)).toEqual({
+      query: 'llm',
+    });
+  });
+
+  it('anytype_search：filter 进 POST body（紧凑过滤语法）', async () => {
+    const { deps, calls } = makeDeps();
+    await run(deps, calls, 'anytype_search', {
+      query: 'llm',
+      filter: 'done = false AND due_date < currentWeek()',
+    });
+    expect(JSON.parse(calls.at(-1)?.init.body as string)).toEqual({
+      query: 'llm',
+      filter: 'done = false AND due_date < currentWeek()',
+    });
+  });
+
+  it('anytype_search：filter 与 filters 互斥——同传报错且不发请求', async () => {
+    const { deps, calls } = makeDeps();
+    const before = calls.length;
+    await expect(
+      toolByName(deps, 'anytype_search').execute(
+        {
+          query: 'llm',
+          filter: 'done = false',
+          filters: [{ property: 'done', condition: 'equal', value: false }],
+        },
+        stubExec(),
+      ),
+    ).rejects.toThrow(/mutually exclusive/);
+    // 工具层提前拦截，不浪费一次往返
+    expect(calls.length).toBe(before);
+
+    // 单独给 filters 仍走结构化通道
+    await run(deps, calls, 'anytype_search', {
+      query: 'llm',
+      filters: [{ property: 'done', condition: 'equal', value: false }],
+    });
+    expect(JSON.parse(calls.at(-1)?.init.body as string)).toEqual({
+      query: 'llm',
+      filters: [{ property: 'done', condition: 'equal', value: false }],
+    });
+  });
+
+  it('anytype_search：空过滤值视作未提供（不发无效负载）', async () => {
+    const { deps, calls } = makeDeps();
+    // 服务端对 filter:"" 忽略，但对 filters:null / filters:[] 会 400
+    await run(deps, calls, 'anytype_search', {
+      query: 'llm',
+      filter: '',
+      filters: [],
+    });
+    expect(JSON.parse(calls.at(-1)?.init.body as string)).toEqual({
+      query: 'llm',
+    });
+  });
+
+  it('anytype_search：fields + filter 与 limit/offset 各归其位', async () => {
+    const { deps, calls } = makeDeps();
+    await run(deps, calls, 'anytype_search', {
+      query: 'llm',
+      space_id: 's1',
+      fields: ['name', 'due_date'],
+      filter: 'done = false',
+      limit: 5,
+      offset: 10,
+    });
+    // 分页仍走 query
+    expect(calls.at(-1)?.url).toBe(
+      'http://127.0.0.1:31009/v2/spaces/s1/search?limit=5&offset=10',
+    );
+    // 裁剪与过滤走 body
+    expect(JSON.parse(calls.at(-1)?.init.body as string)).toEqual({
+      query: 'llm',
+      fields: ['name', 'due_date'],
+      filter: 'done = false',
+    });
+  });
+
+  it('anytype_search：参数描述声明裁剪能力与 filter 语法来源（提示词契约）', () => {
+    const { deps } = makeDeps();
+    const paramDesc = (name: string, param: string): string => {
+      const tool = flatTools(deps).find((t) => t.name === name);
+      if (!tool) throw new Error(`tool not registered: ${name}`);
+      // defineTool 把 parameters 编译成 JSON Schema（properties 子树）
+      const schema = tool.parameters as unknown as {
+        properties?: Record<string, { description?: string }>;
+      };
+      const spec = schema.properties?.[param];
+      if (!spec) throw new Error(`param not declared: ${name}.${param}`);
+      return spec.description ?? '';
+    };
+    const desc = (name: string): string => {
+      const tool = flatTools(deps).find((t) => t.name === name);
+      if (!tool) throw new Error(`tool not registered: ${name}`);
+      return tool.description ?? '';
+    };
+
+    // filter：字节上限 + 语法来源（anytype_get_schema kind=filters）+ 互斥
+    expect(paramDesc('anytype_search', 'filter')).toMatch(/4096/);
+    expect(paramDesc('anytype_search', 'filter')).toMatch(/kind filters/);
+    expect(paramDesc('anytype_search', 'filter')).toMatch(
+      /Mutually exclusive with filters/,
+    );
+    // fields：属性投影语义（不是裁剪）+ 上限 + 键约束
+    expect(paramDesc('anytype_search', 'fields')).toMatch(/project/);
+    expect(paramDesc('anytype_search', 'fields')).toMatch(/max 25/);
+    expect(paramDesc('anytype_search', 'fields')).toMatch(
+      /ADDS properties to the response/,
+    );
+    // filters 侧也声明互斥
+    expect(paramDesc('anytype_search', 'filters')).toMatch(
+      /Mutually exclusive with filter/,
+    );
+    // 工具描述层面点名两个新参数
+    expect(desc('anytype_search')).toMatch(/fields/);
+    expect(desc('anytype_search')).toMatch(/filter/);
+    expect(desc('anytype_search')).toMatch(/4096/);
+    expect(desc('anytype_search')).toMatch(/kind=filters/);
   });
 
   it('anytype_list_objects：GET 路径带分页与 fields 查询', async () => {

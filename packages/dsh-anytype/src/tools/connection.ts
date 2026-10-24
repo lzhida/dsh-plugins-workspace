@@ -8,10 +8,13 @@
  *   连接失败时的标准诊断入口。
  */
 
+import {
+  outputSpec,
+  runRequest,
+  toToolValue,
+  type ToolDeps,
+} from '@lzhida/dsh-anytype-core';
 import { defineTool } from '@deepseek-ai/dsh-tools';
-
-import { toToolValue } from '../client.ts';
-import { outputSpec, runRequest, type ToolDeps } from './shared.ts';
 
 /** 构建连接诊断组工具。 */
 export function buildConnectionTools(deps: ToolDeps) {

@@ -19,7 +19,7 @@ import {
   pickPatchBody,
   runRequest,
   type ToolDeps,
-} from './shared.ts';
+} from '@lzhida/dsh-anytype-core';
 
 /** 构建类型与模板组工具。 */
 export function buildTypeTools(deps: ToolDeps) {

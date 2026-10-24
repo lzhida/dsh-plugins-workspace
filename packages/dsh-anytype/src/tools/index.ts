@@ -24,9 +24,13 @@
  * tools/shared.ts 的 DRY_RUN_PARAM / IDEMPOTENCY_KEY_PARAM。
  */
 
+import {
+  AnytypeClient,
+  type ToolConfigView,
+  type ToolDeps,
+} from '@lzhida/dsh-anytype-core';
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools';
 
-import { AnytypeClient } from '../client.ts';
 import type { ResolvedConfig, ToolGroup } from '../config.ts';
 import { buildCollectionTools } from './collections.ts';
 import { buildConnectionTools } from './connection.ts';
@@ -36,7 +40,6 @@ import { buildObjectTools } from './objects.ts';
 import { buildPropertyTools } from './properties.ts';
 import { buildSchemaTools } from './schemas.ts';
 import { buildSearchTools } from './search.ts';
-import type { ToolDeps } from './shared.ts';
 import { buildSpaceTools } from './spaces.ts';
 import { buildTypeTools } from './types.ts';
 
@@ -67,9 +70,20 @@ export function buildGroupedTools(
 export function buildTools(
   config: () => ResolvedConfig,
 ): Map<ToolGroup, ToolDefinition[]> {
+  // 插件自有配置 → core 的最小配置视图（core 不含任何插件的设置 schema）。
+  const view = (): ToolConfigView => {
+    const cfg = config();
+    return {
+      baseUrl: cfg.baseUrl,
+      apiKey: cfg.apiKey,
+      apiVersion: cfg.apiVersion,
+      requestTimeoutMs: cfg.requestTimeoutMs,
+      maxResponseChars: cfg.maxResponseChars,
+    };
+  };
   const deps: ToolDeps = {
     client: new AnytypeClient(() => {
-      const cfg = config();
+      const cfg = view();
       return {
         baseUrl: cfg.baseUrl,
         apiKey: cfg.apiKey,
@@ -77,7 +91,7 @@ export function buildTools(
         timeoutMs: cfg.requestTimeoutMs,
       };
     }),
-    config,
+    config: view,
   };
   return buildGroupedTools(deps);
 }
