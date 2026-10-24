@@ -4,6 +4,23 @@
 
 与「配置 dsh-mcp-client 桥接官方 MCP 子进程」相比：无 `npx -y` 子进程与网络下载、工具名/参数为 agent 手工设计、API key 走 dsh 设置面板（volatile 保存即生效）。
 
+## 一个包，多个插件行
+
+本包是一个 **bundle**（与 dsh 官方 bundle 同构）：装一次，得到**两个插件行**，
+它们通过**具名 service** 组合，共用同一把钥匙。
+
+| 插件行               | 能力                                                 | 工具数 |
+| -------------------- | ---------------------------------------------------- | ------ |
+| `dsh-anytype`        | 通用 Anytype 封装（空间/对象/类型/属性/搜索…）       | 30     |
+| `dsh-anytype-memory` | 纯本地持久记忆（零本地状态，记忆即 Anytype 对象）    | 16     |
+| `dsh-anytype-wiki`   | **留位**：将来的 LLM Wiki 知识编译管道（本次不注册） | —      |
+
+- **连接配置只填一次**：插件行①注册具名服务 `anytype`（持配置现读的客户端），
+  插件行②以 `inject: ['anytype']` 复用它——设置面板里 apiKey 只出现一次；
+- **装一次即全部激活**：包的 `cordis.patch.yml` 声明两个插件行，随包进入
+  profile 的 bundle 层，**profile 侧不需要写任何 `insert:`**；
+- 机制与写法详见 **[docs/bundle-architecture.md](./docs/bundle-architecture.md)**。
+
 ## 前置条件
 
 1. **Anytype 桌面应用正在运行**（本地 API 默认 `http://127.0.0.1:31009`）——插件只做检测，不负责拉起桌面应用；
@@ -16,9 +33,27 @@
 pnpm dsh plugin --profile <profile> add link:<仓库绝对路径>/packages/dsh-anytype
 ```
 
-纯 TS 源码入口（`main: src/index.ts`），仅支持 `link:` 安装；实体安装（npm/git）需先按 `dsh-llm-fallback` 模式加 esbuild dist。
+装完包名会进入 profile 的 `dsh.profile.bundles`，两个插件行随之激活。
+profile 侧**只需按 id 覆盖配置**（不要 `insert:` 同 id 的行，否则插件会被
+实例化两次、工具注册两次）：
 
-## 配置（Settings → Plugins → dsh-anytype）
+```yaml
+# profile 的 cordis.patch.yml
+- id: dsh-anytype
+  config:
+    baseUrl: http://127.0.0.1:31009
+    apiKey: anytype_xxx
+- id: dsh-anytype-memory
+  config:
+    spaceName: Agent Memory
+```
+
+纯 TS 源码入口，仅支持 `link:` 安装（Node 拒绝剥离 `node_modules` 下 realpath
+的 `.ts`）；实体安装（npm/git）需先按 `dsh-llm-fallback` 模式加 esbuild dist。
+
+## 配置
+
+### 插件行① `dsh-anytype`（连接类 + 通用工具）
 
 | 字段               | 默认                     | 说明                                              |
 | ------------------ | ------------------------ | ------------------------------------------------- |
@@ -29,6 +64,27 @@ pnpm dsh plugin --profile <profile> add link:<仓库绝对路径>/packages/dsh-a
 | `disabledGroups`   | `[]`                     | 按组停用工具（改动后需重载插件）                  |
 | `requestTimeoutMs` | `30000`                  | 单请求超时                                        |
 | `maxResponseChars` | `20000`                  | 工具结果截断上限（超限返回 `data_preview`）       |
+
+### 插件行② `dsh-anytype-memory`（语义类，无连接字段）
+
+| 字段                 | 默认           | 说明                                                |
+| -------------------- | -------------- | --------------------------------------------------- |
+| `enabled`            | `true`         | 总开关；关闭后不注册任何工具（指引 section 保留）   |
+| `spaceName`          | `Agent Memory` | **记忆工作环境**的空间名（`memory_setup` 按需创建） |
+| `spaceId`            | `''`           | 钉住指定空间（短引用如 `64xiwe` 或完整 id）         |
+| `disabledGroups`     | `[]`           | 停用工具组：setup / write / read / agent / diag     |
+| `recallLimit`        | `20`           | 召回默认条数                                        |
+| `recallMaxTokens`    | `4096`         | 召回正文 token 预算（元数据免费）                   |
+| `embeddingBatchSize` | `20`           | 向量投影单批条数（限速 1rps 的往返预算）            |
+| `defaultStatus`      | `draft`        | AI 写入记忆的默认审核态                             |
+
+> 连接类字段（baseUrl / apiKey / apiVersion / 超时 / 截断）**只在插件行①**，
+> 记忆插件行经 `inject: ['anytype']` 复用同一个客户端。
+>
+> **编辑方式（bundle 形态）**：设置面板能显示每个插件行与启用开关，但宿主
+> 对 bundle 组件**不渲染 schemastery 配置表单**（宿主行为，实测 2026-10-24）——
+> 改配置请编辑 profile 的 `cordis.patch.yml`（按 id 覆盖，见上文安装一节）。
+> 详见 [docs/bundle-architecture.md](./docs/bundle-architecture.md) §6。
 
 ## 工具清单（30 个，10 组）
 
@@ -128,6 +184,121 @@ pnpm dsh plugin --profile <profile> add link:<仓库绝对路径>/packages/dsh-a
 | spec **未声明** Idempotency-Key 的端点带该头 | 仍返 409 幂等冲突——**服务端实际强制面比 spec 声明面更广** ✅              |
 | `POST /v2/spaces/{id}/search` 带该头         | 200 不报错，但 search 不绑定 key（规范明示 search 不接受该头）            |
 
+## 插件行② `dsh-anytype-memory`：纯本地持久记忆
+
+把**指定的 Anytype space** 当作 agent 的**持久记忆工作环境**：记忆正文、
+属性、关系与向量全部落为 Anytype 对象；检索能力全部来自 Anytype 自身
+（`search` + `filter` + `sorts` + `fields`，含原生 `links`/`backlinks` 双向
+关系）；**插件零本地状态**——不写任何本地文件、不建本地索引、不跑模型、
+不出网。
+
+与插件行①的关系：①是**通用 Anytype 封装**，本行是**记忆语义层**——记忆该
+长什么样、写入前该读什么、召回该怎么融合与降级，都在这里；连接由①的
+`anytype` 服务提供。
+
+### 工具清单（16 个，5 组）
+
+| 组    | 工具                                                                                                  |
+| ----- | ----------------------------------------------------------------------------------------------------- |
+| setup | `memory_setup`（幂等：建空间/类型/属性并把属性挂进类型字段表）                                        |
+| write | `memory_write`、`memory_update`、`memory_link`、`memory_supersede`、`memory_archive`、`memory_review` |
+| read  | `memory_recall`、`memory_get`、`memory_list`、`memory_search`、`memory_stats`                         |
+| agent | `memory_candidates`、`memory_set_embedding`、`memory_suggest_links`                                   |
+| diag  | `memory_doctor`（连通性 / schema / 能力探测 / **中文召回自检**）                                      |
+
+写工具统一带 `dry_run`（预演）；`memory_write` 与 `memory_link` 另带
+`idempotency_key`（防重）。
+
+### 记忆模型（Anytype 侧）
+
+- **类型**：`memory`（layout **`basic`**）+ `memory_scope`（layout `basic`）；
+- **属性命名**：插件自有属性一律 `Memory ` 前缀（key 派生为 `memory_*`），
+  **唯一例外是复用内置的 `tag(multi_select)`**——空间自带 41 个内置属性
+  （`origin(number)`、`source(url)`、`status(select)` …），朴素显示名会撞
+  「同名不同格式」→ 服务端 400 `property format conflict`；
+- **种类** `memory_kind`：fact / decision / preference / lesson / procedure /
+  episode / summary / entity；
+- **状态** `memory_status`：draft（AI 写入默认）→ approved / disputed / archived，
+  旧条被取代转 superseded；
+- **受控边**（5 条 relation 属性，禁止自由链接语义）：`memory_relates_to` /
+  `memory_derived_from` / `memory_contradicts` / `memory_supersedes` /
+  `memory_mentions`；
+- **双时序**：`memory_valid_from` / `memory_valid_to`（世界真值）+
+  `memory_created_at` / `memory_observed_at`（何时知道）；
+- **provenance**：`memory_source` / `memory_source_channel` / `memory_extractor`
+  / `memory_run_id` / `memory_content_hash`；
+- **量化**：`memory_confidence` / `memory_importance` / `memory_salience` /
+  `memory_proof_count` / `memory_access_count`；
+- **向量**：`memory_embedding`（base64 Float32）/ `memory_embedding_model` /
+  `memory_embedding_dim`；
+- **审核**：`memory_reviewed_by` / `memory_reviewed_at`；
+- **作用域类型** `memory_scope` 的属性：`scope_kind` / `scope_key`。
+
+### 四条不可让步的纪律
+
+1. **写前必读**：`memory_write` 先查内容哈希（幂等）再查近邻，把候选作为
+   `conflicts[]` 上报——**裁决权归 agent**。插件永不覆盖已存正文、永不隐式
+   下调置信度。
+2. **失效不删**：矛盾用「新对象 + `memory_supersedes` 边 + 旧条
+   `memory_status=superseded` + `memory_valid_to`」表达；
+   `memory_origin=user` 的人类记忆**拒绝被机器自动作废**；遗忘靠
+   `memory_salience` 衰减与 `archived`，而不是删除（Anytype 的 DELETE 只能删
+   本 API key 创建的对象，HTTP v2 更没有删除空间的端点）。
+3. **模型在外部**：插件不调用 LLM、不生成嵌入、不持有模型密钥；向量由
+   agent 用自己的嵌入工具算好后经 `memory_set_embedding` 写入，召回时用
+   `memory_recall(query_vector, embedding_model)` 启用向量臂——不同模型的
+   向量**禁止混算**。
+4. **属性必须挂进类型字段表**：字段表 = 类型文档 `blocks[0]`（dataview）的
+   `properties[]`。不在字段表里的属性「会被存储并随对象返回，但按类型过滤/
+   查询时该键被拒绝」——`memory_setup` 因此要 `add_property` 补挂。
+
+### 召回
+
+三臂并行 → RRF(k=60) 融合 → 乘性旁证权重 → token 预算截断：
+
+- **词法臂**：Anytype 全文搜索（`query` + `filter` + `sorts` + `fields`）；
+- **向量臂**：外部 agent 的查询向量 × 对象上的 `memory_embedding` 属性
+  （本地余弦，分批投影，**向量原文绝不返回给模型**）；
+- **关系臂**：先按受控边属性反查；**服务端接受该过滤但匹配不到行**（实测
+  `total=0`），故兜底为投影原生 `links` / `backlinks`，邻居 id 以
+  `related_ids` 返回。
+
+乘性权重：`final = rrf × recency^0.2 × confidence^0.2 × proof^0.1`，
+`recency = clamp(1 - days/365, 0.1, 1)`。
+
+### 活机实测要点（2026-10-23/24，Anytype 桌面端 v2 API）
+
+这些是单元测试抓不到、只有真机才暴露的问题，细节见
+[docs/memory/05-anytype-as-source.md](./docs/memory/05-anytype-as-source.md) §2.4：
+
+| 结论                                                         | 影响                                                                  |
+| ------------------------------------------------------------ | --------------------------------------------------------------------- |
+| 插件属性显示名必须带 `Memory ` 前缀（`tag` 复用内置）        | 否则 400 `property format conflict`                                   |
+| 记忆类型布局必须是 `basic`（不是 `note`）                    | `note` 会把对象标题吞成正文块，标题能力直接丢失                       |
+| 类型字段表 = 类型文档 dataview 块的 `properties[]`           | 不挂进字段表 → 按类型过滤时该键被拒绝                                 |
+| 紧凑类型列表接口读不到字段表                                 | 必须逐个读类型文档                                                    |
+| 建类型会顺带铸造属性                                         | 建完类型必须**重新盘点**属性，否则撞 `property key already exists`    |
+| 同一 etag 只能写一次                                         | `memory_supersede` 把 `valid_to` 与 `status` 合并成**同一个 op** 写   |
+| 全文索引是最终一致的（实测 3~6s）                            | 写完立刻召回可能为空，应隔几秒重试或用 `memory_list` 确认             |
+| 中文全文检索对**常用词**可靠、对**生僻词**不可靠             | 关键词召回用常用词/标签；必要时走向量臂（`memory_doctor` 会自检）     |
+| relation 按对象 id 过滤被服务端接受但匹配不到行（`total=0`） | 关系臂兜底投影原生 `links`/`backlinks`，邻居 id 以 `related_ids` 返回 |
+| 对象标题在 `properties.name`（对象文档没有顶层 name）        | 读标题别读 `object.name`                                              |
+
+## 插件行③ `dsh-anytype-wiki`（留位）
+
+将来的 **LLM Wiki** 知识编译管道（Raw → Wiki → Index 单向派生 + 人类控制
+回路，参考官方 Anytwo 平台的实现）。本次只把**位置与契约**定下来
+（`src/entries/wiki.ts` + `src/wiki/` 的落位、与 `anytype` 服务的复用关系），
+等专门看板上的一张卡开工时填实现——细节见
+[docs/bundle-architecture.md](./docs/bundle-architecture.md) §4。
+
+## 文档
+
+| 文档                                                         | 内容                                                                                                          |
+| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| [docs/bundle-architecture.md](./docs/bundle-architecture.md) | bundle 机制、一包多入口、service 组合、迁移指引、扩展插件行                                                   |
+| [docs/memory/](./docs/memory/)                               | 记忆子系统 11 篇（架构 / 模型 / 流程 / 工具 API / 索引实证 / 向量委派 / 方案审查 / 生态对照 / 限制 / 路线图） |
+
 ## 关于 anytype-cli（暂不支持的说明）
 
 [anytype-cli](https://github.com/anyproto/anytype-cli) 是内嵌同款 anytype-heart 节点的无头实例（API 31012），理论上可作为第二后端。但实测在本机（Windows）上 `auth create` 会触发节点堆损坏静默退出（[上游 issue #63](https://github.com/anyproto/anytype-cli/issues/63)，0xC0000374，自 v0.3.7 起），bot 账户无法创建，CLI 后端暂不可用。相关支持代码已暂时移除，待上游修复后可从 git 历史（`feat/dsh-anytype-cli-backend` 分支 `00bbb57`）恢复。
@@ -140,3 +311,13 @@ pnpm exec vitest run packages/dsh-anytype
 ```
 
 e2e（真实 dsh 实例 + 真实 Anytype）见 `.agents/skills/dsh-plugin-dev/SKILL.md` §5 四步流程；apiKey 经 test profile 的 `cordis.patch.yml` 注入（密钥不入库）。
+
+装成 bundle 后的 e2e 断言（2026-10-24 实测）：
+
+- profile 的 `dsh.profile.bundles` 命中 `@lzhida/dsh-anytype`；
+- profile 的 `cordis.patch.yml` **零 anytype `insert:` 行**（只按 id 覆盖 config）；
+- 实例日志出现 `[dsh-anytype] plugin loaded` + `registered 30 Anytype tools`
+  与 `[dsh-anytype-memory] plugin loaded` + `registered 16 memory tools`；
+- 工具总数 **46 且名字唯一**（重复即说明旧 `insert:` 行没清干净）；
+- 真机链路：setup → write → 同内容去重（同一 object_id）→ 中文召回 →
+  向量臂 → link → get → supersede（recall 不再返回）→ review → stats → doctor。
