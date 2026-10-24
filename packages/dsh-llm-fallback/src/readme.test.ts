@@ -42,6 +42,37 @@ describe('dsh-llm-fallback README', () => {
     }
   });
 
+  it('失败码白名单锚定网关 408 三态与 status 结构化判定', () => {
+    // 网关 408(三态):deepseek 路由两形态(HTTP_408 白名单码 /
+    // INVALID_REQUEST + status=408)可切换;pi-ai 路由不透传 status、
+    // 插件侧无解;客户端超时 TIMEOUT 恒可切。结构化判定只读字段、
+    // 不解析 message,且先于白名单(存量自定义白名单零迁移)。
+    expect(readme).toContain('网关 408');
+    expect(readme).toContain('`HTTP_408`');
+    expect(readme).toContain('`status=408`');
+    expect(readme).toContain('`status === 408`');
+    expect(readme).toContain('零迁移');
+    // pi-ai 路由退化形态必须如实注明为无解,不得暗示插件可路由
+    expect(readme).toContain('不透传 `status`');
+    expect(readme).toContain('插件侧无解');
+  });
+
+  it('已知限制写明 status 数据面差异(仅 deepseek 路由填充)', () => {
+    // status 判定的生效范围必须与宿主数据面一致:pi-ai 路由纯文本分类
+    // 不产出 status 字段,该路由的网关 408 无法被结构化判定覆盖。
+    expect(readme).toContain('仅由 deepseek 路由的 provider 错误路径填充');
+    expect(readme).toContain('修复点在宿主上游');
+  });
+
+  it('故障排查含「重试 5/5 后失败」分叉解释与白名单逃生风险', () => {
+    // 排查段必须给出分叉判定(白名单外 code vs 候选链/预算耗尽)与
+    // INVALID_REQUEST 白名单逃生的风险(真构造错误也会变成切换,不推荐)。
+    expect(readme).toContain('重试 5/5 耗尽后失败、插件未切换');
+    expect(readme).toContain('按结果分叉');
+    expect(readme).toContain('**不推荐**');
+    expect(readme).toContain('确定性复现');
+  });
+
   it('默认配置值与代码一致(retriesBeforeSwitch 0=跟随预算 / maxRetries 0=链长 / 退避 500-30000ms)', () => {
     expect(readme).toContain('`retriesBeforeSwitch`');
     expect(readme).toContain('`maxRetries`');

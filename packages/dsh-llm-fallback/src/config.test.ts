@@ -99,12 +99,13 @@ function stubCtx(): {
   return { ctx, sections, listeners, cleanups };
 }
 
-/** 构造失败 fixture(只覆盖 LlmFailure 的最小字段)。 */
+/** 构造失败 fixture(只覆盖 LlmFailure 的最小字段;status 可选)。 */
 function stubFailure(
   code: string,
   message = 'fake failure',
-): { code: string; message: string } {
-  return { code, message };
+  status?: number,
+): { code: string; message: string; status?: number } {
+  return status === undefined ? { code, message } : { code, message, status };
 }
 
 /** 找到首个指定事件的 listener。 */
@@ -816,6 +817,85 @@ describe('isFailureRetryable', () => {
         new Set(DEFAULT_RETRYABLE_CODES),
       ),
     ).toBe(true);
+  });
+
+  it('status=408 + code=INVALID_REQUEST → 可切换(网关透传 invalid_request_error type 的 408)', () => {
+    // 用户实测 antirion-gateway 场景:OpenAI 兼容网关返回 408,响应体
+    // {"code":"request_timeout","type":"invalid_request_error"}。deepseek
+    // 路由 providerError 命中 type 分支 → INVALID_REQUEST(白名单外),
+    // 但 failure 带 status=408——HTTP 408 语义是请求超时(临时性失败),
+    // 按 isFailureRetryable 的结构化 status 判定放行,绝不解析 message。
+    expect(
+      isFailureRetryable(
+        stubFailure(
+          'INVALID_REQUEST',
+          'gateway answered 408 with invalid_request_error',
+          408,
+        ),
+        new Set(DEFAULT_RETRYABLE_CODES),
+      ),
+    ).toBe(true);
+    // 自定义白名单(未列 HTTP_408、未列 INVALID_REQUEST)同样放行:
+    // status 判定先于白名单,存量自定义白名单零迁移即获得此行为。
+    expect(
+      isFailureRetryable(
+        stubFailure('INVALID_REQUEST', 'gateway 408', 408),
+        new Set(['RATE_LIMIT']),
+      ),
+    ).toBe(true);
+  });
+
+  it('status=408 + code=HTTP_408 → 可切换(双通道:status 判定与默认白名单均命中)', () => {
+    // deepseek 路由 408 且响应体无已知 type → HTTP_408 + status=408。
+    expect(
+      isFailureRetryable(
+        stubFailure('HTTP_408', 'DeepSeek Messages request failed (408)', 408),
+        new Set(DEFAULT_RETRYABLE_CODES),
+      ),
+    ).toBe(true);
+  });
+
+  it('无 status 的 INVALID_REQUEST → 不可切换(pi-ai 路由退化形态,零回归)', () => {
+    // pi-ai 路由 classifyPiAiError 纯文本分类、不产出 status 字段——网关
+    // 408 在那条路上退化为无 status 的 INVALID_REQUEST/PI_AI_ERROR。
+    // 该形态不可判超时(408 与真 400 构造错误无法区分),保持白名单外
+    // 原样透传——这是默认行为零回归的关键断言。
+    expect(
+      isFailureRetryable(
+        stubFailure(
+          'INVALID_REQUEST',
+          'gateway answered 408 with invalid_request_error',
+        ),
+        new Set(DEFAULT_RETRYABLE_CODES),
+      ),
+    ).toBe(false);
+    expect(
+      isFailureRetryable(
+        stubFailure('PI_AI_ERROR', 'pi-ai stream error'),
+        new Set(DEFAULT_RETRYABLE_CODES),
+      ),
+    ).toBe(false);
+  });
+
+  it('HTTP_408 已入默认白名单(存量子集断言)', () => {
+    expect(DEFAULT_RETRYABLE_CODES).toContain('HTTP_408');
+  });
+
+  it('status 非 408 时行为不变(400 构造错误 / 500 服务器错误按 code 路由)', () => {
+    // status 结构化判定只对 408 生效:真 400 构造错误(status=400)依旧
+    // 白名单外不切换;HTTP_502 不在默认白名单,依旧透传——零回归。
+    expect(
+      isFailureRetryable(
+        stubFailure('INVALID_REQUEST', 'bad parameter', 400),
+        new Set(DEFAULT_RETRYABLE_CODES),
+      ),
+    ).toBe(false);
+    expect(
+      isFailureRetryable(
+        stubFailure('HTTP_502', 'bad gateway', 502),
+        new Set(DEFAULT_RETRYABLE_CODES),
+      ),
+    ).toBe(false);
   });
 });
 

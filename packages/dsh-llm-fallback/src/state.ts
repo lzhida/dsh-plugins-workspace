@@ -108,11 +108,37 @@ export function deriveCandidateFromOptions(opts: {
   return { provider: opts.provider, model: opts.model };
 }
 
-/** 该 failure 是否在白名单内? */
+/**
+ * 网关 408 请求超时对应的 HTTP 状态码。
+ * 单独具名:该值是白名单之外唯一按结构化字段放行的判定,边界必须醒目。
+ */
+const GATEWAY_REQUEST_TIMEOUT_STATUS = 408;
+
+/**
+ * 该 failure 是否可触发重试/切换?
+ *
+ * 判定分两层,均为结构化字段判定(宿主约定:route on code, never parse
+ * message——本函数同样绝不读 failure.message):
+ *
+ * 1. **网关 408 结构化判定**:`failure.status === 408` 直接视为可重试。
+ *    数据面依据(宿主 0.2.1-rc.2 实码):`LlmFailure.status` 仅由 deepseek
+ *    路由的 `providerError` 填充(响应头/响应行的 HTTP status);pi-ai 路由
+ *    的 `classifyPiAiError` 纯文本分类、不产出 status。deepseek 路由下 408
+ *    有两种形态——响应体无已知 type → `HTTP_408`(默认白名单已含),网关
+ *    透传 `type: "invalid_request_error"` → `INVALID_REQUEST`(白名单外)。
+ *    后者若只看 code 会被当成"请求构造错误"而放弃,但 HTTP 408 的语义是
+ *    请求超时(临时性失败,与 429 同类):同候选重试与切换都有意义,故对
+ *    status=408 无条件放行。该判定先于白名单——存量自定义白名单(未列
+ *    `HTTP_408`)的用户无需任何配置迁移即获得此行为;无 status 的失败
+ *    (含 pi-ai 路由退化为纯 code 的 408)完全不受影响,零回归。
+ * 2. **失败码白名单**:code 命中用户白名单(默认 `DEFAULT_RETRYABLE_CODES`)
+ *    → 可重试;未命中 → 透传上游,行为与旧版完全一致。
+ */
 export function isFailureRetryable(
   failure: LlmFailure,
   retryableCodes: ReadonlySet<string>,
 ): boolean {
+  if (failure.status === GATEWAY_REQUEST_TIMEOUT_STATUS) return true;
   return retryableCodes.has(failure.code);
 }
 

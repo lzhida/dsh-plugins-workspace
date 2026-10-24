@@ -31,7 +31,7 @@ dsh 的模型回退插件：拦截全局 LLM 调用，**会话页面指定的模
 - 🤝 **与官方重试正交可调**——同 provider 重试次数按候选计（`retriesBeforeSwitch`）：默认跟随官方 `dsh-llm-retry` 预算，官方插件缺席时由本插件代执行同候选重试，预算用满再跨 provider 回退
 - 🎛️ **可视化配置卡**——内嵌设置面板：勾选候选模型、排序队列、设置每候选重试次数与最大切换候选数，保存即生效，无需重载插件
 - 🌐 **中英双语设置表单**——配置卡文案与 schema 字段描述跟随 dsh 语言设置（设置 → 通用 → 语言）即时切换，无需重载插件
-- 🧩 **失败码路由**——只按宿主稳定失败码（`RATE_LIMIT` / `QUOTA` / `SERVER` / `TIMEOUT` / `TRANSPORT` …）决策，从不解析错误消息；鉴权类错误直接上抛、不做无谓切换
+- 🧩 **失败码路由**——只按宿主稳定失败码（`RATE_LIMIT` / `QUOTA` / `SERVER` / `TIMEOUT` / `TRANSPORT` …）与结构化 `status` 字段（网关 408 请求超时）决策，从不解析错误消息；鉴权类错误直接上抛、不做无谓切换
 - 🔙 **零成本升级**——旧 0.2.x `string[]` 链配置自动归一为对象数组，存量自定义白名单里的旧失败码自动别名兼容；旧 `fallbackWhen` 字段被忽略、无需迁移
 
 ## 工作原理
@@ -167,21 +167,29 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 
 ## 失败码白名单
 
-插件只按 `LlmFailure.code` 路由（宿主约定：route on code, never parse message）。默认白名单是宿主官方重试码（`EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT`）的超集——多出配额与上下文类，切模型正是这些失败的本职出路；另含两类**确定性失败**，同模型重试必复现，切下一候选是唯一有意义的恢复路径：`UNSUPPORTED_REASONING_EFFORT`（模型不支持所请求的 reasoning effort）与 `UNKNOWN_MODEL`（候选模型已从 provider 配置中删除或 id 变更——回退队列的[失效候选兜底](#模型目录与失效候选)）。
+插件按 `LlmFailure.code` 白名单与唯一一个结构化 `status` 判定（`status === 408` 网关请求超时）路由（宿主约定：route on code, never parse message——本插件同样绝不解析 message）。默认白名单是宿主官方重试码（`EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT`）的超集——多出配额与上下文类，切模型正是这些失败的本职出路；另含两类**确定性失败**，同模型重试必复现，切下一候选是唯一有意义的恢复路径：`UNSUPPORTED_REASONING_EFFORT`（模型不支持所请求的 reasoning effort）与 `UNKNOWN_MODEL`（候选模型已从 provider 配置中删除或 id 变更——回退队列的[失效候选兜底](#模型目录与失效候选)）。
 
-| 失败场景                                         | 宿主 `code`                                       | 默认可切换                            |
-| ------------------------------------------------ | ------------------------------------------------- | ------------------------------------- |
-| 连接类传输失败（"Connection error." / 网络中断） | `TRANSPORT`                                       | ✅                                    |
-| 5xx 服务器错误                                   | `SERVER`                                          | ✅                                    |
-| 429 限流                                         | `RATE_LIMIT`                                      | ✅                                    |
-| 配额 / 余额耗尽                                  | `QUOTA`、`ACCOUNT_QUOTA`                          | ✅                                    |
-| 上下文超限                                       | `CONTEXT_WINDOW_EXCEEDED`                         | ✅                                    |
-| 空响应（正常结束但零内容块）                     | `EMPTY_RESPONSE`                                  | ✅                                    |
-| 流空闲 / 请求超时                                | `TIMEOUT`                                         | ✅                                    |
-| 模型不支持所请求的 reasoning effort              | `UNSUPPORTED_REASONING_EFFORT`                    | ✅ 同模型重试必复现，切可能支持的候选 |
-| 候选模型已从 provider 配置删除 / id 变更         | `UNKNOWN_MODEL`                                   | ✅ 同模型重试必复现，切下一候选       |
-| 鉴权 / 请求构造 / 凭据错误                       | `AUTH` / `INVALID_REQUEST` / `INVALID_CREDENTIAL` | ❌ 换模型无解，立即上抛               |
-| 其他 HTTP 状态                                   | `HTTP_<status>`（如 `HTTP_502`）                  | ❌ 可自行加入白名单                   |
+| 失败场景                                         | 宿主 `code`                                                                                               | 默认可切换                                               |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| 连接类传输失败（"Connection error." / 网络中断） | `TRANSPORT`                                                                                               | ✅                                                       |
+| 5xx 服务器错误                                   | `SERVER`                                                                                                  | ✅                                                       |
+| 429 限流                                         | `RATE_LIMIT`                                                                                              | ✅                                                       |
+| 配额 / 余额耗尽                                  | `QUOTA`、`ACCOUNT_QUOTA`                                                                                  | ✅                                                       |
+| 上下文超限                                       | `CONTEXT_WINDOW_EXCEEDED`                                                                                 | ✅                                                       |
+| 空响应（正常结束但零内容块）                     | `EMPTY_RESPONSE`                                                                                          | ✅                                                       |
+| 流空闲 / 请求超时                                | `TIMEOUT`                                                                                                 | ✅                                                       |
+| 模型不支持所请求的 reasoning effort              | `UNSUPPORTED_REASONING_EFFORT`                                                                            | ✅ 同模型重试必复现，切可能支持的候选                    |
+| 候选模型已从 provider 配置删除 / id 变更         | `UNKNOWN_MODEL`                                                                                           | ✅ 同模型重试必复现，切下一候选                          |
+| 网关 408 请求超时（deepseek 路由）               | `HTTP_408`；网关响应体透传 `invalid_request_error` type 时为 `INVALID_REQUEST`（两形态均带 `status=408`） | ✅ 默认白名单 + `status=408` 结构化判定双通道            |
+| 网关 408 请求超时（pi-ai 路由）                  | `INVALID_REQUEST`（宿主纯文本分类，不透传 `status`）                                                      | ❌ 无 `status` 可判，插件侧无解，[见故障排查](#故障排查) |
+| 鉴权 / 请求构造 / 凭据错误                       | `AUTH` / `INVALID_REQUEST` / `INVALID_CREDENTIAL`                                                         | ❌ 换模型无解，立即上抛                                  |
+| 其他 HTTP 状态                                   | `HTTP_<status>`（如 `HTTP_502`）                                                                          | ❌ 可自行加入白名单                                      |
+
+**网关 408 请求超时（三态）**：OpenAI 兼容网关（如实测中返回 408 `{"code":"request_timeout","type":"invalid_request_error"}` 的 antirion-gateway）对上游超时的应答，按失败来源分三态：
+
+- **deepseek 路由**：适配器保留 HTTP status（`failure.status = 408`），code 为 `HTTP_408`（响应体无已知 type，已入默认白名单）或 `INVALID_REQUEST`（网关响应体透传 `type: "invalid_request_error"`，白名单外）。两态均可切换——后者由 `status === 408` 的**结构化判定**兜住（只读字段、绝不解析 message，且先于白名单生效：存量自定义白名单零迁移即获得此行为）；
+- **pi-ai 路由**：宿主对 pi-ai 错误纯文本分类、不透传 `status`，408 在数据面上退化为无 `status` 的 `INVALID_REQUEST`（白名单外）→ 不切换。插件按 route-on-code 原则无法从纯文本恢复 408 语义，属宿主上游缺口，见[故障排查](#故障排查)；
+- **客户端超时**：dsh 客户端自身的流空闲 / 请求超时（`TIMEOUT`，白名单内）与网关形态无关，一直可切换。
 
 存量配置兼容：0.3.1 及之前版本的默认白名单误含宿主不产出的 `NETWORK` / `SERVER_ERROR`，导致连接类与 5xx 失败不触发切换；升级到 0.3.2+ 后，运行时会对你已保存的自定义白名单按并集自动补入 `TRANSPORT` / `SERVER`（旧码保留无害），无需手动改配置。
 
@@ -234,6 +242,7 @@ dsh 侧的模型身份是**字面 `provider/model` 路由键**：deepseek 与 pi
 - 冷却表存于插件进程内存（按 `provider/model` 记、跨对话共享）：宿主重启 / 插件重载后清零，重启后首轮请求会重新验证全部模型；冷却仅在插件进程内生效，多实例各自独立计时
 - 时间窗按**宿主机本地时区**判定：预置官方窗口以北京时间为锚（高峰 08:30–00:30 / 半价 00:30–08:30），宿主机时区非 UTC+8 时需自行换算窗口值；窗口结束的恢复依赖下次请求的惰性过期判定，无请求间隙不会主动切换
 - 每 step 的回退状态以 `<会话id>:<turn>:<step>` 为 key 存内存（会话标识取自 `agent/request(-error)` payload 的 `agent.session.id`，缺失时降级为无会话段的 `turn:step` 共享键位）：新 turn 首次请求时清理**同会话**其他 turn 的旧状态，跨会话互不清理、同号 turn 互不串扰；每会话在其最末 turn 后遗留少量状态（上界 ≈ 会话数 × 单 turn step 数，每项小对象，宿主重启即清零，量级可忽略）
+- `LlmFailure.status` 仅由 deepseek 路由的 provider 错误路径填充；pi-ai 路由对错误纯文本分类、不产出该字段——「网关 408 结构化判定」只在 deepseek 路由生效，pi-ai 路由的网关 408 退化为无 `status` 的 `INVALID_REQUEST`（白名单外、不切换）。修复点在宿主上游（408 归类为超时类失败、或在失败事件中透传 status），见[故障排查](#故障排查)
 - 不实现 provider/* 通配条目、role/specificity 多链分派、同一 step 链耗尽后切回会话指定模型（新 step 天然从会话指定模型重新开始）
 
 ## 故障排查
@@ -251,6 +260,13 @@ allowBuilds:
 
 **add 解析到旧版本**
 registry 元数据分钟级边缘缓存。安装 / 升级 / 回滚都用精确版本号 `@zhidal/dsh-llm-fallback@<version>`。
+
+**网关 408 请求超时，官方重试 5/5 耗尽后失败、插件未切换**
+在会话轨迹里找到该失败事件的 `code`（以及有无 `status` 字段），按结果分叉：
+
+- **轨迹无本插件的 `llm/retry` 事件、`code` 为 `INVALID_REQUEST` 且无 `status`**：pi-ai 路由的网关 408——宿主纯文本分类不透传 status，插件按 route-on-code 原则无法把这条失败识别为超时，属宿主上游缺口，插件侧无解。临时逃生：把 `INVALID_REQUEST` 手动加进 `retryableCodes` 白名单——**不推荐**：`INVALID_REQUEST` 同时覆盖真正的请求构造错误（参数 / 消息形态问题），它们对同一模型确定性复现，加白后这类错误会被无意义地重试与切换，拖慢失败反馈并浪费配额；优先推动宿主上游修复（408 归类为超时类失败、或透传 status）。
+- **轨迹有 `llm/retry` 事件但最终仍失败**：不是白名单问题——候选链已切完（`maxRetries` 上限）或每候选重试预算用尽。检查 `fallbackChains` 是否配置了候选、`retriesBeforeSwitch` 是否符合预期（默认 0 = 跟随官方 5 次预算，预算耗尽才切）。
+- **deepseek 路由的网关 408**：失败带 `status=408`（无论 `code` 是 `HTTP_408` 还是 `INVALID_REQUEST`），由结构化判定放行、与白名单配置无关——本版本起应能正常切换；若未切换，先确认插件已升级，再按上一条检查候选链与预算。
 
 ## 开发
 

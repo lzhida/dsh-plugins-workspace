@@ -204,12 +204,20 @@ function setDescription<F extends { description(text: string): F }>(
  *   状态/消息分类为 INVALID_REQUEST(400)或 PI_AI_ERROR(404),不在此
  *   白名单——INVALID_REQUEST 太宽泛(真 400 参数错误会被无意义切换),
  *   该场景由客户端失效标记 + 显式保存剔除兜底。
+ * - `HTTP_408`——网关请求超时(deepseek 路由收到 HTTP 408 且响应体无已知
+ *   type 时的兜底码,failure 同时带 `status: 408`)。与 429 同属临时性
+ *   失败:HTTP 408 的语义即"请求超时,可原样重发",同候选重试与切换都
+ *   有意义。pi-ai 路由的 408 不产出此码(该路由纯文本分类、不透传
+ *   status,408 退化为 INVALID_REQUEST/PI_AI_ERROR)——那条路由靠
+ *   isFailureRetryable 的 `status === 408` 结构化判定也够不到(无 status
+ *   可判),属宿主上游缺口,见 README 故障排查。
  *
  * 历史:0.3.1 及之前默认含 omp 系码 `NETWORK` / `SERVER_ERROR`,宿主两套适配器
  * 均不产出这两个码,导致 "Connection error."(`TRANSPORT`)与 5xx(`SERVER`)
  * 不触发切换;0.3.2 起修正,并对存量用户配置做旧码→新码的并集别名
  * (见 RETRYABLE_CODE_ALIASES)。0.4.1 补入 `UNSUPPORTED_REASONING_EFFORT`。
- * 0.6.0 补入 `UNKNOWN_MODEL`(失效候选兜底)。
+ * 0.6.0 补入 `UNKNOWN_MODEL`(失效候选兜底)。0.7.0 补入 `HTTP_408`
+ * (网关请求超时)。
  */
 export const DEFAULT_RETRYABLE_CODES: readonly string[] = [
   'RATE_LIMIT',
@@ -222,6 +230,7 @@ export const DEFAULT_RETRYABLE_CODES: readonly string[] = [
   'TRANSPORT',
   'UNSUPPORTED_REASONING_EFFORT',
   'UNKNOWN_MODEL',
+  'HTTP_408',
 ] as const;
 
 /**
