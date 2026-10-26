@@ -14,7 +14,9 @@
  *   注册，向 agent 说明工具当前停用）。
  * - `baseUrl`：Anytype 本地 API 地址（官方 anytype-mcp 同款默认 31009 端口）。
  * - `apiKey`：Anytype 设置 → API Keys 创建的 Bearer 密钥；工具执行时实时读取，
- *   缺失时报可操作错误而非静默失败。
+ *   缺失时报可操作错误而非静默失败。该字段标 `role('secret')`：宿主
+ *   `settings.describe()` 下发时把它从值里剔除，只在 `secrets[]` 报「是否已
+ *   设置」——客户端（bundle 配置卡）**只写不读**，明文永不过线。
  * - `apiVersion`：`Anytype-Version` 请求头（官方当前值 2025-11-08）。
  * - `disabledGroups`：按组停用工具（connection/search/space/object/collection/
  *   type/property/member/schema/generic），控制工具面板体积。
@@ -187,7 +189,11 @@ export const Config = Schema.object({
   ),
   apiKey: volatileField(
     setDescription(
-      Schema.string().default(''),
+      // role('secret')：宿主 settings.describe() 会把该字段从下发值里剔除，
+      // 只在 secrets[] 里报「是否已设置」——客户端**永远拿不到明文**，配置
+      // 页面只能写不能读（留空 = 不改动）。volatile 标记在 role 之后叠加，
+      // 两者互不覆盖（schemastery 的 meta.role / meta.volatile 是平级字段）。
+      Schema.string().default('').role('secret'),
       desc(
         'Anytype API key (App Settings → API Keys → Create new)',
         'Anytype API 密钥（Anytype 应用设置 → API Keys → 创建）',

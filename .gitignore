@@ -1,6 +1,8 @@
 node_modules/
 dist/
 coverage/
+packages/dsh-anytype/client/index.js
+packages/dsh-anytype/client/index.js.map
 *.tsbuildinfo
 .eslintcache
 .agents/tmp/
