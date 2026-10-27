@@ -176,5 +176,22 @@ describe('dsh-patent', () => {
         true,
       );
     });
+
+    it('介质/设备权「执行权利要求N…所述的方法」固有句式不报 CLAIM_REF_FORMAT', () => {
+      const report = checkClaims(
+        [
+          '1.一种数据传输方法，其特征在于：接收数据帧。',
+          '2.根据权利要求1所述的数据传输方法，其特征在于：所述校验为CRC校验。',
+          '3.一种计算机可读存储介质，其特征在于，所述计算机可读存储介质存储有计算机指令，当所述计算机指令在计算机设备上运行时使得所述计算机设备执行权利要求1至2中任一项所述的数据传输方法。',
+        ].join('\n'),
+      );
+      expect(report.issues.some((i) => i.code === 'CLAIM_REF_FORMAT')).toBe(
+        false,
+      );
+      // 介质权不因豁免而被误判为从属
+      const medium = report.claims.find((c) => c.number === 3);
+      expect(medium?.isDependent).toBe(false);
+      expect(report.ok).toBe(true);
+    });
   });
 });

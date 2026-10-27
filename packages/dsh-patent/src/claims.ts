@@ -265,7 +265,19 @@ export function checkClaims(input: string): ClaimsReport {
 
     // 悬空引用提示：文本含「权利要求N」但未被识别为规范引用句式
     //（不用 \b：中文字符在 JS 正则里不是 \w，\b 语义在此失效）
-    if (!claim.isDependent && /权利要求\s*\d/.test(claim.text)) {
+    // 豁免：装置/介质类权利要求引用方法权利要求的固有写法
+    //「（执行|实现|适配|运行）权利要求N…所述的…方法」——无「根据」引导，
+    // 不参与从属判定，但属 CNIPA 公布文本中的真实句式（见
+    // docs/patent-reference-notes.md §引用句式），不应报 warning。
+    const apparatusClaimRef =
+      /(?:执行|实现|适配|运行)[^，。；]{0,16}权利要求\s*\d+(?:\s*[至到~－-]\s*\d+)?(?:中任一项|任一|之一)?(?:所述的)/.test(
+        claim.text,
+      );
+    if (
+      !claim.isDependent &&
+      /权利要求\s*\d/.test(claim.text) &&
+      !apparatusClaimRef
+    ) {
       issues.push({
         claim: claim.number,
         severity: 'warning',

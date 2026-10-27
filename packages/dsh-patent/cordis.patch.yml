@@ -1,16 +1,20 @@
 # dsh-patent bundle 层：一次安装即得「专利交底」预设 + 交底书工具行。
 #
-# 结构（与 dsh-anytype 的单包多行模式同构）：
+# 结构（单包双行；发布形态与 dsh-llm-fallback 一致——esbuild 构建式，
+# 插件行 name 用包名，main → dist/index.js）：
 #   - 行① dsh-patent：交底书工具插件（三个 patent 工具 + 结构化 prompt 段落
-#     + 内嵌方法论 skill patent-disclosure），相对路径 ./src/index.ts；
+#     + 内嵌方法论 skill patent-disclosure）；
 #   - 行② preset-patent：@deepseek-ai/dsh-agent-preset 声明，即 Web 新建
 #     会话预设选择器里的「专利交底」。plugins 是该预设的组合清单——预设
 #     自带全部所需行（persona/工具/skill/压缩组），不依赖其他预设。
 #
 # 语义要点（e2e 实测）：
+#   - 插件行 name 用包名：TS 源码入口无法实体安装（Node 拒绝对 realpath 位于
+#     node_modules 之下的 .ts 做 type-stripping），发布形态必须走 dist；
+#     开发迭代先 `pnpm --filter @zhidal/dsh-patent build` 再重启实例；
 #   - 相对路径只在 patch 顶层 insert 被锚定（anchorInsertedPluginNames）；
-#     preset config.plugins 里写 ./src/index.ts 会 never started——preset 内
-#     引用本包插件必须用包名 @zhidal/dsh-patent（main 单入口）；
+#     preset config.plugins 里写相对路径会 never started——preset 内引用
+#     本包插件必须用包名 @zhidal/dsh-patent；
 #   - dsh-skill（skills 服务）由 dsh-base 顶层提供，preset 内重复挂载会
 #     「service has been registered」冲突——只挂本地发现/office/模型入口；
 #   - tool-fs-search 的 config.sampleOverCapGlobResults 是 required（照抄
@@ -21,7 +25,7 @@
 - insert:
     # ── 行①：交底书工具插件行 ────────────────────────────────────
     - id: dsh-patent
-      name: './src/index.ts'
+      name: '@zhidal/dsh-patent'
 
     # ── 行②：专利交底预设（发明人模式） ──────────────────────────
     - id: preset-patent
