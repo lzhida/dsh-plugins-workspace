@@ -1,4 +1,4 @@
-# @lzhida/dsh-patent
+# @zhidal/dsh-patent
 
 「**专利交底**」预设 bundle：协助**发明人**撰写技术交底书（中国专利），交付一份专利
 代理师能看明白的交底书。安装后 Web 新建会话的预设选择器出现「专利交底」。
@@ -36,7 +36,7 @@
 ## 开发
 
 ```sh
-pnpm --filter @lzhida/dsh-patent typecheck
+pnpm --filter @zhidal/dsh-patent typecheck
 pnpm vitest run packages/dsh-patent
 ```
 

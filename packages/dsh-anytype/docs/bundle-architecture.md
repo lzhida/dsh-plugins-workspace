@@ -1,6 +1,6 @@
 # dsh-anytype 的 bundle 架构：一个包，多个插件行
 
-> 本文说明 `@lzhida/dsh-anytype` 这个**包**如何同时提供**多个插件行**，
+> 本文说明 `@zhidal/dsh-anytype` 这个**包**如何同时提供**多个插件行**，
 > 以及它们之间如何组合（service 依赖 + 共享连接配置）。
 > 想直接用记忆能力，请看 [memory/](memory/) 那一组文档。
 
@@ -10,9 +10,9 @@
 
 | 包                           | 角色                              | 问题                                             |
 | ---------------------------- | --------------------------------- | ------------------------------------------------ |
-| `@lzhida/dsh-anytype`        | 通用 Anytype 工具（30 个）        | 作为 plain dependency 装上后**静默不加载**       |
-| `@lzhida/dsh-anytype-core`   | 共享底座（client / 工具公共设施） | 纯代码包，却占一个包位                           |
-| `@lzhida/dsh-anytype-memory` | 持久记忆（16 个）                 | 同上；且 apiKey/baseUrl 要在**两个插件各填一次** |
+| `@zhidal/dsh-anytype`        | 通用 Anytype 工具（30 个）        | 作为 plain dependency 装上后**静默不加载**       |
+| `@zhidal/dsh-anytype-core`   | 共享底座（client / 工具公共设施） | 纯代码包，却占一个包位                           |
+| `@zhidal/dsh-anytype-memory` | 持久记忆（16 个）                 | 同上；且 apiKey/baseUrl 要在**两个插件各填一次** |
 
 活体 e2e 暴露的真痛点有三个：
 
@@ -21,7 +21,7 @@
 2. **连接配置重复**——两个插件行各有一份 `apiKey` / `baseUrl`，改一处漏一处；
 3. **包间版本耦合**——core 的任何改动都要同步三个包。
 
-重构后：**一个包**（`@lzhida/dsh-anytype`），**两个插件行**
+重构后：**一个包**（`@zhidal/dsh-anytype`），**两个插件行**
 （`dsh-anytype` 与 `dsh-anytype-memory`），装一次即全部激活，连接配置只填一次。
 
 ## 2. 三层机制
@@ -54,7 +54,7 @@ dsh 的 **bundle** 就是一个带 `dsh.bundle.patch` 的包：
 ```jsonc
 // packages/dsh-anytype/package.json
 {
-  "name": "@lzhida/dsh-anytype",
+  "name": "@zhidal/dsh-anytype",
   "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
 }
 ```
@@ -163,7 +163,7 @@ export function apply(ctx, config) {
 
 ```mermaid
 flowchart LR
-    subgraph pkg["@lzhida/dsh-anytype"]
+    subgraph pkg["@zhidal/dsh-anytype"]
         EN["src/entries/<br/>anytype.ts · memory.ts · wiki.ts(留位)"]
         SV["src/services/anytype.ts<br/>AnytypeService"]
         CO["src/core/<br/>client · shared · volatile"]
@@ -216,16 +216,16 @@ flowchart LR
 
 | 旧                                        | 新                                                     |
 | ----------------------------------------- | ------------------------------------------------------ |
-| `@lzhida/dsh-anytype-core`                | 包内 `src/core/`（经 `exports["./core"]` 对外暴露）    |
-| `@lzhida/dsh-anytype-memory`              | 包内插件行②（`src/entries/memory.ts` + `src/memory/`） |
-| `@lzhida/dsh-anytype`（plain dependency） | 同一包，升级为 **bundle**（`dsh.bundle.patch`）        |
+| `@zhidal/dsh-anytype-core`                | 包内 `src/core/`（经 `exports["./core"]` 对外暴露）    |
+| `@zhidal/dsh-anytype-memory`              | 包内插件行②（`src/entries/memory.ts` + `src/memory/`） |
+| `@zhidal/dsh-anytype`（plain dependency） | 同一包，升级为 **bundle**（`dsh.bundle.patch`）        |
 
 profile 侧：
 
 ```diff
 - insert:
 -     - id: dsh-anytype
--       name: "@lzhida/dsh-anytype"
+-       name: "@zhidal/dsh-anytype"
 -       config:
 -         baseUrl: ...
 -         apiKey: ...
@@ -241,7 +241,7 @@ profile 侧：
 安装侧：把 plain dependency 换成 bundle 即可——
 
 ```bash
-pnpm dsh plugin --profile test remove @lzhida/dsh-anytype
+pnpm dsh plugin --profile test remove @zhidal/dsh-anytype
 pnpm dsh plugin --profile test add link:<repo>/packages/dsh-anytype
 ```
 

@@ -1,4 +1,4 @@
-# @lzhida/dsh-anytype
+# @zhidal/dsh-anytype
 
 把 **Anytype v2 本地 API**（Anytype 桌面应用内置，官方 [`@anyproto/anytype-mcp`](https://github.com/anyproto/anytype-mcp) 的后端）封装为一组 dsh 原生工具（`defineTool`），让 dsh 会话里的 agent 直接读写你的 Anytype 知识库。
 
@@ -306,7 +306,7 @@ profile 侧**只需按 id 覆盖配置**（不要 `insert:` 同 id 的行，否�
 ## 测试
 
 ```sh
-pnpm --filter @lzhida/dsh-anytype typecheck
+pnpm --filter @zhidal/dsh-anytype typecheck
 pnpm exec vitest run packages/dsh-anytype
 ```
 
@@ -314,7 +314,7 @@ e2e（真实 dsh 实例 + 真实 Anytype）见 `.agents/skills/dsh-plugin-dev/SK
 
 装成 bundle 后的 e2e 断言（2026-10-24 实测）：
 
-- profile 的 `dsh.profile.bundles` 命中 `@lzhida/dsh-anytype`；
+- profile 的 `dsh.profile.bundles` 命中 `@zhidal/dsh-anytype`；
 - profile 的 `cordis.patch.yml` **零 anytype `insert:` 行**（只按 id 覆盖 config）；
 - 实例日志出现 `[dsh-anytype] plugin loaded` + `registered 30 Anytype tools`
   与 `[dsh-anytype-memory] plugin loaded` + `registered 16 memory tools`；

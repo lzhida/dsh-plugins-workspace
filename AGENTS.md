@@ -51,7 +51,7 @@ pnpm release list    # 列出子包版本与 tag 预览
 
 ## Code Conventions & Common Patterns
 
-- **命名**：插件包名 `@lzhida/<kebab-case>`（已发布 npm 的插件用 `@zhidal` scope——当前账号仅拥有该用户 scope，如 `@zhidal/dsh-llm-fallback`）；`export const name` 与插件 kebab 名一致。
+- **命名**：插件包名统一 `@zhidal/<kebab-case>`——npm 账号 scope 是 `zhidal`（GitHub 用户名 `lzhida` 与 npm scope 不同，`lzhida` 仅用于仓库 URL，勿作包前缀），如 `@zhidal/dsh-llm-fallback`；`export const name` 与插件 kebab 名一致。
 - **ESM-only**：全仓 `type: "module"`，禁止 CJS；`verbatimModuleSyntax` 强制类型导入写 `import type`。
 - **严格 TS**：`strict` + `noUnusedLocals/noUnusedParameters`；函数写显式返回类型。
 - **格式**：Prettier 仅 `singleQuote: true`，其余默认；提交时 lint-staged 自动对暂存文件跑 `eslint --fix` + `prettier --write`。
