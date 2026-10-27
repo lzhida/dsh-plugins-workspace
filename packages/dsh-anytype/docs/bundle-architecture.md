@@ -159,6 +159,15 @@ export function apply(ctx, config) {
 设置面板里，**apiKey 只出现一次**；记忆插件行的面板没有连接字段。
 该契约由 `src/index.test.ts` 的单测锁定（断言两边的 schema 字段集互不越界）。
 
+**namespace ↔ scope 映射**（client 半区据此读写两行）：
+
+| 插件行                       | 设置 namespace（= profile 条目 id） | 配置卡分区   |
+| ---------------------------- | ----------------------------------- | ------------ |
+| 插件行① `dsh-anytype`        | `dsh-anytype`                       | Anytype 连接 |
+| 插件行② `dsh-anytype-memory` | `dsh-anytype-memory`                | 持久记忆     |
+
+两行各持一个 `configForms` scope（独立写入栅栏与草稿），同一张卡按分区呈现。
+
 ## 3. 包内结构
 
 ```mermaid
@@ -171,6 +180,7 @@ flowchart LR
         ME["src/memory/<br/>记忆域实现"]
         CD["src/cordis.d.ts<br/>Context 增强"]
         RT["src/index.ts<br/>包根 barrel"]
+        CL["client/src/<br/>bundle 配置卡"]
     end
     EN --> SV
     EN --> CO
@@ -192,6 +202,8 @@ flowchart LR
 | `src/memory/`             | 记忆域实现（schema/store/纯函数/16 个工具）          |
 | `src/cordis.d.ts`         | `Context.anytype` 的类型增强                         |
 | `src/index.ts`            | 包根 barrel（导出插件行①契约 + 公共 API）            |
+| `client/src/`             | **client 半区**：bundle 详情页的配置卡（见 §6）      |
+| `scripts/build-client.ts` | client 半区构建（esbuild → `client/index.js`）       |
 | `cordis.patch.yml`        | bundle 层：两个插件行                                |
 | `docs/memory/`            | 记忆子系统的 11 篇设计文档                           |
 
@@ -247,13 +259,24 @@ pnpm dsh plugin --profile test add link:<repo>/packages/dsh-anytype
 
 ## 6. 已知边界
 
-- **设置面板不渲染 bundle 组件的配置表单**（宿主行为，2026-10-24 实测）：Plugins
-  面板能列出包的每个插件行（Components 区，含独立的启用开关 ✅），但**不出
-  schemastery 配置表单**。对照：同为 bundle 的 `dsh-llm-fallback` 页面上有表单，
-  那是它的 `dsh.client` 客户端插件自渲染的，不是宿主渲染的 schemastery 表单。
-  因此本包的配置走 **profile patch 按 id 覆盖**（§2.1），改配置 = 编辑 profile
-  的 `cordis.patch.yml`。若将来需要面板编辑，照 `dsh-llm-fallback` 的模式给
-  本包加 `dsh.client` 设置界面即可，装配层无需改动。
+- ~~**设置面板不渲染 bundle 组件的配置表单**~~（宿主行为，2026-10-24 实测）：
+  Plugins 面板能列出包的每个插件行（Components 区，含独立的启用开关 ✅），但**不出
+  schemastery 配置表单**。**本包已自带解法（2026-10-26）**：client 半区在
+  `plugins.bundle.config` 插槽注册一张配置卡（key = 包名），宿主把它渲染在
+  bundle 详情页的「描述」与「Components」之间——两个插件行的字段分成两个分区，
+  保存写回 profile 的 `cordis.patch.yml`（按 id 覆盖）。手改 patch 仍然有效，
+  卡片只是更方便的入口。
+  - 实现要点：`client/src/plugin.tsx` 用
+    `configForms.whileServed(['dsh-anytype','dsh-anytype-memory'], …)` 做注册
+    守卫（任一行被宿主服务即注册，两行都没被服务则卡片自动注销）；
+    两行的读写走 `configForms.get(<条目 id>)`，各带独立 revision 栅栏；
+  - **密钥只写**：`apiKey` 标 `role('secret')`，宿主 `settings.describe()` 把它
+    从下发值里剔除，只在 `secrets[]` 报「是否已设置」——卡片里的密钥框永远
+    为空（留空 = 不改动），清除需显式写 `unset`；明文永不过线到浏览器；
+  - client 半区需要构建产物 `client/index.js`（esbuild → 宿主模块表加载的
+    CJS factory 壳）：`pnpm --filter @zhidal/dsh-anytype build:client`。
+    `link:` 安装不跑生命周期脚本，产物缺失则配置卡不出现（服务端插件行照常
+    工作）；仓库根 `pnpm install` 会经 `prepare` 自动构建。
 - **实体安装（npm/git/tarball）不支持**：入口是 `.ts` 源码，Node 拒绝剥离
   `node_modules` 下 realpath 的 `.ts`（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`），
   宿主只报静默的 `failed to import`。本包目前只支持 `link:` 安装；

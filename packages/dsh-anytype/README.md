@@ -2,7 +2,7 @@
 
 把 **Anytype v2 本地 API**（Anytype 桌面应用内置，官方 [`@anyproto/anytype-mcp`](https://github.com/anyproto/anytype-mcp) 的后端）封装为一组 dsh 原生工具（`defineTool`），让 dsh 会话里的 agent 直接读写你的 Anytype 知识库。
 
-与「配置 dsh-mcp-client 桥接官方 MCP 子进程」相比：无 `npx -y` 子进程与网络下载、工具名/参数为 agent 手工设计、API key 走 dsh 设置面板（volatile 保存即生效）。
+与「配置 dsh-mcp-client 桥接官方 MCP 子进程」相比：无 `npx -y` 子进程与网络下载、工具名/参数为 agent 手工设计、API key 走 **bundle 详情页的配置卡**（volatile 保存即生效，密钥只写不回显）。
 
 ## 一个包，多个插件行
 
@@ -19,6 +19,9 @@
   插件行②以 `inject: ['anytype']` 复用它——设置面板里 apiKey 只出现一次；
 - **装一次即全部激活**：包的 `cordis.patch.yml` 声明两个插件行，随包进入
   profile 的 bundle 层，**profile 侧不需要写任何 `insert:`**；
+- **配置页在 bundle 上**：Plugins → `@zhidal/dsh-anytype` 详情页自渲染一张
+  配置卡（两个插件行的字段分成两个分区），改配置不用手改 profile 文件——
+  详见下文「配置」一节；
 - 机制与写法详见 **[docs/bundle-architecture.md](./docs/bundle-architecture.md)**。
 
 ## 前置条件
@@ -30,6 +33,9 @@
 ## 安装（开发态）
 
 ```sh
+# client 半区产物（bundle 详情页的配置卡）——link: 安装不跑生命周期脚本，
+# 产物缺失则配置卡不出现（服务端插件行照常工作）
+pnpm --filter @zhidal/dsh-anytype build:client
 pnpm dsh plugin --profile <profile> add link:<仓库绝对路径>/packages/dsh-anytype
 ```
 
@@ -81,10 +87,17 @@ profile 侧**只需按 id 覆盖配置**（不要 `insert:` 同 id 的行，否�
 > 连接类字段（baseUrl / apiKey / apiVersion / 超时 / 截断）**只在插件行①**，
 > 记忆插件行经 `inject: ['anytype']` 复用同一个客户端。
 >
-> **编辑方式（bundle 形态）**：设置面板能显示每个插件行与启用开关，但宿主
-> 对 bundle 组件**不渲染 schemastery 配置表单**（宿主行为，实测 2026-10-24）——
-> 改配置请编辑 profile 的 `cordis.patch.yml`（按 id 覆盖，见上文安装一节）。
+> **编辑方式（bundle 形态）**：宿主对 bundle 组件**不渲染 schemastery 自动表单**
+> （宿主行为，实测 2026-10-24），本包因此自带 **client 半区**——在
+> **Plugins → @zhidal/dsh-anytype** 详情页自渲染一张配置卡（注册
+> `plugins.bundle.config` 插槽，与 `dsh-llm-fallback` 同款）：两个插件行的字段
+> 分成「Anytype 连接」与「持久记忆」两个分区，保存即写回 profile 的
+> `cordis.patch.yml`（按 id 覆盖）。手改 patch 依然有效，卡片只是更方便的入口。
 > 详见 [docs/bundle-architecture.md](./docs/bundle-architecture.md) §6。
+>
+> **密钥是只写字段**：`apiKey` 标 `role('secret')`，宿主下发设置时把它从值里
+> 剔除，客户端只拿到「是否已设置」——卡片里的密钥框永远为空（留空 = 不改动），
+> 要清除得点「清除密钥」（写 `unset`）。明文永不过线到浏览器。
 
 ## 工具清单（30 个，10 组）
 
