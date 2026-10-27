@@ -1,0 +1,32 @@
+{
+  "name": "@lzhida/dsh-patent",
+  "description": "dsh-patent bundle 包：「专利模式」预设（中国专利代理人风格）+ 专利撰写工具行。预设默认携带 web 检索、Office(docx) 产出、权利要求结构校验 / 申请文件模板填充 / 格式合规检查三个模型工具、结构化 prompt 段落与内嵌方法论 skill（patent-writing）。",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.ts",
+  "files": [
+    "src",
+    "docs",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/dsh-skill": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  }
+}

@@ -1,0 +1,121 @@
+# dsh-patent bundle 层：一次安装即得「专利交底」预设 + 交底书工具行。
+#
+# 结构（与 dsh-anytype 的单包多行模式同构）：
+#   - 行① dsh-patent：交底书工具插件（三个 patent 工具 + 结构化 prompt 段落
+#     + 内嵌方法论 skill patent-disclosure），相对路径 ./src/index.ts；
+#   - 行② preset-patent：@deepseek-ai/dsh-agent-preset 声明，即 Web 新建
+#     会话预设选择器里的「专利交底」。plugins 是该预设的组合清单——预设
+#     自带全部所需行（persona/工具/skill/压缩组），不依赖其他预设。
+#
+# 语义要点（e2e 实测）：
+#   - 相对路径只在 patch 顶层 insert 被锚定（anchorInsertedPluginNames）；
+#     preset config.plugins 里写 ./src/index.ts 会 never started——preset 内
+#     引用本包插件必须用包名 @lzhida/dsh-patent（main 单入口）；
+#   - dsh-skill（skills 服务）由 dsh-base 顶层提供，preset 内重复挂载会
+#     「service has been registered」冲突——只挂本地发现/office/模型入口；
+#   - tool-fs-search 的 config.sampleOverCapGlobResults 是 required（照抄
+#     官方 standard 预设的取值 false）；
+#   - profile 侧不要重复 insert 这些行（会双重实例化）；要改配置用
+#     「- id: <同一 id> + config」覆盖。
+
+- insert:
+    # ── 行①：交底书工具插件行 ────────────────────────────────────
+    - id: dsh-patent
+      name: './src/index.ts'
+
+    # ── 行②：专利交底预设（发明人模式） ──────────────────────────
+    - id: preset-patent
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: patent
+        name: 专利交底
+        description: 发明人模式：协助撰写技术交底书（中国专利），支持内置/自带模板 docx 或 markdown 交付，含权利要求校验与格式合规检查。
+        order: 5
+        plugins:
+          # 人设：发明人的交底书撰写助手（交付对象是专利代理师）
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: >-
+                You are a patent disclosure assistant helping an inventor (发明人)
+                write a 技术交底书 that their patent attorney (专利代理师) can
+                understand and turn into an application. Work in simplified
+                Chinese. Interview the inventor before drafting; push every part
+                of the disclosure to the adequacy bar — a same-field engineer must
+                be able to implement the invention from part 三 alone. Deliver via
+                disclosure_template_fill + disclosure_check; keep 〔…〕 placeholders
+                for company fields the user has not provided and remind them to
+                fill those (plugin settings disclosureDefaults or by hand). Write
+                documents into the workspace; convert to .docx only through the
+                office skill / bundled python-docx as the delivery guide says.
+
+          # 交底书工具行（本包；preset 内必须用包名，见头注释）
+          - id: dsh-patent
+            name: '@lzhida/dsh-patent'
+
+          # 工作区指令与时间上下文
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+
+          # 文件读写与检索（交底书文稿 + 现有技术检索）
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            config:
+              sampleOverCapGlobResults: false
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+
+          # shell（路径 A 的 docx 填充要跑 python-docx 脚本；平台开关照抄官方）
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+
+          # skill 链：registry 由 dsh-base 顶层提供（重复挂载会服务冲突），
+          # 这里只挂本地发现、office 工作流与模型入口
+          - id: skill-filesystem
+            name: '@deepseek-ai/dsh-skill-filesystem'
+          - id: skill-office
+            name: '@deepseek-ai/dsh-skill-office'
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+
+          # 长流程写作的任务管理、用户确认与交付
+          - id: tool-todo
+            name: '@deepseek-ai/dsh-tool-todo'
+            config:
+              allowParallelInProgress: true
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: present
+            name: '@deepseek-ai/dsh-tool-present'
+
+          # 长文写作的上下文压缩组（服务实例隔离域）
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
