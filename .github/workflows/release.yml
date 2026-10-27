@@ -80,13 +80,14 @@ jobs:
       - name: 单元测试
         run: pnpm test
 
-      # 清理未跟踪的构建产物(各包 prepare 脚本生成,如 dsh-anytype 的
-      # client/index.js):它们会让发布脚本的 DIRTY_WORKTREE 守卫判定工作树
-      # 不干净(该守卫按设计把未跟踪文件也算脏,见 scripts/release/git.ts)。
-      # 只清未跟踪文件:已跟踪文件不动;ignored 目录(dist 等)也不动——
-      # 各包 prepack 会在 npm pack 前重建 dist。
-      - name: 清理未跟踪构建产物
-        run: git clean -fd
+      # 把工作树还原回 tag 内容:安装/构建会改写被跟踪的构建产物
+      # (如 dsh-llm-fallback 的 client/index.js.map),未跟踪产物(如
+      # dsh-anytype/client/index.js)也会让发布脚本的 DIRTY_WORKTREE 守卫
+      # 判定工作树不干净(该守卫按设计把未跟踪文件也算脏,见
+      # scripts/release/git.ts)。故:已跟踪文件还原到 tag 版本、未跟踪文件清除;
+      # ignored 目录(dist 等)不动——各包 prepack 会在 npm pack 前重建 dist。
+      - name: 还原工作树到 tag 内容
+        run: git restore --worktree . && git clean -fd
 
       # 三态决策:publish(公开包正式版)/ skip(prerelease、私有包,退出 0)/
       # fail(tag 与清单不一致,非零退出)。公开包的 prepack 会自动构建 dist;
