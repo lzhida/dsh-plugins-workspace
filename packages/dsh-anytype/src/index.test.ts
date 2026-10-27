@@ -10,6 +10,7 @@ import type { Context } from '@deepseek-ai/cordis';
 import type { PromptSection } from '@deepseek-ai/dsh-system-prompt';
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools';
 import { readFileSync, readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -79,7 +80,9 @@ function makeService(): AnytypeService {
 
 describe('dsh-anytype bundle 包', () => {
   it('零本地状态：整个 src/ 里不存在任何文件写入路径', () => {
-    const dir = new URL('./', import.meta.url).pathname.replace(/^\//, '');
+    // fileURLToPath 跨平台：pathname.replace 在 Linux 上会把 /home/... 削成
+    // 相对路径（CI 实测 ENOENT），Windows 本地碰巧工作，故不可用。
+    const dir = fileURLToPath(new URL('./', import.meta.url));
     const files = listSources(dir);
     expect(files.length).toBeGreaterThan(10);
     for (const file of files) {
