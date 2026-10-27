@@ -38,11 +38,15 @@
 ```sh
 pnpm --filter @zhidal/dsh-patent typecheck
 pnpm vitest run packages/dsh-patent
+pnpm --filter @zhidal/dsh-patent build   # esbuild → dist/index.js（实体安装/发布必需）
 ```
+
+发布形态为构建式（`main` 指 `dist/index.js`，源码入口无法实体安装）：改动源码后
+先 `build` 再重启实例；`pnpm pack` / `prepare` / `prepack` 自动构建。
 
 e2e（真实 dsh 实例四步流程）见仓库 `.agents/skills/dsh-plugin-dev/SKILL.md` §5。
 
 ## 参考
 
-- 交底书模板来自用户提供的公司模板，已去公司化（申请人占位）；
+- 内置模板为本仓库从零构建的通用交底书模板（无特定组织信息，可公开发布）；
 - 权利要求句式校验按真实公布文本的宽容变体设计（见 docs/patent-reference-notes.md）。
