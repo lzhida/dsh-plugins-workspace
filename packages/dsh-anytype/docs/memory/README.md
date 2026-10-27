@@ -2,7 +2,7 @@
 
 > **插件定位（一句话）**：记忆真源、索引、关系、向量全部在 Anytype 内；插件零本地状态、不跑模型、不出网。
 
-> **它在哪**：本插件是 `@lzhida/dsh-anytype` 这个 **bundle 包**里的**第二个插件行**
+> **它在哪**：本插件是 `@zhidal/dsh-anytype` 这个 **bundle 包**里的**第二个插件行**
 > （`src/entries/memory.ts`），与通用工具插件行（`dsh-anytype`）共享同一个
 > Anytype 客户端——连接配置（apiKey/baseUrl）**只填一次**。装配机制见
 > [../bundle-architecture.md](../bundle-architecture.md)。

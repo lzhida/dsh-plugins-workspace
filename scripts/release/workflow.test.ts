@@ -69,7 +69,7 @@ function makeFixture(): string {
     'utf8',
   );
   writePackage(dir, 'dsh-alpha', {
-    name: '@lzhida/dsh-alpha',
+    name: '@zhidal/dsh-alpha',
     version: '0.1.0',
     private: true,
   });
@@ -109,7 +109,7 @@ describe('release workflow(临时 git 仓库端到端)', () => {
     const root = makeFixture();
     const packages = listWorkspacePackages(root);
     expect(packages.map((pkg) => pkg.name)).toEqual([
-      '@lzhida/dsh-alpha',
+      '@zhidal/dsh-alpha',
       '@zhidal/dsh-beta',
     ]);
     expect(packages[0]).toMatchObject({
@@ -311,7 +311,7 @@ describe('release workflow(临时 git 仓库端到端)', () => {
       'utf8',
     );
     writePackage(dir, 'dsh-alpha', {
-      name: '@lzhida/dsh-alpha',
+      name: '@zhidal/dsh-alpha',
       version: '0.1.0',
     });
     expect(() => tagAllPackages({ rootDir: dir })).toThrowError(
@@ -327,7 +327,7 @@ describe('release workflow(临时 git 仓库端到端)', () => {
       "packages:\n  - 'packages/*'\n",
       'utf8',
     );
-    writePackage(dir, 'dsh-nover', { name: '@lzhida/dsh-nover' });
+    writePackage(dir, 'dsh-nover', { name: '@zhidal/dsh-nover' });
     expect(() => listWorkspacePackages(dir)).toThrowError(
       expect.objectContaining({ code: 'PKG_VERSION_MISSING' }),
     );

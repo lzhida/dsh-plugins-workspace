@@ -3,7 +3,7 @@
  *
  * ## 它在包里的角色
  *
- * `@lzhida/dsh-anytype` 是一个 **bundle 包**：包内可以放多个插件入口，
+ * `@zhidal/dsh-anytype` 是一个 **bundle 包**：包内可以放多个插件入口，
  * 每个入口是一个独立插件行（各自的 `name` / `apply` / `Config`），由包的
  * `cordis.patch.yml` 一次性声明并激活（见 `docs/bundle-architecture.md`）。
  *

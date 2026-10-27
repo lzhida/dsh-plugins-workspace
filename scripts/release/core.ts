@@ -38,7 +38,7 @@ export class ReleaseError extends Error {
 
 /** workspace 内一个受版本管理的子包。 */
 export interface WorkspacePackage {
-  /** 完整包名,如 `@lzhida/dsh-taskboard`。 */
+  /** 完整包名,如 `@zhidal/dsh-taskboard`。 */
   readonly name: string;
   /** 不含 scope 的短名,与包目录名一致,作为 git tag 前缀。 */
   readonly shortName: string;

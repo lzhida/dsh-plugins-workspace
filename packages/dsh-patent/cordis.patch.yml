@@ -10,7 +10,7 @@
 # 语义要点（e2e 实测）：
 #   - 相对路径只在 patch 顶层 insert 被锚定（anchorInsertedPluginNames）；
 #     preset config.plugins 里写 ./src/index.ts 会 never started——preset 内
-#     引用本包插件必须用包名 @lzhida/dsh-patent（main 单入口）；
+#     引用本包插件必须用包名 @zhidal/dsh-patent（main 单入口）；
 #   - dsh-skill（skills 服务）由 dsh-base 顶层提供，preset 内重复挂载会
 #     「service has been registered」冲突——只挂本地发现/office/模型入口；
 #   - tool-fs-search 的 config.sampleOverCapGlobResults 是 required（照抄
@@ -51,7 +51,7 @@
 
           # 交底书工具行（本包；preset 内必须用包名，见头注释）
           - id: dsh-patent
-            name: '@lzhida/dsh-patent'
+            name: '@zhidal/dsh-patent'
 
           # 工作区指令与时间上下文
           - id: agent-instructions

@@ -64,15 +64,15 @@ describe('release core', () => {
 
   describe('shortNameOf 包名拆解', () => {
     it('scoped 包取最后一段,无 scope 原样返回', () => {
-      expect(shortNameOf('@lzhida/dsh-taskboard')).toBe('dsh-taskboard');
+      expect(shortNameOf('@zhidal/dsh-taskboard')).toBe('dsh-taskboard');
       expect(shortNameOf('dsh-taskboard')).toBe('dsh-taskboard');
     });
   });
 
   describe('resolvePackageName 包名解析', () => {
     const packages = [
-      pkg('@lzhida/dsh-alpha', '0.1.0'),
-      pkg('@lzhida/dsh-beta', '1.2.3'),
+      pkg('@acme/dsh-alpha', '0.1.0'),
+      pkg('@acme/dsh-beta', '1.2.3'),
       pkg('@zhidal/dsh-alpha', '0.0.1'),
     ];
 
@@ -80,14 +80,14 @@ describe('release core', () => {
       expect(resolvePackageName('@zhidal/dsh-alpha', packages).name).toBe(
         '@zhidal/dsh-alpha',
       );
-      expect(resolvePackageName('@lzhida/dsh-alpha', packages).name).toBe(
-        '@lzhida/dsh-alpha',
+      expect(resolvePackageName('@acme/dsh-alpha', packages).name).toBe(
+        '@acme/dsh-alpha',
       );
     });
 
     it('短名唯一命中', () => {
       expect(resolvePackageName('dsh-beta', packages).name).toBe(
-        '@lzhida/dsh-beta',
+        '@acme/dsh-beta',
       );
     });
 

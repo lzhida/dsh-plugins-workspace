@@ -2,7 +2,7 @@
  * 记忆工具层公共设施（参数、作用域解析、过滤构造、文本工具）。
  *
  * 与 `dsh-anytype` 的 tools/shared.ts 同构但更薄：这里不封装 HTTP
- * （HTTP 语义都在 `@lzhida/dsh-anytype-core` 与 `src/store.ts`），只提供
+ * （HTTP 语义都在 `@zhidal/dsh-anytype-core` 与 `src/store.ts`），只提供
  * 「记忆语义 → 参数/过滤」这一层的共用件。
  */
 
