@@ -14,6 +14,10 @@
  *   2. `publish` —— 按 tag 决策并发布 npm(仅公开包 + 正式版本;prerelease
  *      与私有包跳过)。CI 中由 .github/workflows/release.yml 在 tag 推送时
  *      自动执行同一逻辑。
+ *   3. `github-release` —— 按 tag 决策创建 GitHub Release(notes 取包
+ *      CHANGELOG 中该版本的段落,与 annotated tag message 同源;skip 决策
+ *      不创建,release 已存在幂等跳过)。CI 在 npm 暂存成功后自动执行;
+ *      本地可在发布后手动补建(需 gh 已安装并登录,GH_TOKEN 可用)。
  * 工具绝不自动 push。
  *
  * 用法(pnpm 透传参数):
@@ -21,10 +25,13 @@
  *   pnpm release tag <包名> [--dry-run] [--allow-dirty]
  *   pnpm release tag --all  [--dry-run] [--allow-dirty]
  *   pnpm release publish <tag> [--dry-run] [--allow-dirty]
+ *   pnpm release github-release <tag> [--dry-run]
  */
 import { ReleaseError, tagFor } from './release/core.ts';
 import type { WorkspacePackage } from './release/core.ts';
 import { findRepoRoot } from './release/git.ts';
+import { githubReleaseForTag } from './release/github-release.ts';
+import type { GithubReleaseOutcome } from './release/github-release.ts';
 import { publishForTag } from './release/publish.ts';
 import type { PublishOutcome } from './release/publish.ts';
 import { tagAllPackages, tagPackage } from './release/workflow.ts';
@@ -53,6 +60,11 @@ const HELP_TEXT = `dsh-plugins-workspace 子包发布辅助
       推送 tag 后由 .github/workflows/release.yml 自动执行同一逻辑
       (CI 用 --client npm-stage 走 OIDC 暂存发布,免 token;发布后需
       维护者在 npm 后台或 npm stage approve 人工放行)。
+  pnpm release github-release <tag> [选项]
+      按发布 tag 决策创建 GitHub Release:notes 取包 CHANGELOG.md 中该
+      版本的段落(与 annotated tag message 同源);prerelease / 私有包 /
+      非发布 tag 跳过(退出 0);release 已存在幂等跳过。CI 在 npm 暂存
+      成功后自动执行;本地补建需 gh 已安装且已登录(GH_TOKEN 可用)。
 
 选项:
   --dry-run      只预览全部步骤与结果,不动 git / 不发 npm
@@ -139,6 +151,10 @@ function printTag(outcome: TagOutcome): void {
   console.log(`${prefix}✔ ${outcome.pkg.name} v${outcome.version}`);
   if (outcome.dryRun) {
     console.log(`${prefix}将打 tag: ${outcome.tag}`);
+    // dry-run 预览 annotated tag 的 message(subject + CHANGELOG 段落)
+    if (outcome.message !== undefined) {
+      console.log(`${prefix}tag message:\n${outcome.message}`);
+    }
     console.log(`${prefix}未产生任何改动;去掉 --dry-run 执行实际打 tag`);
     return;
   }
@@ -193,6 +209,42 @@ function printPublish(outcome: PublishOutcome): void {
   throw new ReleaseError(decision.reason, decision.detail);
 }
 
+function printGithubRelease(outcome: GithubReleaseOutcome): void {
+  const { decision } = outcome;
+  if (decision.action === 'skip') {
+    console.log(
+      `- 跳过创建 GitHub Release(${decision.reason}): ${decision.detail}`,
+    );
+    return;
+  }
+  const prefix = outcome.dryRun ? '[dry-run] ' : '';
+  if (decision.action === 'publish') {
+    console.log(
+      `${prefix}✔ 创建决策: ${decision.pkg.name} v${decision.version}(tag ${decision.tag})`,
+    );
+    if (outcome.dryRun) {
+      console.log(`${prefix}将执行: ${outcome.command ?? ''}`);
+      console.log(
+        `${prefix}notes 来源: 包 CHANGELOG.md 的 ${decision.version} 段落`,
+      );
+      console.log(`${prefix}未产生任何改动;去掉 --dry-run 执行实际创建`);
+      return;
+    }
+    if (outcome.alreadyExists) {
+      console.log(
+        `✔ GitHub Release 已存在,幂等跳过:${decision.pkg.name} v${decision.version}`,
+      );
+      return;
+    }
+    console.log(
+      `✔ 已创建 GitHub Release: ${decision.pkg.name} v${decision.version}(notes 取包 CHANGELOG ${decision.version} 段落)`,
+    );
+    return;
+  }
+  // fail 决策已在 githubReleaseForTag 内抛 ReleaseError,此处仅为穷尽性兜底
+  throw new ReleaseError(decision.reason, decision.detail);
+}
+
 function runCommand(args: ParsedArgs, rootDir: string): void {
   switch (args.command) {
     case 'list': {
@@ -241,13 +293,28 @@ function runCommand(args: ParsedArgs, rootDir: string): void {
       printPublish(outcome);
       return;
     }
+    case 'github-release': {
+      if (args.positional.length < 1) {
+        throw new ReleaseError(
+          'USAGE',
+          '缺少 tag 参数;用法: pnpm release github-release <tag> [--dry-run](tag 形如 dsh-llm-fallback-v0.3.2)',
+        );
+      }
+      const outcome = githubReleaseForTag({
+        rootDir,
+        tag: args.positional[0],
+        dryRun: args.dryRun,
+      });
+      printGithubRelease(outcome);
+      return;
+    }
     case undefined:
       console.log(HELP_TEXT);
       return;
     default:
       throw new ReleaseError(
         'USAGE',
-        `未知命令 "${String(args.command)}";可用: list | tag | publish(详见 pnpm release --help)`,
+        `未知命令 "${String(args.command)}";可用: list | tag | publish | github-release(详见 pnpm release --help)`,
       );
   }
 }

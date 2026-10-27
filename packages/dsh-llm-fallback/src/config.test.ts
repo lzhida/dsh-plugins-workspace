@@ -22,7 +22,7 @@
  *     scheduled;不切换时不写;
  *   - effect 卸载时 dispose 被收集。
  *
- * 风格沿用 dsh-obsidian 的 stubCtx + spyOn(console.log);用
+ * 风格采用 stubCtx + spyOn(console.log);用
  * `as unknown as Context` 强制把 stub 对象窄化为 cordis Context 类型,
  * 满足 `@typescript-eslint/no-explicit-any` 约束。
  */
@@ -99,12 +99,13 @@ function stubCtx(): {
   return { ctx, sections, listeners, cleanups };
 }
 
-/** 构造失败 fixture(只覆盖 LlmFailure 的最小字段)。 */
+/** 构造失败 fixture(只覆盖 LlmFailure 的最小字段;status 可选)。 */
 function stubFailure(
   code: string,
   message = 'fake failure',
-): { code: string; message: string } {
-  return { code, message };
+  status?: number,
+): { code: string; message: string; status?: number } {
+  return status === undefined ? { code, message } : { code, message, status };
 }
 
 /** 找到首个指定事件的 listener。 */
@@ -229,6 +230,15 @@ describe('resolveConfig', () => {
     expect(c.baseDelayMs).toBe(500);
     expect(c.maxDelayMs).toBe(30000);
     expect(c.perTurn).toBe(true);
+  });
+
+  it('perTurn=false 解析为单次切换档;仅字面 false 生效,其余形态宽容为 true(默认)', () => {
+    expect(resolveConfig({ perTurn: false }).perTurn).toBe(false);
+    expect(resolveConfig({ perTurn: true }).perTurn).toBe(true);
+    expect(resolveConfig({}).perTurn).toBe(true);
+    // 宽容解析(与 !== false 守卫一致):字符串 'false' / 数字 0 均不生效
+    expect(resolveConfig({ perTurn: 'false' }).perTurn).toBe(true);
+    expect(resolveConfig({ perTurn: 0 }).perTurn).toBe(true);
   });
 
   it('undefined / null 输入视为空对象,默认值与 resolveConfig({}) 一致', () => {
@@ -619,6 +629,7 @@ describe('nextCandidate', () => {
       retries: 0,
       exhausted: false,
       candidateFailures: 0,
+      switched: false,
       pageModel,
     };
   }
@@ -790,6 +801,101 @@ describe('isFailureRetryable', () => {
         new Set(DEFAULT_RETRYABLE_CODES),
       ),
     ).toBe(true);
+  });
+
+  it('默认码表命中 UNKNOWN_MODEL(失效候选:模型被删除/id 变更)', () => {
+    // 回归:pi-ai 适配器对配置中不存在的模型在请求构建期抛此码
+    // (`pi-ai provider "X" has no configured model "Y"`)——用户在 dsh 侧
+    // 删除模型或改其 id 后,队列残留的失效候选必然命中。默认白名单不含
+    // 它时链推进透传上游,整链在失效候选上中断。
+    expect(
+      isFailureRetryable(
+        stubFailure(
+          'UNKNOWN_MODEL',
+          'pi-ai provider "my-gw" has no configured model "old-model"',
+        ),
+        new Set(DEFAULT_RETRYABLE_CODES),
+      ),
+    ).toBe(true);
+  });
+
+  it('status=408 + code=INVALID_REQUEST → 可切换(网关透传 invalid_request_error type 的 408)', () => {
+    // 用户实测 antirion-gateway 场景:OpenAI 兼容网关返回 408,响应体
+    // {"code":"request_timeout","type":"invalid_request_error"}。deepseek
+    // 路由 providerError 命中 type 分支 → INVALID_REQUEST(白名单外),
+    // 但 failure 带 status=408——HTTP 408 语义是请求超时(临时性失败),
+    // 按 isFailureRetryable 的结构化 status 判定放行,绝不解析 message。
+    expect(
+      isFailureRetryable(
+        stubFailure(
+          'INVALID_REQUEST',
+          'gateway answered 408 with invalid_request_error',
+          408,
+        ),
+        new Set(DEFAULT_RETRYABLE_CODES),
+      ),
+    ).toBe(true);
+    // 自定义白名单(未列 HTTP_408、未列 INVALID_REQUEST)同样放行:
+    // status 判定先于白名单,存量自定义白名单零迁移即获得此行为。
+    expect(
+      isFailureRetryable(
+        stubFailure('INVALID_REQUEST', 'gateway 408', 408),
+        new Set(['RATE_LIMIT']),
+      ),
+    ).toBe(true);
+  });
+
+  it('status=408 + code=HTTP_408 → 可切换(双通道:status 判定与默认白名单均命中)', () => {
+    // deepseek 路由 408 且响应体无已知 type → HTTP_408 + status=408。
+    expect(
+      isFailureRetryable(
+        stubFailure('HTTP_408', 'DeepSeek Messages request failed (408)', 408),
+        new Set(DEFAULT_RETRYABLE_CODES),
+      ),
+    ).toBe(true);
+  });
+
+  it('无 status 的 INVALID_REQUEST → 不可切换(pi-ai 路由退化形态,零回归)', () => {
+    // pi-ai 路由 classifyPiAiError 纯文本分类、不产出 status 字段——网关
+    // 408 在那条路上退化为无 status 的 INVALID_REQUEST/PI_AI_ERROR。
+    // 该形态不可判超时(408 与真 400 构造错误无法区分),保持白名单外
+    // 原样透传——这是默认行为零回归的关键断言。
+    expect(
+      isFailureRetryable(
+        stubFailure(
+          'INVALID_REQUEST',
+          'gateway answered 408 with invalid_request_error',
+        ),
+        new Set(DEFAULT_RETRYABLE_CODES),
+      ),
+    ).toBe(false);
+    expect(
+      isFailureRetryable(
+        stubFailure('PI_AI_ERROR', 'pi-ai stream error'),
+        new Set(DEFAULT_RETRYABLE_CODES),
+      ),
+    ).toBe(false);
+  });
+
+  it('HTTP_408 已入默认白名单(存量子集断言)', () => {
+    expect(DEFAULT_RETRYABLE_CODES).toContain('HTTP_408');
+  });
+
+  it('status 非 408 时行为不变(400 构造错误 / 500 服务器错误按 code 路由)', () => {
+    // status 结构化判定只对 408 生效:真 400 构造错误(status=400)依旧
+    // 白名单外不切换;HTTP_502 不在默认白名单,依旧透传——零回归。
+    expect(
+      isFailureRetryable(
+        stubFailure('INVALID_REQUEST', 'bad parameter', 400),
+        new Set(DEFAULT_RETRYABLE_CODES),
+      ),
+    ).toBe(false);
+    expect(
+      isFailureRetryable(
+        stubFailure('HTTP_502', 'bad gateway', 502),
+        new Set(DEFAULT_RETRYABLE_CODES),
+      ),
+    ).toBe(false);
   });
 });
 
@@ -1509,6 +1615,92 @@ describe('agent/request-error listener', () => {
     expect(nextSeed).toEqual({ provider: 'openai', model: 'gpt-4o' });
   });
 
+  it('默认 + UNKNOWN_MODEL(失效候选:模型已从 provider 删除)→ 跳到下一候选并写 llm/retry 轨迹,整链不中断', async () => {
+    // 失效候选兜底回归:pi-ai 适配器对配置中不存在的模型在请求构建期抛
+    // LlmError(`pi-ai provider "X" has no configured model "Y"`,
+    // 'UNKNOWN_MODEL')——用户在 dsh 侧删除模型/改 id 后,队列残留候选必然
+    // 命中。该失败确定性复现,同候选重试无意义;默认白名单不含此码时
+    // isFailureRetryable=false → 透传上游,整链在失效候选上中断(旧缺陷)。
+    // 修复后:失效候选首失败即按预算跳下一候选,且切换留 llm/retry(+started)
+    // 轨迹。场景:会话模型失败切到队列里的失效候选(my-gw/old-model)→
+    // UNKNOWN_MODEL → 再跳到 openai/gpt-4o。
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['my-gw/old-model', 'openai/gpt-4o'],
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const reqListener = findListener(listeners, 'agent/request');
+    const errListener = findListener(listeners, 'agent/request-error');
+    const { agent, appends } = stubAgent();
+    // 1) request:捕获会话指定模型 pageModel = deepseek/deepseek-chat
+    await callListener(
+      reqListener,
+      { turn: 7, step: 2, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    // 2) 会话模型首失败 → 切到队列第 1 项(失效候选)
+    await callListener(
+      errListener,
+      {
+        turn: 7,
+        step: 2,
+        provider: 'deepseek',
+        failure: stubFailure('RATE_LIMIT'),
+        signal: new AbortController().signal,
+      },
+      async () => undefined,
+    );
+    let seed = await callListener(
+      reqListener,
+      { turn: 7, step: 2, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    expect(seed).toEqual({ provider: 'my-gw', model: 'old-model' });
+    // 3) 失效候选失败:UNKNOWN_MODEL(白名单命中)→ 跳下一候选并留轨迹
+    const failure = stubFailure(
+      'UNKNOWN_MODEL',
+      'pi-ai provider "my-gw" has no configured model "old-model"',
+    );
+    const result = await callListener(
+      errListener,
+      {
+        turn: 7,
+        step: 2,
+        provider: 'my-gw',
+        failure,
+        signal: new AbortController().signal,
+        agent,
+      },
+      async () => undefined,
+    );
+    // 失效候选被跳过:返回 retry(loop 将以队列下一候选重发)
+    expect(result).toEqual({ kind: 'retry' });
+
+    // 轨迹:切换留官方 llm/retry + llm/retry-started 事件,target=新候选
+    expect(appends.map((a) => a.type)).toEqual([
+      'llm/retry',
+      'llm/retry-started',
+    ]);
+    expect(appends[0]?.data).toMatchObject({
+      turn: 7,
+      step: 2,
+      provider: 'my-gw',
+      policyKey: 'llm-fallback',
+      failure,
+      targetProvider: 'openai',
+      targetModel: 'gpt-4o',
+    });
+
+    // 状态已推进:下一请求的 seed 被改写为队列第 2 项(整链未中断)
+    seed = await callListener(
+      reqListener,
+      { turn: 7, step: 2, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    expect(seed).toEqual({ provider: 'openai', model: 'gpt-4o' });
+  });
+
   it('默认(自动档,无策略预算 0)+ upstream={retry} → 首失败即覆盖切换(不再有 immediately 档)', async () => {
     // payload 不带 retryPolicy(provider 未注册策略/旧宿主)→ 自动档预算 0,
     // 首次白名单失败即切换;官方 retry 在无策略时本就不会决策,这里同时
@@ -2104,6 +2296,8 @@ describe('Config schema', () => {
       'cooldownMs',
       'retryableCodes',
       'perTurn',
+      'timeWindowEnabled',
+      'timeWindowRules',
     ];
     for (const field of fields) {
       expect(dict[field], `missing field ${field}`).toBeDefined();
@@ -2194,6 +2388,8 @@ describe('Config schema 国际化(desc i18n 映射)', () => {
       'cooldownMs',
       'retryableCodes',
       'perTurn',
+      'timeWindowEnabled',
+      'timeWindowRules',
     ];
     for (const fieldName of fields) {
       const node = fieldOf(fieldName);

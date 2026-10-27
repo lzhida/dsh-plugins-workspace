@@ -19,16 +19,23 @@
 #     TAG_NOT_ON_MAIN 直接失败(从 dev 等集线提交打的 tag 不允许发布);
 #   - prerelease 版本(如 dsh-x-v1.0.0-rc.1)与 private 包明确跳过(退出 0 并留日志);
 #   - tag 短名无对应包 / 短名歧义 / tag 版本与该提交 package.json 不一致 → 直接失败。
+#
+# npm 暂存成功后,同一工作流创建 GitHub Release:notes 取包 CHANGELOG.md 中
+# 该版本的段落(与 annotated tag message 同源,见 scripts/release/changelog.ts,
+# 由 `pnpm release github-release <tag>` 按 publish 决策执行;prerelease 与
+# 私有包跳过、release 已存在幂等跳过)。Release 在暂存时创建而非 npm 放行
+# 后——放行是 npm 后台的人工动作、无 CI 触发点,tag 内容即发布内容。
+# contents: write 为创建 Release 所需的最小新增权限。
 name: Release
 
 on:
   push:
     tags: ['*-v*']
 
-# contents: read 供只读检出;id-token: write 供 npm OIDC trusted publishing
-# 换取短时发布凭证——这是发布所需的最小权限组合
+# contents: write 供创建 GitHub Release;id-token: write 供 npm OIDC trusted
+# publishing 换取短时发布凭证——这是发布所需的最小权限组合
 permissions:
-  contents: read
+  contents: write
   id-token: write
 
 jobs:
@@ -78,3 +85,11 @@ jobs:
       # 认证由 OIDC id-token 完成,不需要任何 NPM_TOKEN。
       - name: 按 tag 暂存发布(仅公开包正式版,OIDC 免 token)
         run: pnpm release publish "${{ github.ref_name }}" --client npm-stage
+
+      # npm 暂存成功后创建 GitHub Release:notes 取包 CHANGELOG.md 中该版本
+      # 的段落;skip 决策退出 0 不创建,release 已存在幂等跳过。gh 由 runner
+      # 预装,凭证用内置 GITHUB_TOKEN(permissions.contents: write 已授予)。
+      - name: 创建 GitHub Release(CHANGELOG 版本段)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: pnpm release github-release "${{ github.ref_name }}"

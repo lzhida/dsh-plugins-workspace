@@ -2,75 +2,43 @@
 
 [English](./README.en.md) | 简体中文
 
-[dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)(DeepSeek Harness)插件集合——TypeScript + cordis 插件 monorepo。插件默认以 TS 源码形态被 dsh loader 直接加载,无构建步骤(例外:`@zhidal/dsh-llm-fallback` 构建式发行,入口为 esbuild 打包的 dist,已发布 [npm](https://www.npmjs.com/package/@zhidal/dsh-llm-fallback))。
+[dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)(DeepSeek Harness)插件仓库——TypeScript + cordis 插件 monorepo。当前仅收录一个插件:[@zhidal/dsh-llm-fallback](./packages/dsh-llm-fallback/README.md)(构建式发行,入口为 esbuild 打包的 dist,已发布 [npm](https://www.npmjs.com/package/@zhidal/dsh-llm-fallback))。
 
 > **纯 AI 开发**:本仓库的全部代码均由 AI 编码代理生成。
 
 ## 插件
 
-### @lzhida/dsh-guided-goal
+### @zhidal/dsh-llm-fallback
 
-引导式持久目标(goal)命令。将一句自然语言意图转化为结构化 goal,由 dsh goal 域在会话内自主执行直至完成。
-
-**核心特性**
-
-- **引导式创建**(`/guided-goal`):模型逐项澄清五个字段——成功标准(必须可判定)、验证方式、迭代上限、范围边界、停止条件——全部明确后合成 objective 并调用 `create_goal`;
-- **智能跳过访谈**:草稿已足够明确或用户明确不愿被访谈时,模型可跳过澄清直接创建;所有推断字段以「假设:…」显式标注,轮次上限按工作量估算(小 2–3 / 中 5 / 大 8–10 轮)并在回复中说明依据;
-- **结构化 objective**:五字段固定章节 `## Objective / ## Success criteria / ## Verification / ## Boundaries / ## Stop conditions`,轮次上限传入 `max_goal_rounds`;
-- **完成后强制总结**:goal 的停止条件内置「输出总结」要求——修改文件清单、逐条验证结果对照、遗留问题;
-- **设置面板**:dsh 设置 → 插件 → guided-goal,「启用命令」开关(默认开启);
-- **官方语言跟随**:命令描述与协议提示词按 dsh 通用设置的语言自动切换(中文 / English / 未设置时双语兜底)。
-
-**用法**
-
-```
-/guided-goal              # 进入访谈,逐项澄清后创建
-/guided-goal <草稿目标>   # 带草稿进入访谈;草稿足够明确时模型可跳过访谈直接创建
-```
-
-### @lzhida/dsh-obsidian
-
-把 [Obsidian 内置 CLI](https://obsidian.md/zh/help/cli)(`obsidian <command> [key=value ...]`)封装为 dsh agent 可调用的 `obsidian_*` 工具集,统一供 agent / 人工在 dsh 会话内操作 Obsidian vault。命令分类(35+ 条子命令,覆盖 `file:move` / `delete` / `property:set` / `plugin:enable` / `command` / `reload` 等)由 [`src/commands.ts`](./packages/dsh-obsidian/src/commands.ts) 单一真源维护,system-prompt section 同步渲染命令表与安全约束,README 不复述以防漂移。
-
-**核心特性**
-
-- **9 个 `obsidian_*` 工具**:`obsidian_read` / `create` / `append` / `search` / `daily` / `daily_append` / `properties` / `vault` + 通用入口 `obsidian_run`(覆盖 35+ 条子命令,model 知道命令名才能调;description 强制写明「command 取自 commands.ts 清单」防虚构);
-- **危险等级四档**:read / write / destructive / execute — 由 commands.ts 标注,protocol section 写明每档的二次确认/权限闸要求;
-- **错误归一**:所有失败归一为 `[CODE] message` 文本(`OBSIDIAN_CLI_NOT_FOUND` / `OBSIDIAN_INVALID_INPUT` / `OBSIDIAN_SPAWN_FAILED` / `OBSIDIAN_TIMEOUT` / `OBSIDIAN_NONZERO_EXIT` / `OBSIDIAN_PROTOCOL_ERROR`),model 直接字符串匹配;Obsidian 特有的 `Error:` stdout 前缀被 runner 转成 `OBSIDIAN_PROTOCOL_ERROR`;
-- **stdio 截断**:stdout 20k / stderr 4k,超出加 `[truncated to N chars]` 标记;
-- **不打包二进制**:`obsidian` 由 Obsidian 应用暴露到 `PATH`;缺失时第一次调用即报 `OBSIDIAN_CLI_NOT_FOUND`,给出明确恢复提示;
-- **system-prompt section**:`tool:obsidian` order=2960,加载即向 model 注入 35+ 条命令清单与安全约束;
-- **零配置**:安装即用,默认用激活 vault;多 vault 场景在每次调用时显式传 `vault=<name>`。
-
-**前置**:本机安装 Obsidian(≥1.4,提供 `obsidian` CLI);若 `obsidian --version` 失败,先修复 PATH。
+dsh 的模型回退插件:拦截全局 LLM 调用,**会话页面指定的模型**(事实主模型)失败时,按回退队列自动切换到下一个 `provider/model`,**对话不中断**。支持每候选重试次数(`retriesBeforeSwitch`)、失败候选冷却跳过与可视化配置卡,失败码路由只按宿主稳定失败码决策。特性、原理、配置与故障排查详见 [packages/dsh-llm-fallback/README.md](./packages/dsh-llm-fallback/README.md);后续策略演进(时段限制、成本路由等)的盘点与决策清单见 [docs/llm-fallback-roadmap.md](./docs/llm-fallback-roadmap.md)。
 
 ## 安装
 
 前置:Node ≥ 22、pnpm 11、已安装 dsh。
 
-> **⚠️ 安装限制**:以下插件均为 TS 源码入口,**仅支持本地 `link:` 安装且必须为绝对路径**——`link:` 相对路径按 pnpm 语义解析到 profile 目录(`~/.dsh/profiles/<name>/packages/...`),安装必败;git/npm/tarball 实体安装会被 Node 以 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING` 拒绝加载。实体安装仅支持 dist 入口的 [dsh-llm-fallback](./packages/dsh-llm-fallback/README.md)。
-
-```powershell
-# 仓库根目录执行(PowerShell)。Git Bash 把路径表达式换成 "$(pwd -W)",POSIX 用 "$(pwd)"
-pnpm dsh plugin --profile default add "link:$($PWD.Path -replace '\\','/')/packages/dsh-guided-goal"   # 引导式 goal 命令(独立,不依赖执行器)
-pnpm dsh plugin --profile default add "link:$($PWD.Path -replace '\\','/')/packages/dsh-obsidian"      # Obsidian 操作(独立,9 个 obsidian_* 工具 + 通用入口,封装 Obsidian 内置 CLI)
+```sh
+dsh plugin add @zhidal/dsh-llm-fallback                       # npm 安装(推荐)
+dsh plugin add link:<仓库绝对路径>/packages/dsh-llm-fallback  # 仓库内开发(link: 必须是绝对路径)
 ```
 
-安装后在 dsh Web UI 的设置 → 插件中确认目标插件已启用:guided-goal 在会话输入框使用 `/guided-goal`;obsidian 在任意会话中由模型用 `obsidian_*` 工具集协作。
+完整安装方式(npm / link / git / tarball)、`allowBuilds` 放行与安装验证见 [packages/dsh-llm-fallback/README.md](./packages/dsh-llm-fallback/README.md)。
+
+> **新增 TS 源码入口插件时注意**:TS 源码入口(`main: "src/index.ts"`)仅支持本地 `link:`(绝对路径)安装——`link:` 相对路径按 pnpm 语义解析到 profile 目录,必败;git/npm/tarball 实体安装会被 Node 以 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING` 拒绝。需要实体安装必须像 dsh-llm-fallback 一样以 dist 为入口(esbuild 构建)。
 
 ## 开发
 
 ```sh
-pnpm install        # 安装依赖并自动执行 lefthook install
+pnpm install        # 安装依赖并自动执行 lefthook install;同时触发 llm-fallback 的 prepare 构建 dist
 pnpm lint           # ESLint(flat config,TS)
 pnpm format         # Prettier 写入(format:check 仅校验)
 pnpm typecheck      # 递归各包 tsc --noEmit
 pnpm test           # Vitest,全仓 src/**/*.test.ts
 ```
 
-- **纯 TypeScript**:插件无构建步骤,`package.json` 的 `main` 直接指向 `src/index.ts`,由宿主 dsh loader 加载;
-- **E2E**:无专用脚本——按 [.agents/skills/dsh-plugin-dev/SKILL.md](./.agents/skills/dsh-plugin-dev/SKILL.md) §5 的手工 CLI 流程,以独立 profile(默认 `e2e`,缺失时从官方 web 模板引导)启动真实 dsh 实例;插件列表按 profile 隔离,`DSH_HOME` 共享全局 `~/.dsh`(模型凭证不隔离);断言 `[<name>]` 加载日志、端口可达与 tokened URL 页面健康,测完 `plugin remove` 清理;
-- **新增插件**:仿照 `packages/dsh-guided-goal/package.json` 建 `packages/<name>/` 即可,`pnpm-workspace.yaml` 自动收录;
+- **构建式发行**:`@zhidal/dsh-llm-fallback` 的 `main` 指向 esbuild 打包的 `dist/index.js`(`pnpm --filter @zhidal/dsh-llm-fallback build` 单独重建)——这是宿主 Node 拒绝对 node_modules 下 `.ts` 文件做 type-stripping 时的唯一可行入口方案;
+- **E2E**:无专用脚本——按 [.agents/skills/dsh-plugin-dev/SKILL.md](./.agents/skills/dsh-plugin-dev/SKILL.md) §5 的手工 CLI 流程,以独立 profile(默认 `test`)启动真实 dsh 实例;插件列表按 profile 隔离,`DSH_HOME` 共享全局 `~/.dsh`(模型凭证不隔离);断言 `[dsh-llm-fallback] plugin loaded` 加载日志、端口可达与 tokened URL 页面健康,测完 `plugin remove` 清理;
+- **新增插件**:仿照 `packages/dsh-llm-fallback/package.json` 建 `packages/<name>/` 即可,`pnpm-workspace.yaml` 自动收录;`@deepseek-ai/cordis` 只放 `devDependencies` 且仅 `import type` 引入(运行时由宿主提供);
+- **版本与发布**:Changesets(`pnpm changeset` → `changeset:version`)+ `{短包名}-v{X.Y.Z}` git tag 触发 npm 发布流水线,详见 [.changeset/README.md](./.changeset/README.md) 与 [scripts/release/README.md](./scripts/release/README.md);
 - **提交规范**:中文 Conventional Commits;开发走 `feat/*`、`fix/*` 分支合入 `dev`,验证后合入 `main`。
 - **CI**:GitHub Actions 流水线([.github/workflows/ci.yml](.github/workflows/ci.yml))在 push / PR 面向 `main`、`dev` 时运行,Ubuntu 上 Node 22 / 24 双版本执行与本地一致的 `format:check → lint → typecheck → test` 门禁链;[tests/ci-workflow.test.ts](tests/ci-workflow.test.ts) 作为配置回归测试,守护工作流引用的脚本、门禁顺序与 action 固定版本。e2e 与 npm 发布不在 CI 范围内(前者需真实 dsh 实例与凭证,后者需发布授权)。
 

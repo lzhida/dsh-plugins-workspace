@@ -9,7 +9,7 @@
  * - 如果所有候选都失败,用户会看到错误信息(代码级契约,与 prompt 无关);
  * - 模型不应主动配置 fallback(由用户在 settings 里设置)。
  *
- * order=2970(排在 dsh-obsidian 2960 之后,与 taskboard 2950 同档 PLUGIN 类)。
+ * order=2970(PLUGIN 类档位,与宿主 taskboard 2950 等 section 同档)。
  * 文本不含 `{{var}}`,适配 dsh 0.2.0-rc.2 renderPrompt 严格校验。
  */
 
@@ -18,7 +18,7 @@ import type { PromptSection } from '@deepseek-ai/dsh-system-prompt';
 /** section 名(全局唯一;dsh 0.2.0 重复注册会抛,故用包名空间)。 */
 export const PROTOCOL_SECTION_NAME = 'tool:llm-fallback';
 
-/** section order:PLUGIN 类,排在 dsh-obsidian(2960)之后。 */
+/** section order:PLUGIN 类档位(2970)。 */
 export const PROTOCOL_SECTION_ORDER = 2970;
 
 const MODEL_FALLBACK_PROTOCOL_TEXT = `A host-level plugin (\`dsh-llm-fallback\`) wraps every model call in a configured fallback chain. When the current provider/model keeps failing, the next candidate is tried automatically before the error surfaces to you.

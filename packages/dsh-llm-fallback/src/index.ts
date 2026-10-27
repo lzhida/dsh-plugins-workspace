@@ -69,10 +69,12 @@
  *
  * 局限性:
  * - 不实现 provider/* 通配条目、role/specificity 分派链;
- * - 不实现"跨回合切回会话指定模型"(回退状态以 turn:step 为 key,新 step
- *   天然从会话指定模型重新开始;同一 step 内链耗尽后不再回头);冷却跳过
- *   在此之上做跨 step 优化:冷却中的模型被跳过、窗口期满自动恢复优先级,
- *   不改变"新 step 从会话指定模型重新开始"的基准语义;
+ * - 不实现"跨回合切回会话指定模型"(回退状态以 `<会话id>:<turn>:<step>`
+ *   为 key——会话隔离,多会话同号 turn 互不串扰;payload 缺会话标识时
+ *   降级共享键位——新 step 天然从会话指定模型重新开始;同一 step 内链耗尽
+ *   后不再回头);冷却跳过在此之上做跨 step 优化:冷却中的模型被跳过、
+ *   窗口期满自动恢复优先级,不改变"新 step 从会话指定模型重新开始"的
+ *   基准语义;
  * - 冷却表存于插件进程内存:宿主重启 / 插件重载后清零(重启后首轮请求会
  *   重新验证全部模型);
  * - backoff 是简单指数退避 + 抖动 ±10%;
@@ -93,6 +95,7 @@ import {
   type FallbackState,
   type StepKey,
   backoffDelayMs,
+  cooldownKey,
   currentEffectiveCandidate,
   firstAvailableCandidateIndex,
   isCoolingDown,
@@ -102,7 +105,9 @@ import {
   ourRetryChain,
   resolveCandidateRetryPlan,
   stateFor,
+  stepStateKey,
 } from './state.ts';
+import { resolveTimeWindowCooldowns } from './schedule.ts';
 import {
   type TrajectoryAgent,
   FALLBACK_RETRY_POLICY_KEY,
@@ -197,7 +202,8 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
     return;
   }
 
-  // 4. per-step 回退状态:`turn:step` 当 key
+  // 4. per-step 回退状态:`<会话id>:<turn>:<step>` 当 key(会话隔离;
+  //    payload 缺 agent/session.id 时降级为无会话段的 `turn:step`)
   const states = new Map<StepKey, FallbackState>();
 
   // 4b. 失败候选冷却表(key = 'provider/model',value = 冷却到期毫秒时间戳)。
@@ -220,11 +226,23 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
     const dispose = ctx.on(
       'agent/request',
       async (
-        payload: { turn: number; step: number; signal: AbortSignal },
+        payload: {
+          turn: number;
+          step: number;
+          signal: AbortSignal;
+          /** 主体 agent:只读 session.id 作状态键会话段(可选,防御旧宿主)。 */
+          agent?: TrajectoryAgent;
+        },
         next: () => Promise<RequestConfig>,
       ): Promise<RequestConfig> => {
         const seed = await next();
-        const key: StepKey = `${payload.turn}:${payload.step}`;
+        // 键位含会话标识:多会话并发时同号 turn 的状态互不串扰(会话隔离,
+        // 见 state.ts stepStateKey;缺失时降级 `turn:step` 共享键位)
+        const key: StepKey = stepStateKey(
+          payload.agent?.session.id,
+          payload.turn,
+          payload.step,
+        );
         // 惰性创建/取出该 step 的状态(此前仅在失败时创建;现在请求阶段就建,
         // 以便在首次失败前捕获会话指定模型——error payload 不带 model)
         const cfg = current();
@@ -236,9 +254,49 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
               model: seed.model,
             };
           }
+          // 时间窗预填冷却表(时段计划 v2,「时间窗=预填冷却表」):窗口内
+          // 按规则动作(block=冷却命中 provider / prefer=冷却未命中 provider)
+          // 把候选经既有 markCooldown 通道预填进冷却表(到期 = 窗口结束,
+          // 宿主本地时区);此后与失败冷却共用同一条跳过/降级路径,窗口结束
+          // 由既有惰性过期自动恢复优先级——不引入定时器、不新增扫描路径。
+          // max-merge:已有冷却条目(失败冷却或更晚窗口)到期更晚时不缩短它。
+          // 预填覆盖链候选与会话指定模型(它可能不在链上,但同样受窗口约束)。
+          if (
+            cfg.cooldownEnabled &&
+            cfg.timeWindow.enabled &&
+            cfg.timeWindow.rules.length > 0
+          ) {
+            const nowMs = Date.now();
+            const page = state.pageModel;
+            const targets =
+              page &&
+              !state.chain.some(
+                (c) => c.provider === page.provider && c.model === page.model,
+              )
+                ? [page, ...state.chain]
+                : [...state.chain];
+            const prefill = resolveTimeWindowCooldowns(
+              cfg.timeWindow.rules,
+              targets,
+              new Date(),
+            );
+            let changed = 0;
+            for (const entry of prefill) {
+              const existing = cooldowns.get(cooldownKey(entry));
+              if (existing !== undefined && existing >= entry.until) continue;
+              markCooldown(cooldowns, entry, nowMs, entry.until - nowMs);
+              changed += 1;
+            }
+            if (changed > 0) {
+              console.log(
+                `[${name}] time-window: prefilled cooldown for ${changed} candidate(s) until their window end`,
+              );
+            }
+          }
           // 冷却跳过:会话指定模型在冷却窗内 → 该 step 直接从链上第一个
           // 可用候选开始;无可用候选(全链冷却/链空)→ 保持 -1,按原语义
-          // 从会话模型开始(冷却绝不吞掉全部候选)。
+          // 从会话模型开始(冷却绝不吞掉全部候选;时间窗预填全候选时同此
+          // 降级——时间窗绝不吞掉全部候选)。
           if (cfg.cooldownEnabled) {
             const now = Date.now();
             if (isCoolingDown(cooldowns, state.pageModel, now)) {
@@ -295,7 +353,13 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
         next: () => Promise<RequestErrorAction | undefined | void>,
       ): Promise<RequestErrorAction | undefined | void> => {
         const { turn, step, failure, signal } = payload;
-        const key: StepKey = `${turn}:${step}`;
+        // 键位与 agent/request 监听器同一构造(stepStateKey),会话段缺失
+        // 时同样降级——两侧构造一致是状态能对上的前提
+        const key: StepKey = stepStateKey(
+          payload.agent?.session.id,
+          turn,
+          step,
+        );
         // 读取当前(可能已被设置面板改过的)配置
         const cfg = current();
 
@@ -394,6 +458,14 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
             markCooldown(cooldowns, failed, Date.now(), cfg.cooldownMs);
           }
         }
+        // perTurn=false(单次切换档):本 step 已切换过(one-shot 名额已消耗)
+        // → 不再切换,透传上游决策(官方 retry 若仍想重试则继续同候选重试,
+        // 那不是切换)。闸门挂在冷却标记之后:白名单失败耗尽预算是既成事实,
+        // 与链耗尽路径一样照常记冷却。名额只在下方切换提交处置位消耗——
+        // 官方重试透传与预算内代执行不经过此分支,不消耗名额。
+        if (!cfg.perTurn && state.switched) {
+          return upstream;
+        }
         if (!advance) {
           state.exhausted = true;
           return upstream;
@@ -447,6 +519,9 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
         state.retries = advance.retries;
         // 新候选获得完整预算:候选失败计数清零
         state.candidateFailures = 0;
+        // 切换已生效:消耗 one-shot 名额(perTurn=false 时本 step 不再切换;
+        // 退避被 abort 的路径在上方提前返回,不置位、不消耗名额)
+        state.switched = true;
         // 返回 retry → loop 会重进 prepareRequest → 我们在 agent/request 里改写 provider/model
         return { kind: 'retry' };
       },
@@ -491,8 +566,10 @@ export {
   nextCandidate,
   ourRetryChain,
   purgeExpiredCooldowns,
+  purgeStaleTurnStates,
   resolveCandidateRetryPlan,
   stateFor,
+  stepStateKey,
 } from './state.ts';
 export type {
   CandidateRetryPlan,

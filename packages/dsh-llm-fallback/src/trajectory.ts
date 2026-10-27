@@ -81,9 +81,15 @@ export interface LlmRetryStartedEventData {
 /**
  * 本插件用到的 `agent.session` 最小结构面。
  * 运行时即 `@deepseek-ai/dsh-session` 的 Session(append-only 日志);
- * 只声明两个 append 重载,避免把整个 Session 类型拖进插件类型面。
+ * 只声明两个 append 重载与会话标识,避免把整个 Session 类型拖进插件类型面。
  */
 export interface TrajectorySession {
+  /**
+   * 会话标识(源 durable header 的单一副本)。step 状态键的会话段取自
+   * 它;标可选以防御旧宿主/异常形态(缺失时键位降级,见 state.ts
+   * stepStateKey)。
+   */
+  readonly id?: string;
   append(type: 'llm/retry', data: LlmRetryEventData): unknown;
   append(type: 'llm/retry-started', data: LlmRetryStartedEventData): unknown;
 }

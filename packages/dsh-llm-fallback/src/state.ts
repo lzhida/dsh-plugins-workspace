@@ -14,7 +14,10 @@ export interface Candidate {
   model: string;
 }
 
-/** step 标识:`turn:step`,来自 agent/request 与 agent/request-error 的 payload。 */
+/**
+ * step 标识:`<sessionId>:<turn>:<step>`(会话隔离)或降级形态
+ * `turn:step`(payload 无 agent/session.id 时),由 stepStateKey 统一构造。
+ */
 export type StepKey = string;
 
 /**
@@ -41,6 +44,14 @@ export interface FallbackState {
    * `candidateFailures - 1`(首次失败不算重试)达到预算上限即切换。
    */
   candidateFailures: number;
+  /**
+   * 本 step 是否已发生过一次切换(one-shot 标志,perTurn=false 单次切换档消费)。
+   * 只在切换动作真正生效处置位(index.ts agent/request-error 切换提交点)——
+   * 官方 `dsh-llm-retry` 透传与预算内代执行重试不消耗名额;agent/request 的
+   * 冷却起点改写(无候选失败,纯效率优化)同样不算切换。perTurn=false 时本
+   * 标志置位后同 step 不再切换;新 step 由 stateFor 重建状态天然重置。
+   */
+  switched: boolean;
   /**
    * 会话页面指定的模型(事实主模型)。由 index.ts 的 agent/request 监听器在
    * 尚未切换(index<0)时从 proposedConfig 捕获——agent/request-error 的
@@ -97,11 +108,37 @@ export function deriveCandidateFromOptions(opts: {
   return { provider: opts.provider, model: opts.model };
 }
 
-/** 该 failure 是否在白名单内? */
+/**
+ * 网关 408 请求超时对应的 HTTP 状态码。
+ * 单独具名:该值是白名单之外唯一按结构化字段放行的判定,边界必须醒目。
+ */
+const GATEWAY_REQUEST_TIMEOUT_STATUS = 408;
+
+/**
+ * 该 failure 是否可触发重试/切换?
+ *
+ * 判定分两层,均为结构化字段判定(宿主约定:route on code, never parse
+ * message——本函数同样绝不读 failure.message):
+ *
+ * 1. **网关 408 结构化判定**:`failure.status === 408` 直接视为可重试。
+ *    数据面依据(宿主 0.2.1-rc.2 实码):`LlmFailure.status` 仅由 deepseek
+ *    路由的 `providerError` 填充(响应头/响应行的 HTTP status);pi-ai 路由
+ *    的 `classifyPiAiError` 纯文本分类、不产出 status。deepseek 路由下 408
+ *    有两种形态——响应体无已知 type → `HTTP_408`(默认白名单已含),网关
+ *    透传 `type: "invalid_request_error"` → `INVALID_REQUEST`(白名单外)。
+ *    后者若只看 code 会被当成"请求构造错误"而放弃,但 HTTP 408 的语义是
+ *    请求超时(临时性失败,与 429 同类):同候选重试与切换都有意义,故对
+ *    status=408 无条件放行。该判定先于白名单——存量自定义白名单(未列
+ *    `HTTP_408`)的用户无需任何配置迁移即获得此行为;无 status 的失败
+ *    (含 pi-ai 路由退化为纯 code 的 408)完全不受影响,零回归。
+ * 2. **失败码白名单**:code 命中用户白名单(默认 `DEFAULT_RETRYABLE_CODES`)
+ *    → 可重试;未命中 → 透传上游,行为与旧版完全一致。
+ */
 export function isFailureRetryable(
   failure: LlmFailure,
   retryableCodes: ReadonlySet<string>,
 ): boolean {
+  if (failure.status === GATEWAY_REQUEST_TIMEOUT_STATUS) return true;
   return retryableCodes.has(failure.code);
 }
 
@@ -342,6 +379,66 @@ export function backoffDelayMs(
   return Math.max(0, Math.floor(capped * (1 + jitter)));
 }
 
+/**
+ * 构造 step 状态键:`<sessionId>:<turn>:<step>`(会话隔离)。
+ *
+ * 旧键位 `turn:step` 不含会话标识,多会话并发时同号 turn 共享同一状态
+ * (切换进度互相串扰),且新 turn 建态清理可能误清其他会话的在途状态。
+ * 会话标识取自 `agent/request(-error)` payload 的 `agent.session.id`
+ * (官方类型两个 payload 均带 `agent: Agent`);缺失(旧宿主 / 非 agent
+ * 作用域 dispatch)时降级为无会话段的 `turn:step` 形态——与旧行为兼容,
+ * 多会话退化为共享键位(优雅降级,非崩溃)。
+ */
+export function stepStateKey(
+  sessionId: string | undefined,
+  turn: number,
+  step: number,
+): StepKey {
+  return sessionId ? `${sessionId}:${turn}:${step}` : `${turn}:${step}`;
+}
+
+/** 自右解析 step 键 → 会话段与 turn 段;非 `turn:step` 形态返回 null。 */
+function parseStepKey(key: StepKey): { session: string; turn: string } | null {
+  const stepColon = key.lastIndexOf(':');
+  if (stepColon < 0) return null;
+  const turnColon = key.lastIndexOf(':', stepColon - 1);
+  return {
+    session: turnColon < 0 ? '' : key.slice(0, turnColon),
+    turn: key.slice(turnColon + 1, stepColon),
+  };
+}
+
+/**
+ * 清理与 `key` 同会话、不同 turn 的全部 step 状态(key 由 stepStateKey
+ * 构造:`<sessionId>:<turn>:<step>` 或降级 `turn:step`)。
+ *
+ * 每 step 的回退状态在一次失败推进后就死掉,却从不清理,超长会话下按 step
+ * 数无上界缓增;在 stateFor 的创建分支(新 turn 首次请求建态时)调用本函数,
+ * 按「同会话异 turn」移除旧 step 键——单会话内表上界收敛为其当前 turn 的
+ * step 数。**会话隔离**:其他会话的键位(含同号 turn)一律保留——跨会话
+ * 互不清理,否则并发会话的新 turn 建态会误清他会在途状态;代价是每会话在
+ * 其最末 turn 后遗留少量状态(上界 ≈ 会话数 × 单 turn step 数,每项小对象,
+ * 宿主重启即清零)。无会话段的降级键视为空串会话,只清同桶异 turn,
+ * 不波及会话键。冷却表是独立的 Map,与本函数无关,跨 step 冷却语义不受影响。
+ *
+ * 防御:key 缺 `:`(非 `turn:step` 形态,正常不会发生)时无法定位 turn,
+ * 直接返回不删任何键;表内异常形态键解析失败时跳过——清理绝不误删。
+ */
+export function purgeStaleTurnStates(
+  states: Map<StepKey, FallbackState>,
+  key: StepKey,
+): void {
+  const parsed = parseStepKey(key);
+  if (!parsed) return;
+  for (const existing of states.keys()) {
+    const other = parseStepKey(existing);
+    if (!other) continue;
+    if (other.session === parsed.session && other.turn !== parsed.turn) {
+      states.delete(existing);
+    }
+  }
+}
+
 /** 取出或惰性初始化该 step 的回退状态(index=-1:尚未切换,在会话指定模型上)。 */
 export function stateFor(
   states: Map<StepKey, FallbackState>,
@@ -350,12 +447,17 @@ export function stateFor(
 ): FallbackState {
   let s = states.get(key);
   if (!s) {
+    // 新键首次建态:清理同会话其他 turn 的旧 step 状态(会话隔离,见
+    // purgeStaleTurnStates)。只在创建分支触发——已存在键的常规读取
+    // 不扫描、零成本。
+    purgeStaleTurnStates(states, key);
     s = {
       chain,
       index: -1,
       retries: 0,
       exhausted: false,
       candidateFailures: 0,
+      switched: false,
     };
     states.set(key, s);
   }

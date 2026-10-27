@@ -4,6 +4,9 @@
  * 以及 dry-run 全流程预览;绝不自动 push。
  *
  * 版本递增与提交由 Changesets 负责,本模块只消费 package.json 的当前版本。
+ * tag message 内容源为包 CHANGELOG.md 中该版本的段落(见 changelog.ts):
+ * 首行 `{包名} v{版本}`,空行后接更新说明;段落缺失时降级为纯首行,
+ * 打 tag 永不因 CHANGELOG 缺失而失败。
  */
 import {
   ReleaseError,
@@ -12,6 +15,7 @@ import {
   tagFor,
 } from './core.ts';
 import type { WorkspacePackage } from './core.ts';
+import { buildTagMessage, readChangelogSection } from './changelog.ts';
 import {
   createAnnotatedTag,
   currentBranch,
@@ -36,6 +40,8 @@ export interface TagOutcome {
   readonly version: string;
   readonly tag: string;
   readonly branch: string;
+  /** annotated tag 的完整 message(subject + 空行 + CHANGELOG 段落)。 */
+  readonly message?: string;
   readonly dryRun: boolean;
 }
 
@@ -78,6 +84,16 @@ function assertValidVersion(pkg: WorkspacePackage): string {
   return pkg.version;
 }
 
+/** 组装 tag message:subject + 空行 + 该版本 CHANGELOG 段落(缺失降级)。 */
+function buildMessageFor(
+  rootDir: string,
+  pkg: WorkspacePackage,
+  version: string,
+): string {
+  const section = readChangelogSection(rootDir, pkg.dir, version);
+  return buildTagMessage(pkg.name, version, section);
+}
+
 function tagOne(input: {
   rootDir: string;
   pkg: WorkspacePackage;
@@ -89,14 +105,15 @@ function tagOne(input: {
   const tag = tagFor(pkg.shortName, version);
   assertTagAvailable(rootDir, tag);
   const branch = currentBranch(rootDir);
-  if (dryRun) return { pkg, version, tag, branch, dryRun: true };
+  const message = buildMessageFor(rootDir, pkg, version);
+  if (dryRun) return { pkg, version, tag, branch, message, dryRun: true };
   assertCleanWorktree(
     rootDir,
     allowDirty,
     'tag 将指向 HEAD 而非当前工作树内容',
   );
-  createAnnotatedTag(rootDir, tag, `${pkg.name} v${version}`);
-  return { pkg, version, tag, branch, dryRun: false };
+  createAnnotatedTag(rootDir, tag, message);
+  return { pkg, version, tag, branch, message, dryRun: false };
 }
 
 /**
@@ -141,12 +158,13 @@ export function tagAllPackages(input: TagOptions): TagAllOutcome {
       skipped.push(outcome);
       continue;
     }
+    const message = buildMessageFor(rootDir, pkg, version);
     if (dryRun) {
-      created.push(outcome);
+      created.push({ ...outcome, message });
       continue;
     }
-    createAnnotatedTag(rootDir, tag, `${pkg.name} v${version}`);
-    created.push(outcome);
+    createAnnotatedTag(rootDir, tag, message);
+    created.push({ ...outcome, message });
   }
   return { created, skipped, branch, dryRun };
 }

@@ -1,6 +1,0 @@
-# dsh-plan-goal bundle 层:dsh plugin add 安装本包时自动激活的插件行。
-# 纯 host 侧缝合插件,无 client 段;格式对齐 dsh-guided-goal。
-
-- insert:
-    - id: dsh-plan-goal
-      name: '@lzhida/dsh-plan-goal'

@@ -1,0 +1,42 @@
+/**
+ * 配置卡 Tailwind v4 输入：主题层 + 工具层，禁用 preflight。
+ *
+ * 卡片嵌在宿主 DOM 内，绝不能引入全局 reset（preflight 会重置宿主页面
+ * 元素），故按 v4 文档 granular import 形态只引入 theme.css 与
+ * utilities.css；`source(none)` 关闭自动内容探测（否则按 git 仓库根扫描，
+ * 会扫到已入库的 client/index.js 旧产物），再以 @source 锁定 client/src。
+ *
+ * shadcn 语义 token 经 `@theme inline` 全部映射宿主 --dsw-alias-* 主题
+ * token：utility 直接内联 var() 表达式——不在 :root 泄漏自定义属性、不引入
+ * .dark class 策略、明/暗模式跟随宿主切换零延迟。token 缺失时按 CSS var
+ * 规则退回继承色/初始值，不会渲染崩溃。
+ *
+ * 产物由 scripts/build-client.ts 经 @tailwindcss/cli 编译并以
+ * __TAILWIND_CSS__ 字符串注入 bundle（见 theme.ts 的运行时挂载）。
+ */
+
+@layer theme, base, components, utilities;
+@import 'tailwindcss/theme.css' layer(theme) source(none);
+@import 'tailwindcss/utilities.css' layer(utilities) source(none);
+
+@source "./";
+
+@theme inline {
+  --color-background: var(--dsw-alias-bg-layer-1);
+  --color-foreground: var(--dsw-alias-label-primary);
+  --color-surface: var(--dsw-alias-bg-layer-1);
+  --color-primary: var(--dsw-alias-brand-primary);
+  --color-primary-hover: var(--dsw-alias-button-primary-hover);
+  --color-primary-foreground: var(--dsw-alias-label-primary-foreground);
+  --color-secondary: var(--dsw-alias-bg-layer-2);
+  --color-secondary-foreground: var(--dsw-alias-label-primary);
+  --color-muted: var(--dsw-alias-bg-layer-2);
+  --color-muted-foreground: var(--dsw-alias-label-secondary);
+  --color-accent: var(--dsw-alias-interactive-bg-hover);
+  --color-accent-foreground: var(--dsw-alias-label-primary);
+  --color-destructive: var(--dsw-alias-state-error-primary);
+  --color-border: var(--dsw-alias-border-l1);
+  --color-border-strong: var(--dsw-alias-border-l2);
+  --color-input: var(--dsw-alias-border-l2);
+  --color-ring: var(--dsw-alias-brand-primary);
+}

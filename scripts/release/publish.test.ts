@@ -81,7 +81,7 @@ function makePlainFixture(): string {
     'utf8',
   );
   writePackage(dir, 'dsh-alpha', {
-    name: '@lzhida/dsh-alpha',
+    name: '@zhidal/dsh-alpha',
     version: '0.1.0',
     private: true,
   });
@@ -226,7 +226,7 @@ describe('release publish(tag 解析与版本判定纯函数)', () => {
 
   describe('decidePublish 三态发布决策(纯函数矩阵)', () => {
     const packages = [
-      pkg('@lzhida/dsh-alpha', '0.1.0', true),
+      pkg('@zhidal/dsh-alpha', '0.1.0', true),
       pkg('@zhidal/dsh-beta', '1.2.3'),
       pkg('@zhidal/dsh-gamma', '2.0.0-rc.1'),
     ];

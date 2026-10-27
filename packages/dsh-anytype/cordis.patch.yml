@@ -1,0 +1,26 @@
+# dsh-anytype bundle 层：一次安装即激活包内的插件行。
+#
+# 为什么用相对路径
+#   loader 的 anchorInsertedPluginNames() 会把 patch 条目里的相对路径
+#   转成 file URL（基准 = 本 patch 文件所在目录），于是同一个包内可以放
+#   多个插件入口文件，各自导出自己的 name / apply / Config——而路径与
+#   「包被装到哪儿」（link: 源码目录 / npm 包目录）无关。
+#   若改用包名（@zhidal/dsh-anytype），一个包只能对应一个插件入口，
+#   就无法在一个包里组合多个插件。
+#
+# 规则
+#   - 每行的 id 必须与入口文件导出的 name 一致（loader 以 id 定位行、
+#     以 name 找模块）；
+#   - 插件行按文件顺序装配；后一行可 inject 前一行提供的 service
+#     （dsh-anytype-memory 注入 anytype，由 dsh-anytype 提供）；
+#   - profile 侧不要再写这些行的 insert:——重复声明会让同一插件被实例化
+#     两次、同名工具注册两次。profile 只用「- id: <同一 id> + config」
+#     覆盖配置（迁移指引见 docs/bundle-architecture.md）。
+#
+# @see ../docs/bundle-architecture.md
+
+- insert:
+    - id: dsh-anytype
+      name: './src/entries/anytype.ts'
+    - id: dsh-anytype-memory
+      name: './src/entries/memory.ts'

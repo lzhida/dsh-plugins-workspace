@@ -28,7 +28,9 @@
     "access": "public"
   },
   "scripts": {
-    "build": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js --sourcemap",
+    "build": "npm run build:server && npm run build:client",
+    "build:server": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js --sourcemap",
+    "build:client": "node scripts/build-client.ts",
     "prepare": "npm run build",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit"
@@ -39,8 +41,20 @@
   },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",
-    "@deepseek-ai/dsh-llm": "0.2.0-rc.2",
-    "@deepseek-ai/dsh-system-prompt": "0.2.0-rc.2"
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-system-prompt": "0.2.1-rc.2",
+    "@radix-ui/react-checkbox": "^1.4.1",
+    "@radix-ui/react-scroll-area": "^1.4.0",
+    "@radix-ui/react-switch": "^1.4.1",
+    "@tailwindcss/cli": "^4.3.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "tailwind-merge": "^3.7.0",
+    "tailwindcss": "^4.3.3"
   },
   "dsh": {
     "bundle": {

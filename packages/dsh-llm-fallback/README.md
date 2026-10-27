@@ -12,22 +12,26 @@ dsh 的模型回退插件：拦截全局 LLM 调用，**会话页面指定的模
 - [安装](#安装)
 - [配置](#配置)
 - [每候选重试次数（retriesBeforeSwitch）](#每候选重试次数retriesbeforeswitch)
+- [时间窗切换与错峰优先](#时间窗切换与错峰优先)
 - [失败码白名单](#失败码白名单)
+- [模型目录与失效候选](#模型目录与失效候选)
 - [行为](#行为)
 - [轨迹可见性](#轨迹可见性)
 - [已知限制](#已知限制)
 - [故障排查](#故障排查)
 - [开发](#开发)
+- [演进路线](#演进路线)
 - [许可证](#许可证)
 
 ## 特性
 
 - 🔄 **自动回退**——失败码命中白名单且队列还有候选时，指数退避后切换并让 loop 重发请求，对 agent 完全透明
 - 🧊 **冷却跳过（优先级 × 效率平衡）**——失败候选耗尽预算切换后进入短冷却窗（`cooldownMs`，默认 5 分钟）：后续请求不再从它开始，直接改用链上下一个可用候选；窗口期满自动恢复优先级并重新验证，避免每次都从头试错拉长对话
+- ⏰ **时间窗切换/错峰优先（时段计划，默认关闭）**——配置的窗口内把候选预填进冷却表（到期 = 窗口结束）请求透明切走；错峰窗口（官方半价 00:30–08:30）可反向优先 DeepSeek；窗口结束由既有惰性过期自动恢复优先级，无定时器，见[时间窗切换与错峰优先](#时间窗切换与错峰优先)
 - 🤝 **与官方重试正交可调**——同 provider 重试次数按候选计（`retriesBeforeSwitch`）：默认跟随官方 `dsh-llm-retry` 预算，官方插件缺席时由本插件代执行同候选重试，预算用满再跨 provider 回退
 - 🎛️ **可视化配置卡**——内嵌设置面板：勾选候选模型、排序队列、设置每候选重试次数与最大切换候选数，保存即生效，无需重载插件
 - 🌐 **中英双语设置表单**——配置卡文案与 schema 字段描述跟随 dsh 语言设置（设置 → 通用 → 语言）即时切换，无需重载插件
-- 🧩 **失败码路由**——只按宿主稳定失败码（`RATE_LIMIT` / `QUOTA` / `SERVER` / `TIMEOUT` / `TRANSPORT` …）决策，从不解析错误消息；鉴权类错误直接上抛、不做无谓切换
+- 🧩 **失败码路由**——只按宿主稳定失败码（`RATE_LIMIT` / `QUOTA` / `SERVER` / `TIMEOUT` / `TRANSPORT` …）与结构化 `status` 字段（网关 408 请求超时）决策，从不解析错误消息；鉴权类错误直接上抛、不做无谓切换
 - 🔙 **零成本升级**——旧 0.2.x `string[]` 链配置自动归一为对象数组，存量自定义白名单里的旧失败码自动别名兼容；旧 `fallbackWhen` 字段被忽略、无需迁移
 
 ## 工作原理
@@ -36,7 +40,8 @@ dsh 的模型回退插件：拦截全局 LLM 调用，**会话页面指定的模
 2. 失败时，若失败码在白名单，按"每候选重试预算"（`retriesBeforeSwitch` × provider 重试策略合成）决策：预算内官方 retry 有决策则透传（它执行同候选重试）；预算内官方无决策则本插件代执行同候选重试（指数退避 + 轨迹事件）；预算用满且队列还有候选 → 指数退避后推进到下一候选（会话指定模型失败后切到队列第 1 项，再失败切第 2 项，依此推进；队列中与会话指定模型相同的项会被自动跳过），返回 `{kind: 'retry'}`；
 3. loop 收到 retry 后重走 `agent/request`，插件把 `provider/model` 改写为新候选（代执行重试时不推进、候选不变），请求无感续发——对话不中断；
 4. 失败码不在白名单或队列耗尽 → 透传上游（官方 retry / loop 默认行为），错误正常上抛；
-5. 冷却跳过（默认启用）：上述切换（或链耗尽）发生时，刚失败的模型记入冷却表——冷却窗内后续 step 的首个请求若起点仍在冷却中，直接改写为链上第一个可用候选开始；窗口期满自动恢复其优先级，下次请求按正常顺序重新验证是否恢复（恢复则继续优先使用，未恢复则再次冷却）。
+5. 冷却跳过（默认启用）：上述切换（或链耗尽）发生时，刚失败的模型记入冷却表——冷却窗内后续 step 的首个请求若起点仍在冷却中，直接改写为链上第一个可用候选开始；窗口期满自动恢复其优先级，下次请求按正常顺序重新验证是否恢复（恢复则继续优先使用，未恢复则再次冷却）；
+6. 时间窗（默认关闭）：`timeWindowEnabled` 开启后，每次请求起点先按规则把窗口内候选预填进冷却表（`block` 冷却命中 provider / `prefer` 冷却未命中 provider，到期 = 窗口结束），此后与失败冷却共用同一条跳过/改写与全冷降级路径；窗口结束由惰性过期自动恢复优先级。
 
 ## 安装
 
@@ -82,20 +87,68 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 
 启用插件后，在 设置 → 插件 → `@zhidal/dsh-llm-fallback` 详情页的「模型回退」配置卡中配置：
 
-| 字段                  | 类型                                                   | 默认                            | 说明                                                                                           |
-| --------------------- | ------------------------------------------------------ | ------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `enabled`             | `boolean`                                              | `true`                          | 总开关，关闭后不再拦截模型失败                                                                 |
-| `fallbackChains`      | `Array<{provider, model, displayName?, description?}>` | `[]`                            | 纯回退候选队列（不含会话指定的主模型），失败后按序切换；旧 `string[]` 形态自动归一             |
-| `retriesBeforeSwitch` | `number`                                               | `0`                             | 每候选切换前允许的同 provider 重试次数，见[每候选重试次数](#每候选重试次数retriesbeforeswitch) |
-| `maxRetries`          | `number`                                               | `0`（= 链长）                   | 单次请求最多**切换候选**次数，不含同候选重试                                                   |
-| `baseDelayMs`         | `number`                                               | `500`                           | 指数退避初值；`0` = 禁用退避（失败后立即重试/切换）                                            |
-| `maxDelayMs`          | `number`                                               | `30000`                         | 指数退避上限                                                                                   |
-| `cooldownEnabled`     | `boolean`                                              | `true`                          | 失败候选冷却跳过总开关，关闭后行为与旧版一致（每 step 都从会话模型重新开始）                   |
-| `cooldownMs`          | `number`                                               | `300000`（5 分钟）              | 失败模型的冷却窗口时长（毫秒），窗口过后自动重新验证并恢复其优先级；`0` = 立即过期（等效禁用） |
-| `retryableCodes`      | `string[]`                                             | 见[失败码白名单](#失败码白名单) | 可触发重试/切换的失败码白名单                                                                  |
-| `perTurn`             | `boolean`                                              | `true`                          | 预留字段，尚未参与回退判定，见[已知限制](#已知限制)                                            |
+| 字段                  | 类型                                                   | 默认                            | 说明                                                                                                                      |
+| --------------------- | ------------------------------------------------------ | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`             | `boolean`                                              | `true`                          | 总开关，关闭后不再拦截模型失败                                                                                            |
+| `fallbackChains`      | `Array<{provider, model, displayName?, description?}>` | `[]`                            | 纯回退候选队列（不含会话指定的主模型），失败后按序切换；旧 `string[]` 形态自动归一                                        |
+| `retriesBeforeSwitch` | `number`                                               | `0`                             | 每候选切换前允许的同 provider 重试次数，见[每候选重试次数](#每候选重试次数retriesbeforeswitch)                            |
+| `maxRetries`          | `number`                                               | `0`（= 链长）                   | 单次请求最多**切换候选**次数，不含同候选重试                                                                              |
+| `baseDelayMs`         | `number`                                               | `500`                           | 指数退避初值；`0` = 禁用退避（失败后立即重试/切换）                                                                       |
+| `maxDelayMs`          | `number`                                               | `30000`                         | 指数退避上限                                                                                                              |
+| `cooldownEnabled`     | `boolean`                                              | `true`                          | 失败候选冷却跳过总开关，关闭后行为与旧版一致（每 step 都从会话模型重新开始）                                              |
+| `cooldownMs`          | `number`                                               | `300000`（5 分钟）              | 失败模型的冷却窗口时长（毫秒），窗口过后自动重新验证并恢复其优先级；`0` = 立即过期（等效禁用）                            |
+| `retryableCodes`      | `string[]`                                             | 见[失败码白名单](#失败码白名单) | 可触发重试/切换的失败码白名单                                                                                             |
+| `perTurn`             | `boolean`                                              | `true`                          | 同一 `turn:step` 内至多切换一次候选（单次切换档）；默认 `true` = step 内允许多次切换，见[行为](#行为)                     |
+| `timeWindowEnabled`   | `boolean`                                              | `false`                         | 时间窗切换/错峰优先总开关，默认关闭（开启前零行为变化），见[时间窗切换与错峰优先](#时间窗切换与错峰优先)                  |
+| `timeWindowRules`     | `Array<{match, action, windows}>`                      | 官方错峰预置（见下文）          | 规则 = provider 匹配模式（`deepseek-account` / `deepseek-*` / `*`）+ 动作（`block` / `prefer`）+ `HH:mm` 半开区间窗口列表 |
 
-配置卡功能：启用开关；从宿主模型目录（按 provider 分组）勾选回退候选，列表限高滚动并支持按 provider 分组名 / 模型 id / 显示名搜索过滤（大小写不敏感，无命中给空态）；上移 / 下移 / 移除调整回退优先级（顺序即回退顺序，会话指定的模型不在此队列中）；设置每候选重试次数与最大切换候选数；失败候选冷却跳过开关与冷却窗口时长（毫秒）；保存 / 放弃，带 revision 冲突检测。所有改动保存后即时生效，无需重载插件。配色接入 dsh web 主题变量（`--dsw-alias-*`），明暗模式均保持文字可读。
+配置卡功能：启用开关；从宿主模型目录（按 provider 分组）勾选回退候选，列表限高滚动并支持按 provider 分组名 / 模型 id / 显示名搜索过滤（大小写不敏感，无命中给空态）；上移 / 下移 / 移除调整回退优先级（顺序即回退顺序，会话指定的模型不在此队列中）；设置每候选重试次数与最大切换候选数；失败候选冷却跳过开关与冷却窗口时长（毫秒）；时间窗开关与规则编辑（provider 匹配 + 时段窗口，非法规则阻止保存，开启时自动填入官方错峰预置）；保存 / 放弃，带 revision 冲突检测。所有改动保存后即时生效，无需重载插件。配色接入 dsh web 主题变量（`--dsw-alias-*`），明暗模式均保持文字可读。
+
+### 配置存储与持久化
+
+配置卡（设置面板）保存的字段**不落在本插件的私有文件里**——宿主把它们写进当前 profile 的补丁层 `~/.dsh/profiles/<profile>/cordis.patch.yml`，形如：
+
+```yaml
+- id: dsh-llm-fallback
+  name: '@zhidal/dsh-llm-fallback'
+  config:
+    enabled: true
+    fallbackChains:
+      - provider: <provider-id>
+        model: <model-id>
+    retriesBeforeSwitch: 0
+    maxRetries: 0
+    cooldownEnabled: true
+    cooldownMs: 300000
+```
+
+- **per-profile 隔离**：补丁层按 profile 分目录存放——`web` / `desktop` / `test` 各存各的，同机多 profile 的回退队列互不影响；
+- **重启保留**：补丁层是宿主托管的配置文件，宿主重启、插件重载后配置仍在（设置面板的「保存」= 落盘 + 热生效两步）；
+- **实测口径**：以上路径与 YAML 结构按 dsh 宿主 **0.2.1-rc.2** 的实际行为核对（其他宿主版本的补丁层实现若有差异，以实测为准）。
+
+#### 补丁层的两个角色
+
+「为什么第三方插件的配置会写在官方插件的配置文件里」——同一个 `cordis.patch.yml` 同时承担两件事：
+
+1. **条目注册**：插件条目必须出现在组合树里，宿主才会加载它。本插件包内自带 bundle 层补丁（`package.json` 的 `dsh.bundle.patch` → 包内 `cordis.patch.yml`，`- insert:` 块），`dsh plugin add` 时由宿主注入，装完即在位；**未自带 bundle 层补丁的第三方插件**（以及需要额外汇总实例的 MCP 客户端等）则必须在本文件用 `- insert:` 块登记条目——注意必须 `insert`、不能平级 `- id:` 覆盖（bundle 层不存在该条目，覆盖会报 entry not found 被丢弃）；
+2. **volatile 配置持久化**：设置面板保存的插件设置一律回写到同一文件同名条目的 `config:` 下（写入的是该插件完整的一份配置——volatile 字段取新值，其余字段按当前值一并固定在该层；本插件的字段全部是 volatile，故 `config:` 就是配置卡的内容）。**官方插件也不例外**——设置 → 通用 → 语言 的偏好落在同文件的 `- id: locale`（`@deepseek-ai/dsh-client-locale`）条目 `config.preference` 下（见[国际化](#国际化i18n)）。
+
+所以这个文件是宿主的**统一用户补丁层**：官方插件与第三方插件共用它，只是条目 id 不同。
+
+组合树按 **bundle 层 → profile 层 → home 层（`~/.dsh/cordis.patch.yml`）→ 命令行 `--patch` overlay** 依次叠加（后者覆盖前者）：bundle 层是插件包自带的补丁（随 `dsh plugin add` 注入），profile 层是本节说的用户补丁层，home 层是机器级、跨 profile 的覆盖层。**设置面板只写 profile 层**——某条目若已被 home 层或命令行 overlay 覆盖，profile 层的写入会被宿主拒绝。
+
+**手改补丁层的适用场景**：仅限**预置配置**——例如为一批新机器预先落一份默认回退队列，或在无 UI 环境下批量部署。日常改配置一律走设置面板（带字段校验、失效候选剔除与 revision 冲突检测）；手改的文件绕过配置卡的合法性校验——写坏的值会在插件装载时被拒绝（保留上一次成功配置），见[行为](#行为)。生效方式随 profile 而异：开启 HMR 的 profile（web / desktop）会实时监听补丁层文件，改动即时重算生效；关掉 HMR 的 profile（headless / sdk / acp）需重启宿主实例。
+
+#### `~/.dsh` 下的两类文件
+
+| 类别         | 例子                                                                                | 谁写、是什么                                                                                |
+| ------------ | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| 宿主托管配置 | `profiles/<profile>/cordis.patch.yml`                                               | 宿主 loader 读写的组合树补丁层：条目注册 + 全部插件的 volatile 配置落点（本插件配置在这里） |
+| 插件自有数据 | `dsh-taskboard.json`（任务看板账本）、`storages/`（`dsh-storage` 模式的 JSON 存储） | 插件自己写自己读的业务数据，宿主不解析、不参与组合                                          |
+
+宿主托管配置里也有两层：**profile 层**（`~/.dsh/profiles/<profile>/cordis.patch.yml`）是设置面板的唯一可写落点，本插件的配置在这里；**home 层**（`~/.dsh/cordis.patch.yml`）是机器级、跨 profile 的覆盖层，设置面板**不写**它。
+
+本插件**不引入任何自有配置文件或数据目录**：配置只走宿主统一层（单一真相源——不存在「配置在 A 处、状态在 B 处」的双写漂移，也不在 `~/.dsh` 下撒插件私有文件），运行状态（失败候选冷却表、每 step 回退状态）只存在于插件进程内存、不落盘。取舍很清楚：**配置**要持久、要跨重启、要按 profile 隔离，交给宿主补丁层最省事；**冷却 / 健康度 / 用量**这类高频变动、随时间增长的运行状态则不适合塞进 YAML 补丁层——其持久化属于改变插件形态的远期动作（见[策略演进路线图](../../docs/llm-fallback-roadmap.md)第三档，仓库内相对链接、npm 上不可点；届时插件随之改名，不再是 fallback 语义）。
 
 ### 国际化（i18n）
 
@@ -120,31 +173,90 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 
 同一 step 内计数按候选独立：切换到新候选后预算重新计满，每个候选都获得完整预算。
 
+## 时间窗切换与错峰优先
+
+时段计划 v2（0.6.0 起，默认关闭零迁移）：**时间窗 = 预填冷却表**。配置的窗口内，按规则把候选经既有 `markCooldown` 通道预填进失败冷却表（到期 = 窗口结束），此后走与失败冷却完全相同的跳过/改写路径——会话指定模型在冷却中时，step 起点直接改写为链上第一个可用候选（对话不中断）；窗口结束后由既有惰性过期自动恢复优先级，全程不引入定时器、不新增扫描路径。
+
+规则形态（全局窗口 + provider 匹配规则，配置薄）：
+
+| 字段      | 说明                                                                                                                  |
+| --------- | --------------------------------------------------------------------------------------------------------------------- |
+| `match`   | provider 匹配模式：精确 id（`deepseek-account`）、前缀通配（`deepseek-*`，含未来新增的同前缀 provider）或 `*`（全部） |
+| `action`  | `block` = 窗口内冷却**命中**的 provider（高峰避让）；`prefer` = 窗口内冷却**未命中**的 provider（错峰反向优先）       |
+| `windows` | `HH:mm` 半开区间 [start, end) 列表；起点 > 终点 = 跨夜回绕；相等 = 全天；按宿主机本地时区判定                         |
+
+官方错峰预置模板（开启开关且规则为空时自动填入，也可在配置卡「填入官方模板」重填）：
+
+```json
+[
+  {
+    "match": "deepseek-*",
+    "action": "block",
+    "windows": [{ "start": "08:30", "end": "00:30" }]
+  },
+  {
+    "match": "deepseek-*",
+    "action": "prefer",
+    "windows": [{ "start": "00:30", "end": "08:30" }]
+  }
+]
+```
+
+行为要点：
+
+- **高峰避让（改写切换，对话不中断）**：高峰窗口（08:30–00:30）内 `deepseek-*` 候选被预填冷却，会话指定模型若命中则在请求起点被改写为链上第一个可用候选；
+- **错峰反向优先**：半价窗口（00:30–08:30）内把**非** `deepseek-*` 候选预填冷却——会话模型是非 DeepSeek 时改写为链内 DeepSeek 候选；会话模型已是 DeepSeek 时起点原样（起点即优先目标），若失败，失败推进的冷却感知扫描会自动跳过被冷却的非 DeepSeek 候选；
+- **与冷却跳过的关系**：时间窗只借冷却表做承载，不改变失败冷却语义——同一候选可同时存在失败冷却（`now + cooldownMs`）与窗口冷却（到期 = 窗口结束），预填取**更晚到期**者、绝不缩短既有冷却；两者共用同一条「剩余候选全部在冷却中时降级回原顺序」兜底，时间窗绝不吞掉全部候选；
+- `cooldownEnabled: false` 时时间窗整体不生效（预填依赖冷却通道）；
+- 非法规则（空 match / 无合法 `HH:mm` 窗口）被配置卡阻止保存；手写进宿主配置的非法规则会让配置解析失败并保留上一次成功配置（与链项错误同风格）；
+- 默认关闭：开启前零行为变化，存量配置零迁移。
+
 ## 失败码白名单
 
-插件只按 `LlmFailure.code` 路由（宿主约定：route on code, never parse message）。默认白名单是宿主官方重试码（`EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT`）的超集——多出配额与上下文类，切模型正是这些失败的本职出路；另含 `UNSUPPORTED_REASONING_EFFORT`（模型不支持所请求的 reasoning effort），该失败对同一模型是确定性的、同 provider 重试必复现，切下一候选是唯一有意义的恢复路径。
+插件按 `LlmFailure.code` 白名单与唯一一个结构化 `status` 判定（`status === 408` 网关请求超时）路由（宿主约定：route on code, never parse message——本插件同样绝不解析 message）。默认白名单是宿主官方重试码（`EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT`）的超集——多出配额与上下文类，切模型正是这些失败的本职出路；另含两类**确定性失败**，同模型重试必复现，切下一候选是唯一有意义的恢复路径：`UNSUPPORTED_REASONING_EFFORT`（模型不支持所请求的 reasoning effort）与 `UNKNOWN_MODEL`（候选模型已从 provider 配置中删除或 id 变更——回退队列的[失效候选兜底](#模型目录与失效候选)）。
 
-| 失败场景                                         | 宿主 `code`                                       | 默认可切换                            |
-| ------------------------------------------------ | ------------------------------------------------- | ------------------------------------- |
-| 连接类传输失败（"Connection error." / 网络中断） | `TRANSPORT`                                       | ✅                                    |
-| 5xx 服务器错误                                   | `SERVER`                                          | ✅                                    |
-| 429 限流                                         | `RATE_LIMIT`                                      | ✅                                    |
-| 配额 / 余额耗尽                                  | `QUOTA`、`ACCOUNT_QUOTA`                          | ✅                                    |
-| 上下文超限                                       | `CONTEXT_WINDOW_EXCEEDED`                         | ✅                                    |
-| 空响应（正常结束但零内容块）                     | `EMPTY_RESPONSE`                                  | ✅                                    |
-| 流空闲 / 请求超时                                | `TIMEOUT`                                         | ✅                                    |
-| 模型不支持所请求的 reasoning effort              | `UNSUPPORTED_REASONING_EFFORT`                    | ✅ 同模型重试必复现，切可能支持的候选 |
-| 鉴权 / 请求构造 / 凭据错误                       | `AUTH` / `INVALID_REQUEST` / `INVALID_CREDENTIAL` | ❌ 换模型无解，立即上抛               |
-| 其他 HTTP 状态                                   | `HTTP_<status>`（如 `HTTP_502`）                  | ❌ 可自行加入白名单                   |
+| 失败场景                                         | 宿主 `code`                                                                                               | 默认可切换                                               |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| 连接类传输失败（"Connection error." / 网络中断） | `TRANSPORT`                                                                                               | ✅                                                       |
+| 5xx 服务器错误                                   | `SERVER`                                                                                                  | ✅                                                       |
+| 429 限流                                         | `RATE_LIMIT`                                                                                              | ✅                                                       |
+| 配额 / 余额耗尽                                  | `QUOTA`、`ACCOUNT_QUOTA`                                                                                  | ✅                                                       |
+| 上下文超限                                       | `CONTEXT_WINDOW_EXCEEDED`                                                                                 | ✅                                                       |
+| 空响应（正常结束但零内容块）                     | `EMPTY_RESPONSE`                                                                                          | ✅                                                       |
+| 流空闲 / 请求超时                                | `TIMEOUT`                                                                                                 | ✅                                                       |
+| 模型不支持所请求的 reasoning effort              | `UNSUPPORTED_REASONING_EFFORT`                                                                            | ✅ 同模型重试必复现，切可能支持的候选                    |
+| 候选模型已从 provider 配置删除 / id 变更         | `UNKNOWN_MODEL`                                                                                           | ✅ 同模型重试必复现，切下一候选                          |
+| 网关 408 请求超时（deepseek 路由）               | `HTTP_408`；网关响应体透传 `invalid_request_error` type 时为 `INVALID_REQUEST`（两形态均带 `status=408`） | ✅ 默认白名单 + `status=408` 结构化判定双通道            |
+| 网关 408 请求超时（pi-ai 路由）                  | `INVALID_REQUEST`（宿主纯文本分类，不透传 `status`）                                                      | ❌ 无 `status` 可判，插件侧无解，[见故障排查](#故障排查) |
+| 鉴权 / 请求构造 / 凭据错误                       | `AUTH` / `INVALID_REQUEST` / `INVALID_CREDENTIAL`                                                         | ❌ 换模型无解，立即上抛                                  |
+| 其他 HTTP 状态                                   | `HTTP_<status>`（如 `HTTP_502`）                                                                          | ❌ 可自行加入白名单                                      |
+
+**网关 408 请求超时（三态）**：OpenAI 兼容网关（如实测中返回 408 `{"code":"request_timeout","type":"invalid_request_error"}` 的 antirion-gateway）对上游超时的应答，按失败来源分三态：
+
+- **deepseek 路由**：适配器保留 HTTP status（`failure.status = 408`），code 为 `HTTP_408`（响应体无已知 type，已入默认白名单）或 `INVALID_REQUEST`（网关响应体透传 `type: "invalid_request_error"`，白名单外）。两态均可切换——后者由 `status === 408` 的**结构化判定**兜住（只读字段、绝不解析 message，且先于白名单生效：存量自定义白名单零迁移即获得此行为）；
+- **pi-ai 路由**：宿主对 pi-ai 错误纯文本分类、不透传 `status`，408 在数据面上退化为无 `status` 的 `INVALID_REQUEST`（白名单外）→ 不切换。插件按 route-on-code 原则无法从纯文本恢复 408 语义，属宿主上游缺口，见[故障排查](#故障排查)；
+- **客户端超时**：dsh 客户端自身的流空闲 / 请求超时（`TIMEOUT`，白名单内）与网关形态无关，一直可切换。
 
 存量配置兼容：0.3.1 及之前版本的默认白名单误含宿主不产出的 `NETWORK` / `SERVER_ERROR`，导致连接类与 5xx 失败不触发切换；升级到 0.3.2+ 后，运行时会对你已保存的自定义白名单按并集自动补入 `TRANSPORT` / `SERVER`（旧码保留无害），无需手动改配置。
+
+## 模型目录与失效候选
+
+dsh 侧的模型身份是**字面 `provider/model` 路由键**：deepseek 与 pi-ai 适配器的模型条目都以 `id` 为请求路由键、`name` 仅为选择器显示名。对队列条目这意味着两种变化、两种处理：
+
+- **显示名重命名（改 `name`，id 不变）→ 自动跟随**：队列显示名实时从宿主模型目录（`session.modelCatalog()`）解析，目录命中时显示 `name`、未命中或目录不可用时回退 `provider/model` 路由键——在 dsh 侧重命名模型后，配置卡无需重新保存即跟随新名。
+- **删除模型 / 改 `id`（无稳定键，与"删除+新增"不可区分）→ 失效标记 + 显式剔除**：目录加载成功时，不在当前目录中的队列条目渲染「已失效」徽标，区块提供「清除失效项」一键清理（写入草稿，仍需保存生效）；**任何保存动作的写入载荷都会自动剔除失效条目**。目录加载失败或某 provider 的目录查询失败时保守处理——绝不误标、绝不剔除。
+
+服务端兜底：失效候选请求会在 pi-ai 适配器构建期抛 `UNKNOWN_MODEL`（默认白名单内，见[失败码白名单](#失败码白名单)），链推进首失败即跳下一候选并留 `llm/retry` 轨迹——即使配置未在 UI 清理，运行时也不会卡死在失效候选上。插件绝不做服务端静默剔除：配置的删除只发生在你显式保存时。
 
 ## 行为
 
 - 失败码在白名单 → 计入当前候选的失败数，按每候选重试预算决策（透传官方重试 / 代执行同候选重试 / 切下一候选，见[每候选重试次数](#每候选重试次数retriesbeforeswitch)）
+- `perTurn: false`（单次切换档）：同一 `turn:step` 内至多切换一次候选——切换生效后，同 step 再次预算耗尽不再切换、透传上游决策；官方 retry 透传与预算内代执行重试不消耗名额；新 step / 新 turn 天然恢复切换名额，冷却起点改写不算切换
+- 回退状态按会话隔离：step 状态键含会话标识（`agent.session.id`），多会话并发时同号 turn 的键位互不共享、新 turn 的状态清理只作用于本会话；会话标识不可得（旧宿主）时优雅降级为共享键位（见[已知限制](#已知限制)）
 - 切换路径：退避 + 切下一候选 + 返回 `{kind: 'retry'}`，loop 重发请求（`agent/request` 监听器改写 `provider/model`）
 - 回退推进永不切向会话指定的模型（它刚失败过）——把会话模型也勾进队列时该项被自动跳过
 - 失败候选冷却：切换或链耗尽时，刚失败的模型（会话指定模型或链候选）记入冷却表（`cooldownMs`，默认 5 分钟）——冷却窗内后续 step 的首个请求若起点在冷却中，直接改写为链上第一个可用候选；窗口期满自动恢复优先级。剩余候选全部在冷却中时退回正常顺序（冷却绝不吞掉全部候选）；非白名单失败与预算内的同候选重试（透传官方 / 代执行）不记冷却；`cooldownEnabled: false` 整体关闭
+- 时间窗（默认关闭）：窗口内按规则把候选预填进冷却表（`block` = 命中 provider / `prefer` = 未命中 provider，到期 = 窗口结束，宿主本地时区），与失败冷却共用跳过/降级路径，窗口结束惰性过期自动恢复优先级；`cooldownEnabled: false` 时整体不生效，见[时间窗切换与错峰优先](#时间窗切换与错峰优先)
 - 失败码不在白名单或队列耗尽 → 透传上游决策（官方 retry 的 retry 也到此为止），错误正常上抛
 - 切换与代执行重试均向会话轨迹写入官方 `llm/retry` / `llm/retry-started` 事件（见[轨迹可见性](#轨迹可见性)）；写轨迹失败不影响回退本体
 - 退避等待期间 turn 被取消 → 立即中止等待并透传上游，不写 `llm/retry-started`
@@ -173,9 +285,10 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 - 自动跟随官方预算依赖 waterfall 链位：需能在 `agent/request-error` 中通过 `next()` 观察到官方 retry 的决策（以及 payload 携带的 `retryPolicy`）；自定义装载顺序导致观察不到时，自动档退化为「首失败即切」语义
 - 自定义 `retriesBeforeSwitch` 超出官方预算的部分由本插件代执行——退避用本插件配置（`baseDelayMs` / `maxDelayMs`），与官方重试的退避配置（provider `retryPolicy.backoff`）不同源，两段退避曲线在切换点可能不一致
 - 官方 `dsh-llm-retry` 本体无可配置项；provider 重试策略（`retryPolicy.maxRetries`，宿主默认 5）挂在 provider 适配器配置上（`llm-deepseek` 顶层 volatile 字段 / `llm-pi-ai` 的 `providers.<id>.retryPolicy`），可在 provider 侧直接调整，自动档实时跟随
-- `perTurn` 尚未实装：schema 有声明、配置会解析，但回退状态机未读取该字段，设 `false` 无效果
 - 冷却表存于插件进程内存（按 `provider/model` 记、跨对话共享）：宿主重启 / 插件重载后清零，重启后首轮请求会重新验证全部模型；冷却仅在插件进程内生效，多实例各自独立计时
-- 每 step 的回退状态以 `turn:step` 为 key 存内存且不清理：超长会话下按 step 数缓增（每项是小对象，量级可忽略，严格意义上无上界）
+- 时间窗按**宿主机本地时区**判定：预置官方窗口以北京时间为锚（高峰 08:30–00:30 / 半价 00:30–08:30），宿主机时区非 UTC+8 时需自行换算窗口值；窗口结束的恢复依赖下次请求的惰性过期判定，无请求间隙不会主动切换
+- 每 step 的回退状态以 `<会话id>:<turn>:<step>` 为 key 存内存（会话标识取自 `agent/request(-error)` payload 的 `agent.session.id`，缺失时降级为无会话段的 `turn:step` 共享键位）：新 turn 首次请求时清理**同会话**其他 turn 的旧状态，跨会话互不清理、同号 turn 互不串扰；每会话在其最末 turn 后遗留少量状态（上界 ≈ 会话数 × 单 turn step 数，每项小对象，宿主重启即清零，量级可忽略）
+- `LlmFailure.status` 仅由 deepseek 路由的 provider 错误路径填充；pi-ai 路由对错误纯文本分类、不产出该字段——「网关 408 结构化判定」只在 deepseek 路由生效，pi-ai 路由的网关 408 退化为无 `status` 的 `INVALID_REQUEST`（白名单外、不切换）。修复点在宿主上游（408 归类为超时类失败、或在失败事件中透传 status），见[故障排查](#故障排查)
 - 不实现 provider/* 通配条目、role/specificity 多链分派、同一 step 链耗尽后切回会话指定模型（新 step 天然从会话指定模型重新开始）
 
 ## 故障排查
@@ -194,16 +307,32 @@ allowBuilds:
 **add 解析到旧版本**
 registry 元数据分钟级边缘缓存。安装 / 升级 / 回滚都用精确版本号 `@zhidal/dsh-llm-fallback@<version>`。
 
+**补丁层里残留 `fallbackWhen: afterRetry`（0.2.x 旧字段）**
+无害，可以放着不管。该字段是 0.2.x 的两档回退时机开关（`afterRetry` / `immediately`），0.5.0 起已被 `retriesBeforeSwitch` 取代；插件读配置时**不认识这个键、也不会迁移它**——它在 profile 补丁层里与新的 `retriesBeforeSwitch` 并存共存，既不影响行为（不报错、不改变切换时机），也不会被自动清除。这正是 README[特性](#特性)里「零成本升级」承诺的兑现形态：旧字段留着不用管，新字段照常生效。介意补丁层里有多余一行可手工删掉，但删除纯属美观，与正确性无关。
+
+**网关 408 请求超时，官方重试 5/5 耗尽后失败、插件未切换**
+在会话轨迹里找到该失败事件的 `code`（以及有无 `status` 字段），按结果分叉：
+
+- **轨迹无本插件的 `llm/retry` 事件、`code` 为 `INVALID_REQUEST` 且无 `status`**：pi-ai 路由的网关 408——宿主纯文本分类不透传 status，插件按 route-on-code 原则无法把这条失败识别为超时，属宿主上游缺口，插件侧无解。临时逃生：把 `INVALID_REQUEST` 手动加进 `retryableCodes` 白名单——**不推荐**：`INVALID_REQUEST` 同时覆盖真正的请求构造错误（参数 / 消息形态问题），它们对同一模型确定性复现，加白后这类错误会被无意义地重试与切换，拖慢失败反馈并浪费配额；优先推动宿主上游修复（408 归类为超时类失败、或透传 status）。
+- **轨迹有 `llm/retry` 事件但最终仍失败**：不是白名单问题——候选链已切完（`maxRetries` 上限）或每候选重试预算用尽。检查 `fallbackChains` 是否配置了候选、`retriesBeforeSwitch` 是否符合预期（默认 0 = 跟随官方 5 次预算，预算耗尽才切）。
+- **deepseek 路由的网关 408**：失败带 `status=408`（无论 `code` 是 `HTTP_408` 还是 `INVALID_REQUEST`），由结构化判定放行、与白名单配置无关——本版本起应能正常切换；若未切换，先确认插件已升级，再按上一条检查候选链与预算。
+
 ## 开发
 
 ```sh
-pnpm install                                 # 仓库根，包内 prepare 自动产出 dist
+pnpm install                                 # 仓库根，包内 prepare 自动产出 dist 与 client 产物
 pnpm test                                    # vitest 全仓测试
 pnpm typecheck                               # 递归 tsc --noEmit
-pnpm --filter @zhidal/dsh-llm-fallback build # 单独重建 dist
+pnpm --filter @zhidal/dsh-llm-fallback build # 单独重建 dist 与 client 产物
 ```
 
 **为什么入口是 dist**：dsh 宿主经 Node 原生 type-stripping 加载 TS 插件，而 Node 硬性拒绝转译 realpath 位于任何 node_modules 之下的 `.ts` 文件（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`），纯 TS 源码入口在 git/npm/tarball 实体安装下必然加载失败。本插件因此以 esbuild 打包 `dist/index.js` 单文件发行（内联运行时依赖），源码仍是 `src/*.ts`；git 安装依赖包内 `prepare` 现场构建，消费方需按 pnpm 要求放行构建脚本（见上文）。其他 TS 插件如需支持实体安装，照此模式改造。
+
+**客户端半区（配置卡）**：源码在 `client/src/`（TSX 组件化 + hooks + 纯函数分层，React 仅作 devDependency 供类型与测试），经 `scripts/build-client.ts`（esbuild JS API）打包为惰性 CJS 注册壳 `client/index.js` 并随包提交——产物顶层只有 `globalThis.__ModuleLoader__.load({ id, factory })`，整个模块体（含 react 解析）都在 factory 闭包内，react 保持 external 经宿主模块表注入（绝不可打第二份 React）。`id` 由构建脚本从 package.json 读取，与 keyed 插槽 key（`PKG_NAME` 常量）共同受 `src/client-bundle.test.ts` 契约断言保护；组件行为另有 jsdom 渲染冒烟测试（`client/src/components/FallbackCard.test.tsx`）。改动 client 源码后重跑 `build` 并连同产物一起提交。
+
+## 演进路线
+
+时段限制、成本路由、健康度路由等后续策略维度的盘点（市场调研、可行性判据、推荐排序）与立项决策清单，见仓库根目录的 [`docs/llm-fallback-roadmap.md`](../../docs/llm-fallback-roadmap.md)（仓库内相对链接，npm 上不可点）。
 
 ## 许可证
 

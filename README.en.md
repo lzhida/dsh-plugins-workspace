@@ -2,75 +2,43 @@
 
 English | [简体中文](./README.md)
 
-A collection of plugins for [dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)(DeepSeek Harness) — a TypeScript + cordis plugin monorepo. Plugins are loaded directly as TypeScript source by the dsh loader, with no build step by default (exception: `@zhidal/dsh-llm-fallback` ships a built dist entry bundled by esbuild, published on [npm](https://www.npmjs.com/package/@zhidal/dsh-llm-fallback)).
+A plugin repository for [dsh](https://www.npmjs.com/package/@deepseek-ai/dsh) (DeepSeek Harness) — a TypeScript + cordis plugin monorepo. It currently hosts a single plugin: [@zhidal/dsh-llm-fallback](./packages/dsh-llm-fallback/README.md) (build-based distribution, entry is the esbuild-bundled dist, published on [npm](https://www.npmjs.com/package/@zhidal/dsh-llm-fallback)).
 
 > **Pure AI development**: all code in this repository is written entirely by AI coding agents.
 
 ## Plugins
 
-### @lzhida/dsh-guided-goal
+### @zhidal/dsh-llm-fallback
 
-A guided persistent-goal command. It turns a one-line natural-language intent into a structured goal that the dsh goal domain executes autonomously within the session until completion.
-
-**Highlights**
-
-- **Guided creation** (`/guided-goal`): the model clarifies five fields one by one — success criteria (must be decidable), verification, round cap, boundaries, stop conditions — then composes the objective and calls `create_goal`;
-- **Smart interview skip**: when the draft is already sufficiently specific or the user clearly declines to be interviewed, the model may skip clarification and create directly; every inferred field is marked as "Assumption: ...", and the round cap is estimated from workload (small 2–3 / medium 5 / large 8–10 rounds) with the basis explained in the reply;
-- **Structured objective**: five fixed sections `## Objective / ## Success criteria / ## Verification / ## Boundaries / ## Stop conditions`, with the round cap passed as `max_goal_rounds`;
-- **Mandatory completion summary**: the goal's stop conditions embed a summary requirement — modified-file list, per-item verification results, and leftover issues;
-- **Settings panel**: dsh Settings → Plugins → guided-goal, with an "Enable command" toggle (on by default);
-- **Locale aware**: command descriptions and protocol prompts follow dsh's general language setting (Chinese / English / bilingual fallback when unset).
-
-**Usage**
-
-```
-/guided-goal              # enter the interview, clarify field by field
-/guided-goal <draft goal> # interview with a draft; if the draft is specific enough the model may create directly
-```
-
-### @lzhida/dsh-obsidian
-
-Wraps the [Obsidian built-in CLI](https://obsidian.md/help/cli) (`obsidian <command> [key=value ...]`) as `obsidian_*` agent tools so models and humans can operate an Obsidian vault directly from a dsh session. The full command taxonomy (35+ sub-commands covering `file:move` / `delete` / `property:set` / `plugin:enable` / `command` / `reload` / …) lives in [`src/commands.ts`](./packages/dsh-obsidian/src/commands.ts) as a single source of truth; the system-prompt section renders the same list and the safety contract — the README deliberately does not duplicate the table to avoid drift.
-
-**Highlights**
-
-- **9 `obsidian_*` tools**: `obsidian_read` / `create` / `append` / `search` / `daily` / `daily_append` / `properties` / `vault` + the generic `obsidian_run` that covers the remaining 35+ sub-commands (the model must know the exact sub-command name; the description enforces "must come from the commands.ts inventory" to keep the model from inventing CLI flags);
-- **Four-tier danger model**: `read` / `write` / `destructive` / `execute`, tagged per command in `commands.ts`; the protocol section spells out which tier needs explicit user confirmation and which needs the host permission gate;
-- **Error normalisation**: every failure becomes a `[CODE] message` text (`OBSIDIAN_CLI_NOT_FOUND` / `OBSIDIAN_INVALID_INPUT` / `OBSIDIAN_SPAWN_FAILED` / `OBSIDIAN_TIMEOUT` / `OBSIDIAN_NONZERO_EXIT` / `OBSIDIAN_PROTOCOL_ERROR`) so the model can match by code; the Obsidian-specific `Error:` stdout prefix is detected and surfaced as `OBSIDIAN_PROTOCOL_ERROR`;
-- **stdio truncation**: stdout 20k / stderr 4k; overflows gain a `[truncated to N chars]` marker;
-- **No bundled binary**: the `obsidian` command is provided by the Obsidian app and must be on `PATH`; the first call surfaces `OBSIDIAN_CLI_NOT_FOUND` with a clear recovery hint when missing;
-- **system-prompt section**: `tool:obsidian` at order 2960; injects the 35+ command table and the safety contract at load time;
-- **Zero configuration**: install and use; defaults to the active vault; multi-vault callers pass `vault=<name>` per call.
-
-**Prerequisite**: Obsidian installed locally (≥ 1.4, which ships the CLI). If `obsidian --version` fails, fix the PATH first.
+The model-fallback plugin for dsh: it intercepts global LLM calls and, when the session-selected model (the de-facto primary) fails, automatically switches to the next `provider/model` in the fallback queue **without interrupting the conversation**. Supports per-candidate retries (`retriesBeforeSwitch`), cooldown skipping of failed candidates, and a visual settings card; routing decisions use only stable host failure codes. See [packages/dsh-llm-fallback/README.md](./packages/dsh-llm-fallback/README.md) for features, internals, configuration, and troubleshooting; the roadmap of future strategy dimensions (time-window restrictions, cost routing, etc.) and its decision checklist live in [docs/llm-fallback-roadmap.md](./docs/llm-fallback-roadmap.md) (Chinese).
 
 ## Installation
 
 Prerequisites: Node ≥ 22, pnpm 11, dsh installed.
 
-> **⚠️ Install restriction**: the plugins below are TS-source entries. They only support a local `link:` install **with an absolute path** — a relative `link:` path is resolved by pnpm against the profile directory (`~/.dsh/profiles/<name>/packages/...`), so the install always fails; git/npm/tarball entity installs are rejected by Node with `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`. Entity installs are only supported by the dist-entry [dsh-llm-fallback](./packages/dsh-llm-fallback/README.md).
-
-```powershell
-# Run from the repository root (PowerShell). Git Bash: swap the path expression for "$(pwd -W)"; POSIX: "$(pwd)"
-pnpm dsh plugin --profile default add "link:$($PWD.Path -replace '\\','/')/packages/dsh-guided-goal"   # the guided goal command (independent, no executor dependency)
-pnpm dsh plugin --profile default add "link:$($PWD.Path -replace '\\','/')/packages/dsh-obsidian"      # Obsidian operations (independent — 9 obsidian_* tools + a generic entry, wraps Obsidian's built-in CLI)
+```sh
+dsh plugin add @zhidal/dsh-llm-fallback                       # npm install (recommended)
+dsh plugin add link:<absolute repo path>/packages/dsh-llm-fallback  # in-repo development (link: must be absolute)
 ```
 
-After installation, confirm the target plugins are enabled under dsh Web UI Settings → Plugins: use `/guided-goal` from the chat input for guided-goal; the obsidian agent uses the `obsidian_*` tool set collaboratively from any session.
+For the full install options (npm / link / git / tarball), `allowBuilds` approval, and install verification, see [packages/dsh-llm-fallback/README.md](./packages/dsh-llm-fallback/README.md).
+
+> **Note when adding a TS-source-entry plugin**: a TS source entry (`main: "src/index.ts"`) only supports a local `link:` install **with an absolute path** — a relative `link:` path is resolved by pnpm against the profile directory and always fails; git/npm/tarball entity installs are rejected by Node with `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`. Entity installs require a dist entry (esbuild bundle) like dsh-llm-fallback.
 
 ## Development
 
 ```sh
-pnpm install        # install deps and run lefthook install automatically
+pnpm install        # install deps and run lefthook install automatically; also triggers llm-fallback's prepare to build dist
 pnpm lint           # ESLint (flat config, TS)
 pnpm format         # Prettier write (format:check validates only)
 pnpm typecheck      # per-package tsc --noEmit
 pnpm test           # Vitest across all src/**/*.test.ts
 ```
 
-- **Pure TypeScript**: plugins have no build step; `package.json` `main` points straight at `src/index.ts` and is loaded by the host dsh loader;
-- **E2E**: no dedicated script — follow the manual CLI flow in [.agents/skills/dsh-plugin-dev/SKILL.md](./.agents/skills/dsh-plugin-dev/SKILL.md) §5: boot a real dsh instance under a dedicated profile (default `e2e`, auto-bootstrapped from the official web template when missing); the plugin list is isolated per profile while `DSH_HOME` stays the global `~/.dsh` (model credentials are shared); asserts the `[<name>]` load log, port reachability, and tokened URL page health; `plugin remove` afterwards;
-- **Adding a plugin**: create `packages/<name>/` modeled on `packages/dsh-guided-goal/package.json`; `pnpm-workspace.yaml` picks it up automatically;
+- **Build-based distribution**: `@zhidal/dsh-llm-fallback`'s `main` points at the esbuild-bundled `dist/index.js` (rebuild alone with `pnpm --filter @zhidal/dsh-llm-fallback build`) — the only viable entry scheme while the host Node refuses type-stripping for `.ts` files under node_modules;
+- **E2E**: no dedicated script — follow the manual CLI flow in [.agents/skills/dsh-plugin-dev/SKILL.md](./.agents/skills/dsh-plugin-dev/SKILL.md) §5: boot a real dsh instance under a dedicated profile (default `test`, auto-bootstrapped from the official web template when missing); the plugin list is isolated per profile while `DSH_HOME` stays the global `~/.dsh` (model credentials are shared); assert the `[dsh-llm-fallback] plugin loaded` log, port reachability, and tokened URL page health; `plugin remove` afterwards;
+- **Adding a plugin**: create `packages/<name>/` modeled on `packages/dsh-llm-fallback/package.json`; `pnpm-workspace.yaml` picks it up automatically; keep `@deepseek-ai/cordis` in `devDependencies` with `import type` only (the framework is provided by the host at runtime);
+- **Versioning & release**: Changesets (`pnpm changeset` → `changeset:version`) plus the `{shortName}-v{X.Y.Z}` git tag that triggers the npm release pipeline — see [.changeset/README.md](./.changeset/README.md) and [scripts/release/README.md](./scripts/release/README.md);
 - **Commits**: Chinese Conventional Commits; develop on `feat/*` / `fix/*` branches merged into `dev`, then into `main` after verification.
 - **CI**: a GitHub Actions pipeline ([.github/workflows/ci.yml](.github/workflows/ci.yml)) runs on push / PR targeting `main` and `dev`, executing the same `format:check → lint → typecheck → test` gate chain as local development on Ubuntu with Node 22 / 24; [tests/ci-workflow.test.ts](tests/ci-workflow.test.ts) is a regression test for the pipeline itself, guarding the scripts it invokes, the gate order, and pinned action versions. E2E and npm publishing are out of CI scope (the former needs a real dsh instance and credentials, the latter publish authorization).
 
