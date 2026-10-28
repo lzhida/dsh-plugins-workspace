@@ -32,6 +32,13 @@
  *   即"从下一个回退模型或此前验证可用的候选开始"),窗口期满自动恢复优先级并
  *   重新验证是否恢复;剩余候选全部在冷却中时退回原语义(冷却绝不吞掉全部候选);
  *   非白名单失败与预算内的同候选重试不记冷却
+ * - `quotaCooldownEnabled` / `quotaCooldownMs` / `cooldownCapMs`:配额感知的
+ *   自适应冷却(默认开,配额档 18000000ms = 5 小时,硬上限 604800000ms =
+ *   7 天)——订阅制提供商(GLM Coding Plan / MiniMax Token Plan 等)的用量
+ *   窗口耗尽失败(GLM 1308/1310、MiniMax 2056,详见 src/quota.ts 样本依据)
+ *   冷却至报错携带的重置时间(带重置时间直接采用),无重置时间时用配额档
+ *   `quotaCooldownMs`;普通失败(瞬时限流/服务器错误)维持 `cooldownMs`
+ *   固定档,行为与旧版完全一致;所有延长结果被 `cooldownCapMs` 封顶
  * - `retryableCodes`:视为可重试的失败码(白名单;默认对齐 dsh 宿主官方重试码
  *   `dsh-llm` 的 DEFAULT_RETRYABLE_CODES,并保留配额/上下文类超集)
  * - `perTurn`:同一 step(`turn:step`)内是否允许多次切换;`false` = 至多切换一次(one-shot)
@@ -131,6 +138,21 @@ export const DEFAULT_RETRIES_BEFORE_SWITCH = 0;
  * (如每 5 小时重置)通常在分钟级内不会恢复,5 分钟兼顾效率与优先级。
  */
 export const DEFAULT_COOLDOWN_MS = 300_000;
+
+/**
+ * `quotaCooldownMs` 的默认值:配额型失败(用量窗口耗尽,详见 src/quota.ts)
+ * 无重置时间时的冷却档,5 小时——对齐 GLM Coding Plan / MiniMax Token Plan
+ * 的 5 小时用量窗口周期:窗口耗尽后分钟级冷却内必然反复撞墙,按窗口周期
+ * 冷却一次到位。
+ */
+export const DEFAULT_QUOTA_COOLDOWN_MS = 18_000_000;
+
+/**
+ * `cooldownCapMs` 的默认值:自适应冷却时长的硬上限,7 天——防解析异常把
+ * 候选冻死(报错重置时间被解析到极远未来时被截断到这里,冷却到期后重新
+ * 验证语义自然衔接:未恢复则再次冷却)。
+ */
+export const DEFAULT_COOLDOWN_CAP_MS = 604_800_000;
 
 /**
  * schemastery `meta.description` 的 i18n 映射形态。
@@ -350,6 +372,21 @@ export interface ResolvedConfig {
   cooldownEnabled: boolean;
   /** 冷却窗口时长(毫秒);`0` = 立即过期(等效禁用)。 */
   cooldownMs: number;
+  /**
+   * 配额感知自适应冷却总开关(默认开):关闭后所有失败维持 `cooldownMs`
+   * 固定档(与旧版行为完全一致)。语义与识别规则见 src/quota.ts。
+   */
+  quotaCooldownEnabled: boolean;
+  /**
+   * 配额型失败(用量窗口耗尽)无重置时间时的冷却档(毫秒);`0` = 关闭
+   * 延长(配额型同普通失败档)。
+   */
+  quotaCooldownMs: number;
+  /**
+   * 自适应冷却时长的硬上限(毫秒):报错重置时间解析结果与配额档都被
+   * clamp 到它;非法(≤0/非有限)回落默认 7 天。
+   */
+  cooldownCapMs: number;
   retryableCodes: ReadonlySet<string>;
   perTurn: boolean;
   /**
@@ -389,6 +426,9 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     maxDelayMs?: unknown;
     cooldownEnabled?: unknown;
     cooldownMs?: unknown;
+    quotaCooldownEnabled?: unknown;
+    quotaCooldownMs?: unknown;
+    cooldownCapMs?: unknown;
     retryableCodes?: unknown;
     perTurn?: unknown;
     timeWindowEnabled?: unknown;
@@ -437,6 +477,22 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     Number.isFinite(cooldownMsRaw) && cooldownMsRaw >= 0
       ? Math.floor(cooldownMsRaw)
       : DEFAULT_COOLDOWN_MS;
+  // 配额感知自适应冷却:总开关默认开;配额档 0 = 关闭延长(合法值);时长
+  // 非法(负数/非有限)回落默认;硬上限非法(≤0/非有限)回落默认 7 天
+  // (cap 不接受 0 语义——防解析异常冻死候选的护栏必须有界)。
+  const quotaCooldownEnabled = raw.quotaCooldownEnabled !== false; // 默认 true
+  const quotaCooldownMsRaw = Number(
+    raw.quotaCooldownMs ?? DEFAULT_QUOTA_COOLDOWN_MS,
+  );
+  const quotaCooldownMs =
+    Number.isFinite(quotaCooldownMsRaw) && quotaCooldownMsRaw >= 0
+      ? Math.floor(quotaCooldownMsRaw)
+      : DEFAULT_QUOTA_COOLDOWN_MS;
+  const cooldownCapMsRaw = Number(raw.cooldownCapMs ?? DEFAULT_COOLDOWN_CAP_MS);
+  const cooldownCapMs =
+    Number.isFinite(cooldownCapMsRaw) && cooldownCapMsRaw > 0
+      ? Math.floor(cooldownCapMsRaw)
+      : DEFAULT_COOLDOWN_CAP_MS;
   const codesRaw = Array.isArray(raw.retryableCodes)
     ? (raw.retryableCodes as unknown[]).map((c) => String(c))
     : [...DEFAULT_RETRYABLE_CODES];
@@ -466,6 +522,9 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     maxDelayMs,
     cooldownEnabled,
     cooldownMs,
+    quotaCooldownEnabled,
+    quotaCooldownMs,
+    cooldownCapMs,
     retryableCodes,
     perTurn,
     timeWindow,
@@ -634,6 +693,33 @@ export const Config = Schema.object({
       desc(
         'Cooldown window in ms for a failed model before it is re-verified and restored to its priority position (0 = expire immediately, i.e. disabled)',
         '失败模型的冷却窗口时长(毫秒),窗口过后自动重新验证并恢复其优先级(0 = 立即过期,等效禁用)',
+      ),
+    ),
+  ),
+  quotaCooldownEnabled: volatileField(
+    setDescription(
+      Schema.boolean().default(true),
+      desc(
+        'Quota-aware adaptive cooldown: subscription-plan providers (GLM Coding Plan / MiniMax Token Plan) enforce 5-hour / weekly / monthly usage windows; when a failure is recognized as quota exhaustion (provider error codes like GLM 1308/1310, MiniMax 2056, or wording like "usage limit exceeded / 用量上限"), the cooldown is extended to the reset time reported in the error message when present, otherwise to the quota tier below. Ordinary failures (transient rate limits, server errors) keep the fixed cooldownMs tier — zero behavior change',
+        '配额感知自适应冷却:订阅制提供商(GLM Coding Plan / MiniMax Token Plan 等)有 5 小时/每周/每月用量窗口;失败被识别为配额耗尽时(GLM 1308/1310、MiniMax 2056 等业务码,或 usage limit / 用量上限等措辞),冷却延长到报错里携带的重置时间(有就直接用),没有重置时间则用下方配额档;普通失败(瞬时限流/服务器错误)维持 cooldownMs 固定档,行为与旧版一致',
+      ),
+    ),
+  ),
+  quotaCooldownMs: volatileField(
+    setDescription(
+      Schema.number().default(DEFAULT_QUOTA_COOLDOWN_MS),
+      desc(
+        'Cooldown tier in ms for quota-type failures when the error carries no reset time (default 5h, aligned with the GLM/MiniMax usage-window period; 0 = disable extension, quota failures use the fixed cooldownMs tier); a reported reset time always wins and is capped by cooldownCapMs',
+        '配额型失败在报错无重置时间时的冷却档(毫秒,默认 5 小时,对齐 GLM/MiniMax 用量窗口周期;0 = 关闭延长,配额型同普通失败档);报错带重置时间时优先采用重置时间,并受 cooldownCapMs 封顶',
+      ),
+    ),
+  ),
+  cooldownCapMs: volatileField(
+    setDescription(
+      Schema.number().default(DEFAULT_COOLDOWN_CAP_MS),
+      desc(
+        'Hard upper bound in ms for adaptive cooldown durations (a reset time parsed far into the future is clamped to this; when the cap expires the model is re-verified and re-cooled if still quota-limited; invalid values fall back to the 7-day default)',
+        '自适应冷却时长的硬上限(毫秒):报错重置时间被解析到极远未来时截断到这里,上限到期后重新验证、仍未恢复则再次冷却(非法值回落默认 7 天)',
       ),
     ),
   ),

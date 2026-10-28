@@ -68,6 +68,19 @@ export interface LlmRetryEventData {
   targetProvider?: string;
   /** 切换目标的 model(本插件追加字段,官方 payload 无;读侧透传安全)。 */
   targetModel?: string;
+  /**
+   * 本次切换同时记下的失败方冷却到期毫秒时间戳(本插件追加字段,官方
+   * payload 无;读侧透传安全)。配额感知自适应冷却的轨迹观察点:配额型
+   * 失败(GLM 1308/1310 / MiniMax 2056 等)的冷却被延长时,轨迹里直接
+   * 可见冷却到何时。仅切换分支的事件携带;代执行重试事件无(未记冷却)。
+   */
+  cooldownUntilMs?: number;
+  /**
+   * 冷却时长决策来源(本插件追加字段;见 src/quota.ts resolveCooldownDuration):
+   * `default` = 普通失败固定档;`quota-window` = 配额型无重置时间的配额档;
+   * `reported-reset` = 报错携带的重置时间。与 cooldownUntilMs 同现。
+   */
+  cooldownSource?: 'default' | 'quota-window' | 'reported-reset';
 }
 
 /** 官方 `llm/retry-started` 事件的 payload:退避完成、切换即将生效。 */

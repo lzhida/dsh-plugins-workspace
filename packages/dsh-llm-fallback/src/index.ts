@@ -74,7 +74,9 @@
  *   降级共享键位——新 step 天然从会话指定模型重新开始;同一 step 内链耗尽
  *   后不再回头);冷却跳过在此之上做跨 step 优化:冷却中的模型被跳过、
  *   窗口期满自动恢复优先级,不改变"新 step 从会话指定模型重新开始"的
- *   基准语义;
+ *   基准语义;配额感知自适应冷却(src/quota.ts)再按失败内容延长配额型
+ *   失败(订阅制用量窗口耗尽)的冷却时长——报错带重置时间直接采用,
+ *   否则配额档(quotaCooldownMs,默认 5 小时),普通失败固定档不变;
  * - 冷却表存于插件进程内存:宿主重启 / 插件重载后清零(重启后首轮请求会
  *   重新验证全部模型);
  * - backoff 是简单指数退避 + 抖动 ±10%;
@@ -91,6 +93,7 @@ import type { LlmFailure } from '@deepseek-ai/dsh-llm';
 
 import { type ResolvedConfig, resolveConfig } from './config.ts';
 import { modelFallbackSection } from './protocol.ts';
+import { type CooldownDuration, resolveCooldownDuration } from './quota.ts';
 import {
   type FallbackState,
   type StepKey,
@@ -452,10 +455,30 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
         // 退避被 abort 还是链耗尽)——白名单失败是既成事实,冷却窗内不再
         // 从它开始,窗口期满自动恢复优先级重新验证。失败方未知(极端时序
         // pageModel 缺失)或冷却禁用时不标记。
+        // 时长自适应(配额感知,决策逻辑见 src/quota.ts):配额型失败
+        // (订阅制用量窗口耗尽,GLM 1308/1310 / MiniMax 2056 等)冷却到
+        // 报错携带的重置时间,无重置时间用配额档 quotaCooldownMs;普通
+        // 失败维持 cooldownMs 固定档(与旧版行为一致)。延长发生时打日志
+        // (观察点),决策结果随下方切换事件写入轨迹(cooldownUntilMs /
+        // cooldownSource 追加字段,读侧透传安全)。
+        let cooldown: CooldownDuration | undefined;
         if (cfg.cooldownEnabled) {
           const failed = currentEffectiveCandidate(state);
           if (failed) {
-            markCooldown(cooldowns, failed, Date.now(), cfg.cooldownMs);
+            const now = Date.now();
+            cooldown = resolveCooldownDuration(failure, {
+              cooldownMs: cfg.cooldownMs,
+              quotaEnabled: cfg.quotaCooldownEnabled,
+              quotaCooldownMs: cfg.quotaCooldownMs,
+              cooldownCapMs: cfg.cooldownCapMs,
+              now,
+            });
+            markCooldown(cooldowns, failed, now, cooldown.durationMs);
+            if (cooldown.source !== 'default') {
+              console.log(
+                `[${name}] quota-aware cooldown for ${failed}: ${cooldown.durationMs}ms (${cooldown.source}, until ${new Date(cooldown.untilMs).toISOString()})`,
+              );
+            }
           }
         }
         // perTurn=false(单次切换档):本 step 已切换过(one-shot 名额已消耗)
@@ -501,6 +524,8 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
           failure,
           targetProvider: target?.provider,
           targetModel: target?.model,
+          cooldownUntilMs: cooldown?.untilMs,
+          cooldownSource: cooldown?.source,
         });
         if (delay > 0) {
           const completed = await sleep(delay, signal);
