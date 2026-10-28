@@ -86,10 +86,10 @@ pnpm release list    # 列出子包版本与 tag 预览
 
 ### E2E（真实 dsh 实例，四步标准流程）
 
-- **无专用脚本**：完整流程在 `.agents/skills/dsh-plugin-dev/SKILL.md` §5，按四步标准顺序执行：① profile 解析 → ② 安装被测插件 → ③ 启动 + 浏览器 MCP 预检 → ④ 加载级三断言 + 功能级逐项验证。**测试完毕的清理必须询问用户**，禁止 agent 自动执行破坏性清理动作（见 SKILL.md §5.6）。
+- **无专用脚本**：完整流程在 `.agents/skills/dsh-plugin-dev/SKILL.md` §5，按四步标准顺序执行：① profile 解析 → ② 安装被测插件 → ③ 启动 + 浏览器工具预检（dsh-browser 优先，MCP 回退） → ④ 加载级三断言 + 功能级逐项验证。**测试完毕的清理必须询问用户**，禁止 agent 自动执行破坏性清理动作（见 SKILL.md §5.6）。
 - **profile**：统一用 `test`；复用前做残留预检（package.json dependencies、cordis.patch.yml、node_modules 孤儿）；不存在则 `pnpm dsh --profile test --from-default-profile web` 创建。`--from-default-profile` 只拷 bundle 清单，不继承 web profile 的用户补丁层。
 - **安装**：默认 `pnpm dsh plugin --profile test add link:<仓库绝对路径>/packages/<name>`（**`--profile` 须置于 `plugin` 之后；`link:` 后必须是绝对路径**）；构建式插件先 `pnpm --filter <pkg> build`；其他安装方式（npm/git/tarball）仅当被测对象就是安装链路时使用，并须按 SKILL.md §5.2 表逐项注明约束。
-- **MCP 能力预检**（浏览器验证前必跑）：① 本会话是否已有 `mcp__chrome__*` 工具；② `pnpm dsh --profile <p> --dump-config | grep mcp` 查 mcp-client 实例；缺失时自配置为所属 profile `cordis.patch.yml` 的 `- insert:` 块（**必须 insert，不能平级 id 覆盖**——bundle 层不存在该条目），HMR/重启生效。顺带盘点其他控制类插件/MCP（victauri 桥等），避免重复建设。
+- **浏览器工具预检**（浏览器验证前必跑，dsh-browser 优先）：① 本会话已有 `dsh_browser_*`（dsh-browser 插件，宿主级内置浏览器）→ 直接用，零 profile 配置；② 均缺失才回退 chrome-devtools MCP：`pnpm dsh --profile <p> --dump-config | grep mcp` 查 mcp-client 实例，缺失时自配置为所属 profile `cordis.patch.yml` 的 `- insert:` 块（**必须 insert，不能平级 id 覆盖**——bundle 层不存在该条目），HMR/重启生效。顺带盘点其他控制类插件/MCP（victauri 桥等），避免重复建设。
 - **加载级三断言**：① 实例输出出现 `[<name>] ` 前缀格式的日志行（按结构化格式匹配，路径中裸包名不算）② 端口可达（默认 3865；3080 是上游默认，本机被占）③ tokened UI URL 状态 <400。
 - **功能级逐项验证**：从 README/变更说明派生「本次更新特性清单」→ 映射到 UI 配置面 / 行为契约面 / 轨迹与日志面 → 逐项打勾。轨迹核查：`~/.dsh/sessions/--<cwd-dir>--/session-*/session.v3.jsonl.zstd` 流式解压。纯净 profile 对比法用于排除 hindsight 记忆污染。
 - **测试完毕的清理**：先不清理，提交产物清单（已装插件、patch 新增/修改条目、孤儿目录、工作区改动、后台实例）由用户选择「全部清理 / 保留为 fixture / 部分清理」；破坏性动作一律先经用户确认。
