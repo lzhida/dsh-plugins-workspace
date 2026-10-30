@@ -3,6 +3,10 @@
 > 本文说明 `@zhidal/dsh-anytype` 这个**包**如何同时提供**多个插件行**，
 > 以及它们之间如何组合（service 依赖 + 共享连接配置）。
 > 想直接用记忆能力，请看 [memory/](memory/) 那一组文档。
+>
+> **归档状态（2026-10-30）**：插件行② `dsh-anytype-memory` 已**下架注册、
+> 代码保留归档**（anytype 退出记忆方向，agent 持久记忆由 hindsight/mnemon
+> 承担）。本文关于它的机制说明全部保留作参考；恢复方式见 §2.2 与 §6。
 
 ## 1. 为什么是「一个包、多个插件行」
 
@@ -23,6 +27,8 @@
 
 重构后：**一个包**（`@zhidal/dsh-anytype`），**两个插件行**
 （`dsh-anytype` 与 `dsh-anytype-memory`），装一次即全部激活，连接配置只填一次。
+2026-10-30 起 memory 行**下架注册、代码保留归档**（见文首归档状态），
+当前随包激活的只有插件行①。
 
 ## 2. 三层机制
 
@@ -30,13 +36,13 @@
 flowchart TB
     subgraph 装配方["① 装配层（dsh 官方 bundle 机制）"]
         P["packages/dsh-anytype<br/>package.json: dsh.bundle.patch"]
-        PF["cordis.patch.yml<br/>- insert: dsh-anytype → ./src/entries/anytype.ts<br/>- insert: dsh-anytype-memory → ./src/entries/memory.ts"]
+        PF["cordis.patch.yml<br/>- insert: dsh-anytype → ./src/entries/anytype.ts<br/>(memory 行已归档，恢复见 §2.2)"]
         PROF["profile 的 cordis.patch.yml<br/>- id: dsh-anytype + config（只覆盖配置）"]
         P --> PF --> PROF
     end
     subgraph 运行层["② 运行层（cordis 插件契约）"]
         E1["entries/anytype.ts<br/>name=dsh-anytype<br/>provide=anytype"]
-        E2["entries/memory.ts<br/>name=dsh-anytype-memory<br/>inject=[tools,systemPrompt,anytype]"]
+        E2["entries/memory.ts（已归档，未注册）<br/>name=dsh-anytype-memory<br/>inject=[tools,systemPrompt,anytype]"]
     end
     subgraph 组合层["③ 组合层（具名 service）"]
         SVC["services/anytype.ts<br/>AnytypeService<br/>client + 连接配置（现读）"]
@@ -77,13 +83,14 @@ profile 侧只需要**按 id 覆盖配置**（行由 bundle 层提供）：
   config:
     baseUrl: http://127.0.0.1:31009
     apiKey: anytype_xxx
-- id: dsh-anytype-memory
-  config:
-    spaceName: Agent Memory
+# - id: dsh-anytype-memory   ← memory 行已归档（2026-10-30）：此覆盖条目
+#   config:                    在行恢复注册前是 no-op，可保留（恢复即生效）或删除
+#     spaceName: Agent Memory
 ```
 
 ⚠️ **不要在 profile 里再 `insert:` 同 id 的行**——那会让同一插件被实例化两次、
-同名工具注册两次（本仓库的 e2e 用「工具数恰为 46（30+16）」守住这条）。
+同名工具注册两次（e2e 用「工具数恰为注册行之和」守住这条：当前仅主行注册为
+30；memory 行恢复注册后为 46（30+16））。
 
 ### 2.2 一包多入口：相对路径的 name
 
@@ -99,14 +106,15 @@ dsh 的 loader 在解析 patch 时会调用 `anchorInsertedPluginNames()`：
 - insert:
     - id: dsh-anytype
       name: './src/entries/anytype.ts'
-    - id: dsh-anytype-memory
-      name: './src/entries/memory.ts'
+    # - id: dsh-anytype-memory          ← 已归档（2026-10-30），不再随包注册；
+    #   name: './src/entries/memory.ts'   恢复 = 把这两行追加回 insert 列表
 ```
 
 转成绝对路径后与「包被装到哪儿」无关（`link:` 源码目录 / npm 包目录都行）。
 
 > 实证：安装器会先校验包内 patch 文件的 YAML 与路径；加载阶段实例日志出现
-> `[dsh-anytype] plugin loaded` 与 `[dsh-anytype-memory] plugin loaded`。
+> `[dsh-anytype] plugin loaded` 与 `[dsh-anytype-memory] plugin loaded`
+> （后者仅 memory 行注册时出现；归档后应只有前者 + `registered 30 Anytype tools`）。
 >
 > 注意：patch 文件是 **YAML**，注释必须用 `#`（写成 TS 风格的 `/** */` 会被
 > 安装器判为 YAML 解析失败并回滚安装）。
@@ -150,21 +158,21 @@ export function apply(ctx, config) {
 
 ### 2.4 配置归属
 
-| 类别         | 字段                                                                                                                            | 归属                |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------- | ------------------- |
-| **连接类**   | `baseUrl` / `apiKey` / `apiVersion` / `requestTimeoutMs` / `maxResponseChars`                                                   | 插件行①（唯一一份） |
-| **通用工具** | `enabled` / `disabledGroups`（10 组）                                                                                           | 插件行①             |
-| **记忆语义** | `spaceName` / `spaceId` / `defaultStatus` / `recallLimit` / `recallMaxTokens` / `embeddingBatchSize` / `disabledGroups`（5 组） | 插件行②             |
+| 类别         | 字段                                                                                                                            | 归属                              |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| **连接类**   | `baseUrl` / `apiKey` / `apiVersion` / `requestTimeoutMs` / `maxResponseChars`                                                   | 插件行①（唯一一份）               |
+| **通用工具** | `enabled` / `disabledGroups`（10 组）                                                                                           | 插件行①                           |
+| **记忆语义** | `spaceName` / `spaceId` / `defaultStatus` / `recallLimit` / `recallMaxTokens` / `embeddingBatchSize` / `disabledGroups`（5 组） | 插件行②（已归档，恢复注册后生效） |
 
 设置面板里，**apiKey 只出现一次**；记忆插件行的面板没有连接字段。
 该契约由 `src/index.test.ts` 的单测锁定（断言两边的 schema 字段集互不越界）。
 
 **namespace ↔ scope 映射**（client 半区据此读写两行）：
 
-| 插件行                       | 设置 namespace（= profile 条目 id） | 配置卡分区   |
-| ---------------------------- | ----------------------------------- | ------------ |
-| 插件行① `dsh-anytype`        | `dsh-anytype`                       | Anytype 连接 |
-| 插件行② `dsh-anytype-memory` | `dsh-anytype-memory`                | 持久记忆     |
+| 插件行                       | 设置 namespace（= profile 条目 id） | 配置卡分区         |
+| ---------------------------- | ----------------------------------- | ------------------ |
+| 插件行① `dsh-anytype`        | `dsh-anytype`                       | Anytype 连接       |
+| 插件行② `dsh-anytype-memory` | `dsh-anytype-memory`                | 持久记忆（已归档） |
 
 两行各持一个 `configForms` scope（独立写入栅栏与草稿），同一张卡按分区呈现。
 
@@ -191,21 +199,21 @@ flowchart LR
     RT --> EN
 ```
 
-| 路径                      | 内容                                                 |
-| ------------------------- | ---------------------------------------------------- |
-| `src/entries/anytype.ts`  | 插件行①：通用 Anytype 工具 + 提供 `anytype` 服务     |
-| `src/entries/memory.ts`   | 插件行②：持久记忆（`inject: ['anytype']`）           |
-| `src/entries/wiki.ts`     | **留位**：将来的 LLM Wiki 知识编译管道（本次不注册） |
-| `src/services/anytype.ts` | `AnytypeService` + `provideAnytypeService()`         |
-| `src/core/`               | 共享底座：HTTP 客户端、工具公共设施、volatile 支持   |
-| `src/anytype/`            | 通用工具实现（10 个工具文件 + 配置文件）             |
-| `src/memory/`             | 记忆域实现（schema/store/纯函数/16 个工具）          |
-| `src/cordis.d.ts`         | `Context.anytype` 的类型增强                         |
-| `src/index.ts`            | 包根 barrel（导出插件行①契约 + 公共 API）            |
-| `client/src/`             | **client 半区**：bundle 详情页的配置卡（见 §6）      |
-| `scripts/build-client.ts` | client 半区构建（esbuild → `client/index.js`）       |
-| `cordis.patch.yml`        | bundle 层：两个插件行                                |
-| `docs/memory/`            | 记忆子系统的 11 篇设计文档                           |
+| 路径                      | 内容                                                                                       |
+| ------------------------- | ------------------------------------------------------------------------------------------ |
+| `src/entries/anytype.ts`  | 插件行①：通用 Anytype 工具 + 提供 `anytype` 服务                                           |
+| `src/entries/memory.ts`   | 插件行②：持久记忆（`inject: ['anytype']`）；**已归档**（2026-10-30）——契约保留，不随包注册 |
+| `src/entries/wiki.ts`     | **留位**：将来的 LLM Wiki 知识编译管道（本次不注册）                                       |
+| `src/services/anytype.ts` | `AnytypeService` + `provideAnytypeService()`                                               |
+| `src/core/`               | 共享底座：HTTP 客户端、工具公共设施、volatile 支持                                         |
+| `src/anytype/`            | 通用工具实现（10 个工具文件 + 配置文件）                                                   |
+| `src/memory/`             | 记忆域实现（schema/store/纯函数/16 个工具；已归档保留）                                    |
+| `src/cordis.d.ts`         | `Context.anytype` 的类型增强                                                               |
+| `src/index.ts`            | 包根 barrel（导出插件行①契约 + 公共 API）                                                  |
+| `client/src/`             | **client 半区**：bundle 详情页的配置卡（见 §6）                                            |
+| `scripts/build-client.ts` | client 半区构建（esbuild → `client/index.js`）                                             |
+| `cordis.patch.yml`        | bundle 层：插件行注册表（当前仅主行；memory 行已归档，恢复见 §6）                          |
+| `docs/memory/`            | 记忆子系统的 11 篇设计文档（memory 行已归档，文档留档）                                    |
 
 ## 4. 如何新增一个插件行
 
@@ -221,7 +229,7 @@ flowchart LR
      name: './src/entries/wiki.ts'
    ```
 4. 在 `src/index.ts` 补 barrel 导出；在 `src/index.test.ts` 补「工具名唯一」
-   断言（工具总数随之从 46 增长）；
+   断言（工具总数随之增长：当前注册 30；memory 行恢复注册后为 46）；
 5. 装包即生效——**不需要改 profile**（profile 侧最多按 id 覆盖 config）。
 
 ## 5. 迁移指引（从旧的三个包）
@@ -250,6 +258,9 @@ profile 侧：
 +     spaceName: Agent Memory
 ```
 
+> 注（2026-10-30）：memory 行已归档，新迁移无需再写该覆盖条目；
+> 恢复注册后再加回即可（见 §6）。
+
 安装侧：把 plain dependency 换成 bundle 即可——
 
 ```bash
@@ -258,6 +269,14 @@ pnpm dsh plugin --profile test add link:<repo>/packages/dsh-anytype
 ```
 
 ## 6. 已知边界
+
+- **归档行不注册（2026-10-30）**：`dsh-anytype-memory` 已从包内
+  `cordis.patch.yml` 的 `insert` 列表移除，**代码全量保留**（`src/memory/**`、
+  `src/entries/memory.ts`、测试、`docs/memory/`、exports `./memory`）。
+  恢复方式：把该行（`- id: dsh-anytype-memory` +
+  `name: './src/entries/memory.ts'`）追加回 `insert` 列表即可，无需改任何代码；
+  恢复后工具数回到 46，system prompt 重新出现 `tool:dsh-anytype-memory`
+  指引 section（order 2970）。
 
 - ~~**设置面板不渲染 bundle 组件的配置表单**~~（宿主行为，2026-10-24 实测）：
   Plugins 面板能列出包的每个插件行（Components 区，含独立的启用开关 ✅），但**不出

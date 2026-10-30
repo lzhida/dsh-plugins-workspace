@@ -1,6 +1,6 @@
 {
   "name": "@zhidal/dsh-anytype",
-  "description": "dsh-anytype bundle 包：把 Anytype v2 本地 API（官方 anytype-mcp 的后端，默认 http://127.0.0.1:31009）封装为 dsh 原生工具，并以「一个包、多个插件行」的方式组合。插件行①dsh-anytype：whoami/全局与空间搜索/空间/对象(创建·ops 编辑·归档)/集合/类型与模板/属性/成员/schema 发现 + anytype_request 逃生舱，并对外提供具名服务 anytype（持连接配置与共享客户端）。插件行②dsh-anytype-memory：基于 Anytype 空间的纯本地持久记忆（零本地状态，16 个 memory_* 工具），经 inject 复用插件行①的连接服务——apiKey 只填一次。留位插件行 dsh-anytype-wiki：将来的 LLM Wiki 知识编译管道（本次不注册）。配置页在 bundle 详情页自渲染（client 半区注册 plugins.bundle.config 插槽），apiKey 为只写 secret 字段。",
+  "description": "dsh-anytype bundle 包：把 Anytype v2 本地 API（官方 anytype-mcp 的后端，默认 http://127.0.0.1:31009）封装为 dsh 原生工具，并以「一个包、多个插件行」的方式组合。插件行①dsh-anytype：whoami/全局与空间搜索/空间/对象(创建·ops 编辑·归档)/集合/类型与模板/属性/成员/schema 发现 + anytype_request 逃生舱，并对外提供具名服务 anytype（持连接配置与共享客户端）。插件行②dsh-anytype-memory：已归档留档（anytype 退出记忆方向，2026-10-30）——不再随包注册，agent 持久记忆由既有系统（hindsight/mnemon）承担；其纯本地持久记忆实现（16 个 memory_* 工具，零本地状态）代码全量保留，恢复方式：在包内 cordis.patch.yml 的 insert 列表追加回 memory 行即可。留位插件行 dsh-anytype-wiki：将来的 LLM Wiki 知识编译管道（本次不注册）。配置页在 bundle 详情页自渲染（client 半区注册 plugins.bundle.config 插槽），apiKey 为只写 secret 字段。",
   "version": "0.2.0",
   "private": true,
   "license": "MIT",

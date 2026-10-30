@@ -127,10 +127,15 @@ describe('dsh-anytype client 契约', () => {
     }
   });
 
-  it('两个插件行的 namespace 与 cordis.patch.yml 的条目 id 同步', () => {
+  it('插件行 namespace 与 cordis.patch.yml 条目 id 同步（memory 行已归档）', () => {
     const patch = readPackageFile('../cordis.patch.yml');
+    // 主行仍随包注册。
     expect(patch).toContain(`id: ${ROW_MAIN}`);
-    expect(patch).toContain(`id: ${ROW_MEMORY}`);
+    // memory 行已归档（2026-10-30）：insert 列表不得再出现未注释的该行。
+    // 行首锚定正则——归档说明注释以 # 开头，不会被误中。
+    expect(patch).not.toMatch(/^\s*- id:\s*dsh-anytype-memory/m);
+    // ROW_MEMORY 常量保留：它是恢复注册路径上的 namespace 契约。
+    expect(ROW_MEMORY).toBe('dsh-anytype-memory');
   });
 });
 

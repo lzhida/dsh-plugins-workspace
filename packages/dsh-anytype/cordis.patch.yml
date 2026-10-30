@@ -8,11 +8,17 @@
 #   若改用包名（@zhidal/dsh-anytype），一个包只能对应一个插件入口，
 #   就无法在一个包里组合多个插件。
 #
+# 已归档行（2026-10-30，anytype 退出记忆方向，用户决策）
+#   dsh-anytype-memory 曾作为第二行在此 insert（16 个 memory_* 工具），现仅
+#   下架注册：src/entries/memory.ts、src/memory/**、相关测试、docs/memory 与
+#   package.json exports 的 ./memory 入口全部保留。恢复方式 = 在下方 insert
+#   列表追加回该行（两行 YAML，写法见 docs/bundle-architecture.md 归档一节）。
+#
 # 规则
 #   - 每行的 id 必须与入口文件导出的 name 一致（loader 以 id 定位行、
 #     以 name 找模块）；
 #   - 插件行按文件顺序装配；后一行可 inject 前一行提供的 service
-#     （dsh-anytype-memory 注入 anytype，由 dsh-anytype 提供）；
+#     （如归档前的 dsh-anytype-memory 注入 anytype，由 dsh-anytype 提供）；
 #   - profile 侧不要再写这些行的 insert:——重复声明会让同一插件被实例化
 #     两次、同名工具注册两次。profile 只用「- id: <同一 id> + config」
 #     覆盖配置（迁移指引见 docs/bundle-architecture.md）。
@@ -22,5 +28,3 @@
 - insert:
     - id: dsh-anytype
       name: './src/entries/anytype.ts'
-    - id: dsh-anytype-memory
-      name: './src/entries/memory.ts'

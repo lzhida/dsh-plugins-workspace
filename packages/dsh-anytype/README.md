@@ -6,18 +6,26 @@
 
 ## 一个包，多个插件行
 
-本包是一个 **bundle**（与 dsh 官方 bundle 同构）：装一次，得到**两个插件行**，
-它们通过**具名 service** 组合，共用同一把钥匙。
+本包是一个 **bundle**（与 dsh 官方 bundle 同构）：装一次，得到当前注册的
+插件行；它们通过**具名 service** 组合，共用同一把钥匙。
 
-| 插件行               | 能力                                                 | 工具数 |
-| -------------------- | ---------------------------------------------------- | ------ |
-| `dsh-anytype`        | 通用 Anytype 封装（空间/对象/类型/属性/搜索…）       | 30     |
-| `dsh-anytype-memory` | 纯本地持久记忆（零本地状态，记忆即 Anytype 对象）    | 16     |
-| `dsh-anytype-wiki`   | **留位**：将来的 LLM Wiki 知识编译管道（本次不注册） | —      |
+| 插件行               | 能力                                                 | 工具数 | 状态                     |
+| -------------------- | ---------------------------------------------------- | ------ | ------------------------ |
+| `dsh-anytype`        | 通用 Anytype 封装（空间/对象/类型/属性/搜索…）       | 30     | 注册                     |
+| `dsh-anytype-memory` | 纯本地持久记忆（零本地状态，记忆即 Anytype 对象）    | 16     | **已归档**（2026-10-30） |
+| `dsh-anytype-wiki`   | **留位**：将来的 LLM Wiki 知识编译管道（本次不注册） | —      | 留位                     |
+
+> **归档说明（2026-10-30）**：anytype 不再作为 agent 记忆系统使用（agent 持久
+> 记忆由 hindsight/mnemon 承担），`dsh-anytype-memory` 行按「代码保留归档、
+> 仅下架注册」处置——`src/memory/**`、`src/entries/memory.ts`、相关测试、
+> `docs/memory/` 与 exports 的 `./memory` 入口**全部保留**，只是不再随包注册。
+> **恢复方式**：在包内 `cordis.patch.yml` 的 `insert` 列表追加回 memory 行
+> （两行 YAML）即可，见 [docs/bundle-architecture.md](./docs/bundle-architecture.md)。
 
 - **连接配置只填一次**：插件行①注册具名服务 `anytype`（持配置现读的客户端），
-  插件行②以 `inject: ['anytype']` 复用它——设置面板里 apiKey 只出现一次；
-- **装一次即全部激活**：包的 `cordis.patch.yml` 声明两个插件行，随包进入
+  插件行②以 `inject: ['anytype']` 复用它——设置面板里 apiKey 只出现一次
+  （memory 行恢复注册后同样成立）；
+- **装一次即全部激活**：包的 `cordis.patch.yml` 声明插件行，随包进入
   profile 的 bundle 层，**profile 侧不需要写任何 `insert:`**；
 - **配置页在 bundle 上**：Plugins → `@zhidal/dsh-anytype` 详情页自渲染一张
   配置卡（两个插件行的字段分成两个分区），改配置不用手改 profile 文件——
@@ -49,9 +57,9 @@ profile 侧**只需按 id 覆盖配置**（不要 `insert:` 同 id 的行，否�
   config:
     baseUrl: http://127.0.0.1:31009
     apiKey: anytype_xxx
-- id: dsh-anytype-memory
-  config:
-    spaceName: Agent Memory
+# dsh-anytype-memory 已归档（2026-10-30）：profile 侧的
+# 「- id: dsh-anytype-memory + config」覆盖条目在该行恢复注册前是 no-op，
+# 可保留（恢复即生效）或自行删除。
 ```
 
 纯 TS 源码入口，仅支持 `link:` 安装（Node 拒绝剥离 `node_modules` 下 realpath
@@ -72,6 +80,9 @@ profile 侧**只需按 id 覆盖配置**（不要 `insert:` 同 id 的行，否�
 | `maxResponseChars` | `20000`                  | 工具结果截断上限（超限返回 `data_preview`）       |
 
 ### 插件行② `dsh-anytype-memory`（语义类，无连接字段）
+
+> **已归档（2026-10-30）**：本行不再随包注册，下表字段仅在恢复注册后生效；
+> 字段契约与实现保留在 `src/memory/config.ts`。
 
 | 字段                 | 默认           | 说明                                                |
 | -------------------- | -------------- | --------------------------------------------------- |
@@ -197,7 +208,12 @@ profile 侧**只需按 id 覆盖配置**（不要 `insert:` 同 id 的行，否�
 | spec **未声明** Idempotency-Key 的端点带该头 | 仍返 409 幂等冲突——**服务端实际强制面比 spec 声明面更广** ✅              |
 | `POST /v2/spaces/{id}/search` 带该头         | 200 不报错，但 search 不绑定 key（规范明示 search 不接受该头）            |
 
-## 插件行② `dsh-anytype-memory`：纯本地持久记忆
+## 插件行② `dsh-anytype-memory`：纯本地持久记忆（已归档）
+
+> **状态（2026-10-30）**：anytype 退出记忆方向，本行已**下架注册、代码保留
+> 归档**——本节与 `docs/memory/` 全部留档；agent 持久记忆由既有系统
+> （hindsight/mnemon）承担。恢复方式：在包内 `cordis.patch.yml` 的 `insert`
+> 列表追加回 memory 行。
 
 把**指定的 Anytype space** 当作 agent 的**持久记忆工作环境**：记忆正文、
 属性、关系与向量全部落为 Anytype 对象；检索能力全部来自 Anytype 自身
@@ -307,10 +323,10 @@ profile 侧**只需按 id 覆盖配置**（不要 `insert:` 同 id 的行，否�
 
 ## 文档
 
-| 文档                                                         | 内容                                                                                                          |
-| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
-| [docs/bundle-architecture.md](./docs/bundle-architecture.md) | bundle 机制、一包多入口、service 组合、迁移指引、扩展插件行                                                   |
-| [docs/memory/](./docs/memory/)                               | 记忆子系统 11 篇（架构 / 模型 / 流程 / 工具 API / 索引实证 / 向量委派 / 方案审查 / 生态对照 / 限制 / 路线图） |
+| 文档                                                         | 内容                                                                                                                                     |
+| ------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| [docs/bundle-architecture.md](./docs/bundle-architecture.md) | bundle 机制、一包多入口、service 组合、迁移指引、扩展插件行                                                                              |
+| [docs/memory/](./docs/memory/)                               | 记忆子系统 11 篇（架构 / 模型 / 流程 / 工具 API / 索引实证 / 向量委派 / 方案审查 / 生态对照 / 限制 / 路线图；memory 行已归档，文档留档） |
 
 ## 关于 anytype-cli（暂不支持的说明）
 
@@ -325,12 +341,16 @@ pnpm exec vitest run packages/dsh-anytype
 
 e2e（真实 dsh 实例 + 真实 Anytype）见 `.agents/skills/dsh-plugin-dev/SKILL.md` §5 四步流程；apiKey 经 test profile 的 `cordis.patch.yml` 注入（密钥不入库）。
 
-装成 bundle 后的 e2e 断言（2026-10-24 实测）：
+装成 bundle 后的 e2e 断言（memory 行归档后，2026-10-30 起）：
 
 - profile 的 `dsh.profile.bundles` 命中 `@zhidal/dsh-anytype`；
 - profile 的 `cordis.patch.yml` **零 anytype `insert:` 行**（只按 id 覆盖 config）；
-- 实例日志出现 `[dsh-anytype] plugin loaded` + `registered 30 Anytype tools`
-  与 `[dsh-anytype-memory] plugin loaded` + `registered 16 memory tools`；
-- 工具总数 **46 且名字唯一**（重复即说明旧 `insert:` 行没清干净）；
-- 真机链路：setup → write → 同内容去重（同一 object_id）→ 中文召回 →
-  向量臂 → link → get → supersede（recall 不再返回）→ review → stats → doctor。
+- 实例日志出现 `[dsh-anytype] plugin loaded` + `registered 30 Anytype tools`，
+  且**不再出现** `[dsh-anytype-memory] plugin loaded` 与
+  `registered 16 memory tools`（memory 行已归档，恢复注册后才应复现）；
+- 工具总数 **30 且名字唯一**（恢复 memory 行后回到 46）；system prompt 的
+  指引 section 只有 `tool:dsh-anytype`（order 2960），不再有
+  `tool:dsh-anytype-memory`（原 order 2970 随下架消失）；
+- 真机链路（仅 memory 行恢复注册后适用）：setup → write → 同内容去重（同一
+  object_id）→ 中文召回 → 向量臂 → link → get → supersede（recall 不再返回）→
+  review → stats → doctor。
