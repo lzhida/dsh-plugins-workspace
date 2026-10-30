@@ -5,9 +5,10 @@
  * - **插件行①** `dsh-anytype` —— 通用 Anytype 工具（30 个 `anytype_*`）+
  *   连接服务 `anytype`；
  * - **插件行②** `dsh-anytype-memory` —— 持久记忆（16 个 `memory_*`），
- *   经 `inject: ['anytype']` 复用插件行①的连接服务；
- * - **留位** `dsh-anytype-wiki` —— 将来的 LLM Wiki 知识编译管道
- *   （本次不注册）。
+ *   2026-10-30 起已归档留档：代码保留，不再随包注册（anytype 退出记忆
+ *   方向）；
+ * - **插件行③** `dsh-anytype-wiki` —— AI 笔记知识库（5 个 `wiki_*`），
+ *   AI 写、人看；经 `inject: ['anytype']` 复用插件行①的连接服务。
  *
  * 包根导出**插件行①的插件契约**（`name` / `apply` / `Config`）——这样本包
  * 既能作为 bundle 被 patch 文件激活，也能作为单个 plain dependency 直接
@@ -63,3 +64,17 @@ export {
   SECTION_ORDER as MEMORY_SECTION_ORDER,
 } from './entries/memory.ts';
 export { Config as MemoryConfig } from './entries/memory.ts';
+
+// ── 笔记域（领域能力，不含插件契约） ────────────────────────────────
+export * from './wiki/index.ts';
+
+// ── 笔记插件行（插件契约单独导出，便于按需引用） ──────────────────────
+export {
+  name as wikiPluginName,
+  apply as applyWikiPlugin,
+  inject as wikiInject,
+  wikiGuidanceSection,
+  SECTION_NAME as WIKI_SECTION_NAME,
+  SECTION_ORDER as WIKI_SECTION_ORDER,
+} from './entries/wiki.ts';
+export { Config as WikiConfig } from './entries/wiki.ts';
