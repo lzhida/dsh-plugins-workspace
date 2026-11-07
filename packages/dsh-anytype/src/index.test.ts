@@ -16,6 +16,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { apply as applyAnytype } from './entries/anytype.ts';
 import { apply as applyMemory } from './entries/memory.ts';
+import { apply as applyWiki } from './entries/wiki.ts';
 import { AnytypeService } from './services/anytype.ts';
 
 /** 递归列出目录下的 .ts 文件（排除测试自身）。 */
@@ -122,14 +123,71 @@ describe('dsh-anytype bundle 包', () => {
     log.mockRestore();
   });
 
+  it('插件行③注册 6 个 wiki 工具，三行工具名互不重复（合计 52 个）', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { ctx, tools, provided } = stubCtx();
+    applyAnytype(ctx);
+    provided.set('anytype', makeService());
+    applyWiki(ctx);
+    applyMemory(ctx);
+    const names = tools.map((t) => t.name);
+    expect(names).toHaveLength(52);
+    expect(new Set(names).size).toBe(52);
+    expect(names.some((n) => n.startsWith('anytype_'))).toBe(true);
+    expect(names.some((n) => n.startsWith('wiki_'))).toBe(true);
+    expect(names.some((n) => n.startsWith('memory_'))).toBe(true);
+    // wiki 行的五个工具一个不少
+    for (const expected of [
+      'wiki_setup',
+      'wiki_write',
+      'wiki_review',
+      'wiki_get',
+      'wiki_list',
+      'wiki_lint',
+    ]) {
+      expect(names).toContain(expected);
+    }
+    log.mockRestore();
+  });
+
+  it('插件行③指引 section：只写笔记库用途与写作纪律，无记忆指引', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { ctx, provided, sections } = stubCtx();
+    applyAnytype(ctx);
+    provided.set('anytype', makeService());
+    applyWiki(ctx);
+    const wikiSections = sections.filter(
+      (s) => s.name === 'tool:dsh-anytype-wiki',
+    );
+    expect(wikiSections).toHaveLength(1);
+    const text = wikiSections[0]?.text ?? '';
+    expect(text).toContain('wiki_write');
+    expect(text).toContain('wiki_review');
+    // 非记忆系统的定位声明 + 不含记忆召回指引
+    expect(text).toMatch(/NOT a memory system/i);
+    expect(text).not.toMatch(/memory_(recall|write|setup|candidates)/);
+    log.mockRestore();
+  });
+
+  it('插件行③以具名服务 anytype 复用连接（缺服务时给出可操作错误）', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const { ctx } = stubCtx();
+    expect(() => applyWiki(ctx)).toThrowError(
+      /"anytype" service is unavailable/,
+    );
+    log.mockRestore();
+  });
+
   it('配置归属：连接类字段只在插件行①，记忆行不出现 apiKey/baseUrl', async () => {
     const { Config: anytypeConfig } = await import('./anytype/config.ts');
     const { Config: memoryConfig } = await import('./memory/config.ts');
+    const { Config: wikiConfig } = await import('./wiki/config.ts');
     // schemastery 的对象 schema 运行时以 `dict` 持有字段表（类型未公开暴露）。
     const fieldsOf = (config: unknown): string[] =>
       Object.keys((config as { dict: Record<string, unknown> }).dict);
     const anytypeFields = fieldsOf(anytypeConfig);
     const memoryFields = fieldsOf(memoryConfig);
+    const wikiFields = fieldsOf(wikiConfig);
 
     // 连接类字段归插件行①（设置面板里只出现一次）
     for (const field of [
@@ -141,7 +199,24 @@ describe('dsh-anytype bundle 包', () => {
     ]) {
       expect(anytypeFields).toContain(field);
       expect(memoryFields).not.toContain(field);
+      expect(wikiFields).not.toContain(field);
     }
+    // 笔记行只留语义类字段（无召回/向量配置——不是记忆系统）
+    expect(wikiFields).toEqual(
+      expect.arrayContaining([
+        'enabled',
+        'spaceName',
+        'spaceId',
+        'disabledGroups',
+      ]),
+    );
+    expect(wikiFields).not.toEqual(
+      expect.arrayContaining([
+        'recallLimit',
+        'embeddingBatchSize',
+        'defaultStatus',
+      ]),
+    );
     // 记忆行只留语义类字段
     for (const field of [
       'spaceName',

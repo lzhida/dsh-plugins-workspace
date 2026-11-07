@@ -9,11 +9,11 @@
 本包是一个 **bundle**（与 dsh 官方 bundle 同构）：装一次，得到当前注册的
 插件行；它们通过**具名 service** 组合，共用同一把钥匙。
 
-| 插件行               | 能力                                                 | 工具数 | 状态                     |
-| -------------------- | ---------------------------------------------------- | ------ | ------------------------ |
-| `dsh-anytype`        | 通用 Anytype 封装（空间/对象/类型/属性/搜索…）       | 30     | 注册                     |
-| `dsh-anytype-memory` | 纯本地持久记忆（零本地状态，记忆即 Anytype 对象）    | 16     | **已归档**（2026-10-30） |
-| `dsh-anytype-wiki`   | **留位**：将来的 LLM Wiki 知识编译管道（本次不注册） | —      | 留位                     |
+| 插件行               | 能力                                              | 工具数 | 状态                     |
+| -------------------- | ------------------------------------------------- | ------ | ------------------------ |
+| `dsh-anytype`        | 通用 Anytype 封装（空间/对象/类型/属性/搜索…）    | 30     | 注册                     |
+| `dsh-anytype-memory` | 纯本地持久记忆（零本地状态，记忆即 Anytype 对象） | 16     | **已归档**（2026-10-30） |
+| `dsh-anytype-wiki`   | AI 笔记知识库（AI 写、人看，非记忆系统）          | 6      | 注册                     |
 
 > **归档说明（2026-10-30）**：anytype 不再作为 agent 记忆系统使用（agent 持久
 > 记忆由 hindsight/mnemon 承担），`dsh-anytype-memory` 行按「代码保留归档、
@@ -23,8 +23,8 @@
 > （两行 YAML）即可，见 [docs/bundle-architecture.md](./docs/bundle-architecture.md)。
 
 - **连接配置只填一次**：插件行①注册具名服务 `anytype`（持配置现读的客户端），
-  插件行②以 `inject: ['anytype']` 复用它——设置面板里 apiKey 只出现一次
-  （memory 行恢复注册后同样成立）；
+  插件行③（wiki）以 `inject: ['anytype']` 复用它——设置面板里 apiKey 只出现
+  一次（memory 行恢复注册后同样成立）；
 - **装一次即全部激活**：包的 `cordis.patch.yml` 声明插件行，随包进入
   profile 的 bundle 层，**profile 侧不需要写任何 `insert:`**；
 - **配置页在 bundle 上**：Plugins → `@zhidal/dsh-anytype` 详情页自渲染一张
@@ -313,13 +313,28 @@ profile 侧**只需按 id 覆盖配置**（不要 `insert:` 同 id 的行，否�
 | relation 按对象 id 过滤被服务端接受但匹配不到行（`total=0`） | 关系臂兜底投影原生 `links`/`backlinks`，邻居 id 以 `related_ids` 返回 |
 | 对象标题在 `properties.name`（对象文档没有顶层 name）        | 读标题别读 `object.name`                                              |
 
-## 插件行③ `dsh-anytype-wiki`（留位）
+## 插件行③ `dsh-anytype-wiki`
 
-将来的 **LLM Wiki** 知识编译管道（Raw → Wiki → Index 单向派生 + 人类控制
-回路，参考官方 Anytwo 平台的实现）。本次只把**位置与契约**定下来
-（`src/entries/wiki.ts` + `src/wiki/` 的落位、与 `anytype` 服务的复用关系），
-等专门看板上的一张卡开工时填实现——细节见
-[docs/bundle-architecture.md](./docs/bundle-architecture.md) §4。
+**AI 笔记知识库**：AI 写笔记、人类查看审核（2026-10-30 随包注册，接替已归档
+记忆行的第二行位置）。**不是记忆系统**——不自动召回、不注入上下文、无向量/
+Index 层；agent 持久记忆由 hindsight/mnemon 承担，wiki 的读取只发生在 AI
+明确调用 `wiki_get` / `wiki_list` 时。
+
+六个工具（`src/wiki/**` + `src/entries/wiki.ts`，`inject: ['anytype']` 复用
+连接服务；5 项能力——get/list 合并计为「查看」）：
+
+| 工具                     | 语义                                                                                 |
+| ------------------------ | ------------------------------------------------------------------------------------ |
+| `wiki_setup`             | 幂等初始化笔记 space / `wiki_note` 类型 / 属性 schema（重复执行零新建）              |
+| `wiki_write`             | 按标题查重创建/更新笔记：默认 draft 态 + `wiki_source` 溯源；更新正文回 draft 待重审 |
+| `wiki_review`            | 待审列表 + approve/reject/archive 裁决写回（`expected_etags` / If-Match 并发保护）   |
+| `wiki_get` / `wiki_list` | 只读查看（全文 + 审核元数据；清单默认 draft+approved）                               |
+| `wiki_lint`              | 失效链接/孤立页巡检（search 投影 `links`/`backlinks`；只产出建议，不改数据）         |
+
+笔记状态机：`draft`（AI 写入，待人工审）→ `approved`（人已批准）→
+`archived`（驳回或下架）。属性显示名带 `Wiki ` 前缀避开空间内置词汇
+（`tag` 复用内置）。已知限制：bundle 配置卡尚未为 wiki 行加分区，wiki 语义
+配置可经 profile 侧 `- id: dsh-anytype-wiki + config` 覆盖。
 
 ## 文档
 

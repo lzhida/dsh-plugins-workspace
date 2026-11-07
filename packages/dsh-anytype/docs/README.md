@@ -1,8 +1,8 @@
 # dsh-anytype 文档集
 
-> **包定位（一句话）**：一个 bundle 包、两个插件行、共享一份连接配置——
-> 通用 Anytype 工具（`dsh-anytype`）+ 纯本地持久记忆（`dsh-anytype-memory`），
-> 外加一个留位插件行（`dsh-anytype-wiki`）。
+> **包定位（一句话）**：一个 bundle 包、多个插件行、共享一份连接配置——
+> 通用 Anytype 工具（`dsh-anytype`）+ AI 笔记知识库（`dsh-anytype-wiki`，
+> AI 写、人看）；持久记忆行（`dsh-anytype-memory`）已归档留档。
 
 ## 本文回答什么问题
 
@@ -23,9 +23,12 @@
 ### ① 我只想把插件用起来
 
 **读包 README 的「一个包，多个插件行」+「配置」两节** → 装包 → 在设置面板填
-apiKey → 让 agent 调 `memory_setup` → `memory_write` → `memory_recall`。
+apiKey → 让 agent 调 `wiki_setup` → `wiki_write`（默认 draft，人审）→
+`wiki_get`/`wiki_list` 查看。
 
-想改配置字段、想知道每个工具能干什么，看 [记忆文档集 04 工具 API 契约](./memory/04-tool-api.md)。
+想改配置字段、想知道每个工具能干什么，看包 README 的「插件行③」一节；
+记忆文档集（[04 工具 API 契约](./memory/04-tool-api.md) 等）为归档留档，
+仅在恢复 memory 行时阅读。
 
 ### ② 我要在这个包里加一个插件行
 

@@ -169,19 +169,23 @@ export function apply(ctx, config) {
 
 **namespace ↔ scope 映射**（client 半区据此读写两行）：
 
-| 插件行                       | 设置 namespace（= profile 条目 id） | 配置卡分区         |
-| ---------------------------- | ----------------------------------- | ------------------ |
-| 插件行① `dsh-anytype`        | `dsh-anytype`                       | Anytype 连接       |
-| 插件行② `dsh-anytype-memory` | `dsh-anytype-memory`                | 持久记忆（已归档） |
+| 插件行                       | 设置 namespace（= profile 条目 id） | 配置卡分区                   |
+| ---------------------------- | ----------------------------------- | ---------------------------- |
+| 插件行① `dsh-anytype`        | `dsh-anytype`                       | Anytype 连接                 |
+| 插件行② `dsh-anytype-memory` | `dsh-anytype-memory`                | 持久记忆（已归档）           |
+| 插件行③ `dsh-anytype-wiki`   | `dsh-anytype-wiki`                  | 笔记库语义（卡片分区待扩展） |
 
 两行各持一个 `configForms` scope（独立写入栅栏与草稿），同一张卡按分区呈现。
+配置卡的分区按 namespace 常量（`client/src/constants.ts` 的 ROW_MAIN /
+ROW_MEMORY）渲染——wiki 行的语义字段暂未上图，先经 profile 侧
+`- id: dsh-anytype-wiki + config` 覆盖。
 
 ## 3. 包内结构
 
 ```mermaid
 flowchart LR
     subgraph pkg["@zhidal/dsh-anytype"]
-        EN["src/entries/<br/>anytype.ts · memory.ts · wiki.ts(留位)"]
+        EN["src/entries/<br/>anytype.ts · memory.ts(归档) · wiki.ts"]
         SV["src/services/anytype.ts<br/>AnytypeService"]
         CO["src/core/<br/>client · shared · volatile"]
         AT["src/anytype/<br/>通用工具实现"]
@@ -203,33 +207,35 @@ flowchart LR
 | ------------------------- | ------------------------------------------------------------------------------------------ |
 | `src/entries/anytype.ts`  | 插件行①：通用 Anytype 工具 + 提供 `anytype` 服务                                           |
 | `src/entries/memory.ts`   | 插件行②：持久记忆（`inject: ['anytype']`）；**已归档**（2026-10-30）——契约保留，不随包注册 |
-| `src/entries/wiki.ts`     | **留位**：将来的 LLM Wiki 知识编译管道（本次不注册）                                       |
+| `src/entries/wiki.ts`     | 插件行③：AI 笔记知识库（`inject: ['anytype']`，6 个 `wiki_*`，随包注册）                   |
 | `src/services/anytype.ts` | `AnytypeService` + `provideAnytypeService()`                                               |
 | `src/core/`               | 共享底座：HTTP 客户端、工具公共设施、volatile 支持                                         |
 | `src/anytype/`            | 通用工具实现（10 个工具文件 + 配置文件）                                                   |
 | `src/memory/`             | 记忆域实现（schema/store/纯函数/16 个工具；已归档保留）                                    |
+| `src/wiki/`               | 笔记域实现（schema/store/config/5 个工具）                                                 |
 | `src/cordis.d.ts`         | `Context.anytype` 的类型增强                                                               |
 | `src/index.ts`            | 包根 barrel（导出插件行①契约 + 公共 API）                                                  |
 | `client/src/`             | **client 半区**：bundle 详情页的配置卡（见 §6）                                            |
 | `scripts/build-client.ts` | client 半区构建（esbuild → `client/index.js`）                                             |
-| `cordis.patch.yml`        | bundle 层：插件行注册表（当前仅主行；memory 行已归档，恢复见 §6）                          |
+| `cordis.patch.yml`        | bundle 层：插件行注册表（主行 + wiki 行；memory 行已归档，恢复见 §6）                      |
 | `docs/memory/`            | 记忆子系统的 11 篇设计文档（memory 行已归档，文档留档）                                    |
 
 ## 4. 如何新增一个插件行
 
-以将来的 LLM Wiki 为例：
+wiki 行（2026-10-30）即按此路径落地；下次新增行照此办理：
 
-1. 新建 `src/wiki/`（实现）与 `src/entries/wiki.ts`（插件契约：
+1. 新建 `src/<域>/`（实现）与 `src/entries/<name>.ts`（插件契约：
    `name` / `inject` / `apply` / `Config`）；
 2. 复用连接：`inject: [..., 'anytype']` + `ctx.get('anytype')`——
    **不要自己再读一份 apiKey**；
-3. 在 `cordis.patch.yml` 追加一行：
+3. 在 `cordis.patch.yml` 追加一行（wiki 行实例）：
    ```yaml
    - id: dsh-anytype-wiki
      name: './src/entries/wiki.ts'
    ```
 4. 在 `src/index.ts` 补 barrel 导出；在 `src/index.test.ts` 补「工具名唯一」
-   断言（工具总数随之增长：当前注册 30；memory 行恢复注册后为 46）；
+   断言（工具总数随之增长：当前注册 36——主行 30 + wiki 行 6；memory 行
+   恢复注册后为 52）；
 5. 装包即生效——**不需要改 profile**（profile 侧最多按 id 覆盖 config）。
 
 ## 5. 迁移指引（从旧的三个包）
