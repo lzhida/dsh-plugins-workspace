@@ -9,13 +9,17 @@
  *   候选;全冷却 → -1 不吞链);
  * - nextCandidate 冷却感知扫描:跳过冷却候选 / 剩余全冷却降级回原顺序 /
  *   到期恢复 / 不传表时与旧版行为一致(向后兼容);
- * - apply 集成(agent/request + agent/request-error 真实链路):
- *   - 主模型失败切换后,新 step 首个请求直接改写为链上第一候选(无需失败);
- *   - 多候选先后失败后,新 step 跳到首个未冷却候选;
- *   - 冷却期满(时间推进)自动恢复优先级,seed 不再被改写;
+ * - apply 集成(agent/request + agent/request-error 真实链路;0.6.0 起
+ *   request 监听器只读(捕获 pageModel、绝不改写返回值),冷却的效果一律
+ *   经 error 推进链时的冷却感知扫描(nextCandidate)体现,切换经官方
+ *   agent.model.select 持久化):
+ *   - 主模型失败切换后,新 step 请求只读放行 seed,该 step 首个失败仍直接
+ *     切到链上第一候选(model.select 断言);
+ *   - 多候选先后失败后,新 step 首个失败跳到首个未冷却候选;
+ *   - 冷却期满(时间推进)自动恢复优先级,推进不再跳过到期候选;
  *   - 全链冷却:新 step 保持 seed 原样,失败后 nextCandidate 降级切链首;
  *   - cooldownEnabled=false:行为与旧版完全一致;
- *   - 预算内同候选重试不记冷却,预算耗尽切换才记;
+ *   - 预算内同候选重试不切换(无 select),预算耗尽才切换并 select;
  *   - 链耗尽路径同样标记失败方;
  *   - 冷却跳过不消耗本 step 的切换预算(跳过后失败仍能继续切换);
  * - protocol section 文本说明冷却语义。
@@ -119,6 +123,61 @@ function setup(config: Record<string, unknown> = {}): {
     req: findListener(listeners, 'agent/request'),
     err: findListener(listeners, 'agent/request-error'),
   };
+}
+
+/**
+ * agent 假体(带官方 model 面):0.6.0 起切换经 agent.model.select 持久化。
+ * current 返回当前 selection(缺省为种子模型 deepseek/x);select 记录
+ * 调用参数进 selections 并同步更新 current(模拟宿主持久化行为)。
+ * current 缺省不带 reasoningEffort → select 参数恰为 {provider, model}
+ * 两键,断言可直接 toEqual 完整对象。
+ */
+function stubAgent(
+  initial: { provider: string; model: string } = {
+    provider: 'deepseek',
+    model: 'x',
+  },
+): {
+  agent: {
+    session: { id: string; append: () => void };
+    model: {
+      current: () => { provider: string; model: string } | undefined;
+      select: (sel: {
+        provider: string;
+        model: string;
+        reasoningEffort?: unknown;
+      }) => void;
+    };
+  };
+  selections: Array<{
+    provider: string;
+    model: string;
+    reasoningEffort?: unknown;
+  }>;
+} {
+  const selections: Array<{
+    provider: string;
+    model: string;
+    reasoningEffort?: unknown;
+  }> = [];
+  let currentSelection: { provider: string; model: string } | undefined =
+    initial;
+  const agent = {
+    session: { id: 'sess-cd', append: (): void => {} },
+    model: {
+      current: (): { provider: string; model: string } | undefined =>
+        currentSelection,
+      select(sel: {
+        provider: string;
+        model: string;
+        reasoningEffort?: unknown;
+      }): void {
+        selections.push({ ...sel });
+        currentSelection = { provider: sel.provider, model: sel.model };
+      },
+    },
+  };
+  return { agent, selections };
 }
 
 const sig = (): AbortSignal => new AbortController().signal;
@@ -366,79 +425,178 @@ describe('nextCandidate 冷却感知扫描', () => {
   });
 });
 
-// ── 4. apply 集成(request 起点跳过 + error 失败标记)─────────────────
+// ── 4. apply 集成(request 只读放行 + error 冷却感知推进)─────────────
 
 describe('失败冷却(apply 集成)', () => {
-  it('主模型失败切换后,新 step 首个请求直接改写为链上第一候选(无需再失败)', async () => {
+  it('主模型失败切换后,新 step 请求只读放行 seed,首个失败仍直接切到链上第一候选', async () => {
     const { req, err } = setup();
     const seed = { provider: 'deepseek', model: 'x' };
-    // step (1,1):主模型失败 → 切到 openai/a,主模型记入冷却
-    await callListener(req, stepReq(1, 1), async () => ({ ...seed }));
+    const { agent, selections } = stubAgent();
+    // step (1,1):主模型失败 → 切到 openai/a(select 持久化),主模型记入冷却
+    await callListener(req, { ...stepReq(1, 1), agent }, async () => ({
+      ...seed,
+    }));
     expect(
-      await callListener(err, stepErr(1, 1, 'deepseek'), async () => undefined),
+      await callListener(
+        err,
+        { ...stepErr(1, 1, 'deepseek'), agent },
+        async () => undefined,
+      ),
     ).toEqual({ kind: 'retry' });
-    // 新 step (2,1):主模型冷却中 → 首个请求直接改写(此 step 零失败)
+    expect(selections).toEqual([{ provider: 'openai', model: 'a' }]);
+    // 新 step (2,1):request 只读——seed 原样放行(0.6.0 起不再改写)。
+    // 用全新会话的 agent(select 会持久化,current 已是切换后候选,跨 step
+    // 复用会把新 step 的 pageModel 串成 openai/a),保持"从主模型起步"
+    const second = stubAgent();
     expect(
-      await callListener(req, stepReq(2, 1), async () => ({ ...seed })),
-    ).toEqual({ provider: 'openai', model: 'a' });
+      await callListener(
+        req,
+        { ...stepReq(2, 1), agent: second.agent },
+        async () => ({ ...seed }),
+      ),
+    ).toEqual({ ...seed });
+    // 该 step 首个失败即直接切到链上第一候选(冷却标记不阻断推进)
+    expect(
+      await callListener(
+        err,
+        { ...stepErr(2, 1, 'deepseek'), agent: second.agent },
+        async () => undefined,
+      ),
+    ).toEqual({ kind: 'retry' });
+    expect(second.selections).toEqual([{ provider: 'openai', model: 'a' }]);
   });
 
-  it('多个候选先后失败后,新 step 直接跳到首个未冷却的候选', async () => {
+  it('多个候选先后失败后,新 step 首个失败直接跳到首个未冷却的候选', async () => {
     const { req, err } = setup({
       fallbackChains: ['openai/a', 'anthropic/b'],
     });
     const seed = { provider: 'deepseek', model: 'x' };
-    await callListener(req, stepReq(1, 1), async () => ({ ...seed }));
-    await callListener(err, stepErr(1, 1, 'deepseek'), async () => undefined);
-    await callListener(err, stepErr(1, 1, 'openai'), async () => undefined);
-    // deepseek 与 openai 均冷却中 → 直接从 anthropic/b 开始
+    const { agent, selections } = stubAgent();
+    await callListener(req, { ...stepReq(1, 1), agent }, async () => ({
+      ...seed,
+    }));
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'deepseek'), agent },
+      async () => undefined,
+    );
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'openai'), agent },
+      async () => undefined,
+    );
+    expect(selections).toEqual([
+      { provider: 'openai', model: 'a' },
+      { provider: 'anthropic', model: 'b' },
+    ]);
+    // deepseek 与 openai 均冷却中 → 新 step(全新会话 agent,保持主模型
+    // 起步)请求只读放行 seed,首个失败经冷却感知扫描直接切到 anthropic/b
+    // (跳过冷却中的 openai/a)
+    const next = stubAgent();
     expect(
-      await callListener(req, stepReq(1, 2), async () => ({ ...seed })),
-    ).toEqual({ provider: 'anthropic', model: 'b' });
+      await callListener(
+        req,
+        { ...stepReq(1, 2), agent: next.agent },
+        async () => ({ ...seed }),
+      ),
+    ).toEqual({ ...seed });
+    expect(
+      await callListener(
+        err,
+        { ...stepErr(1, 2, 'deepseek'), agent: next.agent },
+        async () => undefined,
+      ),
+    ).toEqual({ kind: 'retry' });
+    expect(next.selections).toEqual([{ provider: 'anthropic', model: 'b' }]);
   });
 
-  it('冷却期满后模型自动恢复优先级:新 step 首个请求不再改写 seed', async () => {
+  it('冷却期满后模型自动恢复优先级:失败推进不再跳过到期候选', async () => {
     vi.useFakeTimers();
-    const { req, err } = setup({ fallbackChains: ['openai/a'] });
+    const { req, err } = setup();
     const seed = { provider: 'deepseek', model: 'x' };
-    await callListener(req, stepReq(1, 1), async () => ({ ...seed }));
-    await callListener(err, stepErr(1, 1, 'deepseek'), async () => undefined);
-    // 窗口内:跳过
+    const { agent } = stubAgent();
+    // 链首 openai/a 失败进入冷却;anthropic/b 尚未失败、未被冷却
+    await callListener(req, { ...stepReq(1, 1), agent }, async () => ({
+      ...seed,
+    }));
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'deepseek'), agent },
+      async () => undefined,
+    );
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'openai'), agent },
+      async () => undefined,
+    );
+    // 窗口内:openai/a 冷却中 → 推进直接跳过它切 anthropic/b
+    // (全新会话 agent,避免上一 step 的 select 把 pageModel 串成新候选)
+    const second = stubAgent();
     expect(
-      await callListener(req, stepReq(1, 2), async () => ({ ...seed })),
-    ).toEqual({ provider: 'openai', model: 'a' });
-    // 窗口期满(默认 300000ms):重新验证——恢复原优先级,seed 原样
+      await callListener(
+        err,
+        { ...stepErr(1, 2, 'deepseek'), agent: second.agent },
+        async () => undefined,
+      ),
+    ).toEqual({ kind: 'retry' });
+    expect(second.selections).toEqual([{ provider: 'anthropic', model: 'b' }]);
+    // 窗口期满(默认 300000ms):到期候选恢复优先级——推进回到链首 openai/a
     vi.setSystemTime(Date.now() + 300_000 + 1);
+    const third = stubAgent();
     expect(
-      await callListener(req, stepReq(1, 3), async () => ({ ...seed })),
-    ).toEqual({ ...seed });
+      await callListener(
+        err,
+        { ...stepErr(1, 3, 'deepseek'), agent: third.agent },
+        async () => undefined,
+      ),
+    ).toEqual({ kind: 'retry' });
+    expect(third.selections).toEqual([{ provider: 'openai', model: 'a' }]);
   });
 
   it('剩余候选全部在冷却中:新 step 保持 seed 原样,失败后降级按原顺序切换', async () => {
     const { req, err } = setup();
     const seed = { provider: 'deepseek', model: 'x' };
-    await callListener(req, stepReq(1, 1), async () => ({ ...seed }));
-    await callListener(err, stepErr(1, 1, 'deepseek'), async () => undefined);
-    await callListener(err, stepErr(1, 1, 'openai'), async () => undefined);
+    const { agent, selections } = stubAgent();
+    await callListener(req, { ...stepReq(1, 1), agent }, async () => ({
+      ...seed,
+    }));
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'deepseek'), agent },
+      async () => undefined,
+    );
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'openai'), agent },
+      async () => undefined,
+    );
     // 第 3 次失败:链耗尽 → 透传,但失败方 anthropic/b 同样记入冷却
     expect(
       await callListener(
         err,
-        stepErr(1, 1, 'anthropic', 'SERVER'),
+        { ...stepErr(1, 1, 'anthropic', 'SERVER'), agent },
         async () => undefined,
       ),
     ).toBeUndefined();
-    // 全部冷却:新 step 首个请求保持 seed 原样(冷却不吞链)
+    // 全部冷却:新 step 首个请求保持 seed 原样(冷却不吞链,request 只读)
     expect(
-      await callListener(req, stepReq(1, 2), async () => ({ ...seed })),
+      await callListener(req, { ...stepReq(1, 2), agent }, async () => ({
+        ...seed,
+      })),
     ).toEqual({ ...seed });
     // 该 step 内主模型再失败:冷却扫描发现剩余候选全冷却 → 降级切链首
     expect(
-      await callListener(err, stepErr(1, 2, 'deepseek'), async () => undefined),
+      await callListener(
+        err,
+        { ...stepErr(1, 2, 'deepseek'), agent },
+        async () => undefined,
+      ),
     ).toEqual({ kind: 'retry' });
-    expect(
-      await callListener(req, stepReq(1, 2), async () => ({ ...seed })),
-    ).toEqual({ provider: 'openai', model: 'a' });
+    expect(selections).toEqual([
+      { provider: 'openai', model: 'a' },
+      { provider: 'anthropic', model: 'b' },
+      { provider: 'openai', model: 'a' },
+    ]);
   });
 
   it('cooldownEnabled=false:切换后新 step 不做冷却跳过(行为与旧版一致)', async () => {
@@ -451,47 +609,101 @@ describe('失败冷却(apply 集成)', () => {
     ).toEqual({ ...seed });
   });
 
-  it('预算内的同候选重试不记冷却,预算耗尽切换才记', async () => {
+  it('预算内的同候选重试不切换(无 select),预算耗尽才切换并持久化', async () => {
     const { req, err } = setup({
       fallbackChains: ['openai/a'],
       retriesBeforeSwitch: 1,
     });
     const seed = { provider: 'deepseek', model: 'x' };
+    const { agent, selections } = stubAgent();
     // 同一 step 内:首失败 → 代重试(预算内,不切换不记冷却)
-    await callListener(req, stepReq(1, 1), async () => ({ ...seed }));
+    await callListener(req, { ...stepReq(1, 1), agent }, async () => ({
+      ...seed,
+    }));
     expect(
-      await callListener(err, stepErr(1, 1, 'deepseek'), async () => undefined),
+      await callListener(
+        err,
+        { ...stepErr(1, 1, 'deepseek'), agent },
+        async () => undefined,
+      ),
     ).toEqual({ kind: 'retry' });
-    // 此时主模型尚未冷却:另一个新 step 仍从会话模型开始
+    expect(selections).toEqual([]);
+    // 此时主模型尚未冷却:另一个新 step 仍从会话模型开始(request 只读,seed 原样)
     expect(
-      await callListener(req, stepReq(1, 2), async () => ({ ...seed })),
+      await callListener(req, { ...stepReq(1, 2), agent }, async () => ({
+        ...seed,
+      })),
     ).toEqual({ ...seed });
-    // 回到原 step 继续失败:预算耗尽 → 切换并记冷却
+    // 回到原 step 继续失败:预算耗尽 → 切换(经 model.select 持久化并记冷却)
     expect(
-      await callListener(err, stepErr(1, 1, 'deepseek'), async () => undefined),
+      await callListener(
+        err,
+        { ...stepErr(1, 1, 'deepseek'), agent },
+        async () => undefined,
+      ),
     ).toEqual({ kind: 'retry' });
-    // 新 step:主模型已冷却 → 跳过
+    expect(selections).toEqual([{ provider: 'openai', model: 'a' }]);
+    // 新 step 请求同样只读放行 seed:切换生效由 model.select 持久化承担,
+    // 宿主下一 step 即从新 selection 发起请求
     expect(
-      await callListener(req, stepReq(1, 3), async () => ({ ...seed })),
-    ).toEqual({ provider: 'openai', model: 'a' });
+      await callListener(req, { ...stepReq(1, 3), agent }, async () => ({
+        ...seed,
+      })),
+    ).toEqual({ ...seed });
   });
 
-  it('冷却跳过不消耗本 step 的切换预算:跳过后失败仍能继续切换', async () => {
-    const { req, err } = setup();
+  it('冷却跳过不消耗本 step 的切换预算:跳过直达目标后失败仍能继续切换', async () => {
+    const { req, err } = setup({
+      fallbackChains: ['openai/a', 'anthropic/b', 'google/c'],
+    });
     const seed = { provider: 'deepseek', model: 'x' };
-    await callListener(req, stepReq(1, 1), async () => ({ ...seed }));
-    await callListener(err, stepErr(1, 1, 'deepseek'), async () => undefined);
-    // 新 step:冷却跳过到 openai/a
+    const { agent, selections } = stubAgent();
+    await callListener(req, { ...stepReq(1, 1), agent }, async () => ({
+      ...seed,
+    }));
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'deepseek'), agent },
+      async () => undefined,
+    );
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'openai'), agent },
+      async () => undefined,
+    );
+    // 新 step(全新会话 agent,保持主模型起步):请求只读放行 seed;首个
+    // 失败经冷却感知扫描跳过冷却中的 openai/a → 直达 anthropic/b
+    const next = stubAgent();
     expect(
-      await callListener(req, stepReq(1, 2), async () => ({ ...seed })),
-    ).toEqual({ provider: 'openai', model: 'a' });
-    // openai 失败 → 仍能切到 anthropic(冷却跳过未消耗 maxRetries)
+      await callListener(
+        req,
+        { ...stepReq(1, 2), agent: next.agent },
+        async () => ({ ...seed }),
+      ),
+    ).toEqual({ ...seed });
     expect(
-      await callListener(err, stepErr(1, 2, 'openai'), async () => undefined),
+      await callListener(
+        err,
+        { ...stepErr(1, 2, 'deepseek'), agent: next.agent },
+        async () => undefined,
+      ),
     ).toEqual({ kind: 'retry' });
+    // anthropic 失败 → 仍能切到 google/c(冷却跳过未消耗 maxRetries)
     expect(
-      await callListener(req, stepReq(1, 2), async () => ({ ...seed })),
-    ).toEqual({ provider: 'anthropic', model: 'b' });
+      await callListener(
+        err,
+        { ...stepErr(1, 2, 'anthropic'), agent: next.agent },
+        async () => undefined,
+      ),
+    ).toEqual({ kind: 'retry' });
+    expect(selections).toEqual([
+      { provider: 'openai', model: 'a' },
+      { provider: 'anthropic', model: 'b' },
+    ]);
+    expect(next.selections).toEqual([
+      { provider: 'anthropic', model: 'b' },
+      { provider: 'google', model: 'c' },
+    ]);
   });
 
   it('非白名单失败不触发切换也不记冷却', async () => {

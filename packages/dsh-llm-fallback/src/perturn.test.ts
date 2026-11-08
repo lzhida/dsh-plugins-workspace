@@ -8,16 +8,21 @@
  *   (含同号 turn)保留;已存在键的常规读取不触发清理;无 ':' 键安全降级
  *   不误删;新键 switched=false(one-shot 未消耗)且不跨键泄漏;
  * - 会话隔离(apply 集成):同号 turn:step 两会话键位互不串扰;跨会话新
- *   turn 建态清理不误删他会在途状态;会话标识缺失降级共享键位(旧行为);
+ *   turn 建态清理不误删他会在途状态;会话标识缺失(session.id 缺失)降级
+ *   共享键位(旧行为);
  * - perTurn=false(apply 集成,真实链路):
  *   - 同 turn:step 至多切换一次:首次预算耗尽切换后,同 step 再次预算耗尽
  *     不再切换、透传上游;
  *   - 官方 retry 透传(预算内)不消耗名额:透传后预算耗尽仍能完成该次切换;
  *     切换后同候选代执行重试照常,预算再耗尽也不得二次切换;
  *   - 新 step 天然重置:同 turn 下一 step 恢复完整切换名额;
- *   - 新 turn 天然重置 + 冷却表跨 turn 语义不受状态清理影响:冷却起点改写
- *     不算切换,新 turn 首个 step 仍能完成一次切换;
+ *   - 新 turn 天然重置 + 冷却表跨 turn 语义不受状态清理影响:新 turn 首个
+ *     失败仍能完成一次切换,前 turn 记下的候选冷却仍生效;
  * - perTurn=true 默认回归:同一 step 可连切多个候选(行为与旧版一致)。
+ *
+ * 0.6.0 起 agent/request 只读:请求一律原样放行 seed,切换统一经官方
+ * agent.model.select 持久化——本文件的切换断言全部走 makeAgent 的
+ * selections 记录(request 只读断言直接看返回值)。
  *
  * 时间控制:退避清零(baseDelayMs/maxDelayMs=0),无需假定时器。
  */
@@ -107,42 +112,50 @@ function setup(config: Record<string, unknown> = {}): {
 }
 
 const sig = (): AbortSignal => new AbortController().signal;
-const stepReq = (
+
+/** agent 假体(带 model mock):current()/select() 模拟宿主官方 API;select
+ * 记录进 selections 并同步更新 current(模拟持久化)。sessionId=undefined
+ * 时键位降级共享(旧行为),agent 本身仍存在(model.current 可观察)。 */
+function makeAgent(sessionId: string | undefined): {
+  agent: unknown;
+  selections: Array<{ provider: string; model: string }>;
+} {
+  const selections: Array<{ provider: string; model: string }> = [];
+  let current: { provider: string; model: string } | undefined = {
+    provider: 'deepseek',
+    model: 'x',
+  };
+  const agent = {
+    session: {
+      ...(sessionId === undefined ? {} : { id: sessionId }),
+      append: (): void => {},
+    },
+    model: {
+      current: (): { provider: string; model: string } | undefined => current,
+      select(selection: { provider: string; model: string }): void {
+        selections.push({ ...selection });
+        current = { ...selection };
+      },
+    },
+  };
+  return { agent, selections };
+}
+
+/** 带 agent 的 request 载荷(agent 由 makeAgent 产出)。 */
+const stepReqAs = (
+  agent: unknown,
   turn: number,
   step: number,
-): { turn: number; step: number; signal: AbortSignal } => ({
-  turn,
-  step,
-  signal: sig(),
-});
-const stepErr = (
-  turn: number,
-  step: number,
-  provider: string,
-  code = 'RATE_LIMIT',
 ): Record<string, unknown> => ({
   turn,
   step,
-  provider,
-  failure: { code, message: 'fake failure' },
   signal: sig(),
+  agent,
 });
 
-/** 带 agent 的载荷(会话标识注入;session=undefined 即降级无 agent)。 */
-const stepReqAs = (
-  session: string | undefined,
-  turn: number,
-  step: number,
-): Record<string, unknown> => ({
-  turn,
-  step,
-  signal: sig(),
-  ...(session === undefined
-    ? {}
-    : { agent: { session: { id: session, append: () => {} } } }),
-});
+/** 带 agent 的 request-error 载荷(预算耗尽切换经 agent.model.select 持久化)。 */
 const stepErrAs = (
-  session: string | undefined,
+  agent: unknown,
   turn: number,
   step: number,
   provider: string,
@@ -153,9 +166,7 @@ const stepErrAs = (
   provider,
   failure: { code, message: 'fake failure' },
   signal: sig(),
-  ...(session === undefined
-    ? {}
-    : { agent: { session: { id: session, append: () => {} } } }),
+  agent,
 });
 
 /** 最小 FallbackState 假体(手工 seed 用,绕开 stateFor 的创建即清理)。 */
@@ -269,88 +280,119 @@ describe('step 状态键会话隔离(纯函数)', () => {
 });
 
 describe('多会话交错(apply 集成)', () => {
-  it('同号 turn:step 两会话互不串扰:B 首请求不被 A 的已切状态劫持', async () => {
+  it('同号 turn:step 两会话互不串扰:两会话各自独立推进切换', async () => {
     // 冷却关闭:冷却表跨会话共享属既定语义,关闭以聚焦键位隔离本身
     const { req, err } = setup({ cooldownEnabled: false });
     const seed = { provider: 'deepseek', model: 'x' };
+    const a = makeAgent('sess-A');
+    const b = makeAgent('sess-B');
     // 会话 A (1,1):失败耗尽预算 → 切 openai/a
-    await callListener(req, stepReqAs('sess-A', 1, 1), async () => ({
+    await callListener(req, stepReqAs(a.agent, 1, 1), async () => ({
       ...seed,
     }));
     expect(
       await callListener(
         err,
-        stepErrAs('sess-A', 1, 1, 'deepseek'),
+        stepErrAs(a.agent, 1, 1, 'deepseek'),
         async () => undefined,
       ),
     ).toEqual({ kind: 'retry' });
-    // 会话 B 同号 (1,1) 首请求:B 无回退状态 → seed 原样返回
-    // (旧实现共享键位:会命中 A 的已切状态被劫持为 openai/a)
+    expect(a.selections).toEqual([{ provider: 'openai', model: 'a' }]);
+    // 会话 B 同号 (1,1) 首请求:B 无回退状态 → seed 原样返回(0.6.0 起
+    // request 一律只读;键位隔离经 error 推进的切换目标体现)
     expect(
-      await callListener(req, stepReqAs('sess-B', 1, 1), async () => ({
+      await callListener(req, stepReqAs(b.agent, 1, 1), async () => ({
         ...seed,
       })),
     ).toEqual({ ...seed });
-    // B 自己失败 → 独立完成切换
+    // B 自己失败 → 独立完成切换(与 A 的已切状态无关)
     expect(
       await callListener(
         err,
-        stepErrAs('sess-B', 1, 1, 'deepseek'),
+        stepErrAs(b.agent, 1, 1, 'deepseek'),
         async () => undefined,
       ),
     ).toEqual({ kind: 'retry' });
+    expect(b.selections).toEqual([{ provider: 'openai', model: 'a' }]);
+    // A 的状态不受 B 影响:再次失败时从 index=0 起算推进到 anthropic/b
+    // (若 A 的状态被 B 覆盖,会从 -1 重新切回 openai/a)
     expect(
-      await callListener(req, stepReqAs('sess-B', 1, 1), async () => ({
-        ...seed,
-      })),
-    ).toEqual({ provider: 'openai', model: 'a' });
-    // A 的状态不受 B 影响:仍改写 openai/a
-    expect(
-      await callListener(req, stepReqAs('sess-A', 1, 1), async () => ({
-        ...seed,
-      })),
-    ).toEqual({ provider: 'openai', model: 'a' });
+      await callListener(
+        err,
+        stepErrAs(a.agent, 1, 1, 'openai'),
+        async () => undefined,
+      ),
+    ).toEqual({ kind: 'retry' });
+    expect(a.selections).toEqual([
+      { provider: 'openai', model: 'a' },
+      { provider: 'anthropic', model: 'b' },
+    ]);
   });
 
-  it('跨会话新 turn 建态清理不误删他会在途状态:B 开新 turn 后 A 的切换仍生效', async () => {
-    const { req, err } = setup({ cooldownEnabled: false });
+  it('跨会话新 turn 建态清理不误删他会在途状态:B 开新 turn 后 A 的已切状态仍在(one-shot 不复活)', async () => {
+    const { req, err } = setup({ cooldownEnabled: false, perTurn: false });
     const seed = { provider: 'deepseek', model: 'x' };
-    // A (1,1) 切到 openai/a(状态 sA:1:1,index=0)
-    await callListener(req, stepReqAs('sess-A', 1, 1), async () => ({
+    const a = makeAgent('sess-A');
+    const b = makeAgent('sess-B');
+    // A (1,1) 切到 openai/a(状态 sA:1:1,index=0,one-shot 已消耗)
+    await callListener(req, stepReqAs(a.agent, 1, 1), async () => ({
       ...seed,
     }));
     expect(
       await callListener(
         err,
-        stepErrAs('sess-A', 1, 1, 'deepseek'),
+        stepErrAs(a.agent, 1, 1, 'deepseek'),
         async () => undefined,
       ),
     ).toEqual({ kind: 'retry' });
+    expect(a.selections).toEqual([{ provider: 'openai', model: 'a' }]);
     // B 开新 turn (2,1):建态触发清理——旧实现按 turn 前缀清理会删掉
     // A 的在途状态(风险②原始场景),新实现跨会话保留
-    await callListener(req, stepReqAs('sess-B', 2, 1), async () => ({
+    await callListener(req, stepReqAs(b.agent, 2, 1), async () => ({
       ...seed,
     }));
-    // A 再次请求:状态未被删除 → 仍改写 openai/a(旧实现会重置回会话模型)
+    // A 同 step 再次预算耗尽:状态未被删除 → one-shot 已消耗 → 透传上游
+    // (若被误删,新状态会重新获得名额并再次切换)
     expect(
-      await callListener(req, stepReqAs('sess-A', 1, 1), async () => ({
-        ...seed,
-      })),
-    ).toEqual({ provider: 'openai', model: 'a' });
+      await callListener(
+        err,
+        stepErrAs(a.agent, 1, 1, 'openai'),
+        async () => undefined,
+      ),
+    ).toBeUndefined();
+    // 未发生二次切换
+    expect(a.selections).toEqual([{ provider: 'openai', model: 'a' }]);
   });
 
-  it('会话标识缺失降级:无 agent 的 payload 共享 turn:step 键位(旧行为)', async () => {
+  it('会话标识缺失降级:session.id 缺失的 payload 共享 turn:step 键位(旧行为)', async () => {
     const { req, err } = setup({ cooldownEnabled: false });
     const seed = { provider: 'deepseek', model: 'x' };
-    // 无 agent 载荷:降级键位无会话段(现状语义)
-    await callListener(req, stepReq(1, 1), async () => ({ ...seed }));
+    // session.id 缺失(agent/model 在):键位降级为无会话段(现状语义)
+    const shared = makeAgent(undefined);
+    await callListener(req, stepReqAs(shared.agent, 1, 1), async () => ({
+      ...seed,
+    }));
     expect(
-      await callListener(err, stepErr(1, 1, 'deepseek'), async () => undefined),
+      await callListener(
+        err,
+        stepErrAs(shared.agent, 1, 1, 'deepseek'),
+        async () => undefined,
+      ),
     ).toEqual({ kind: 'retry' });
-    // 同号键位命中同一状态:请求被改写为已切候选(共享键位即旧行为)
+    expect(shared.selections).toEqual([{ provider: 'openai', model: 'a' }]);
+    // 同号键位命中同一状态(index 已推进):再次失败直接推进到 anthropic/b
+    // 而非重新切 openai/a,证明共享同一份状态
     expect(
-      await callListener(req, stepReq(1, 1), async () => ({ ...seed })),
-    ).toEqual({ provider: 'openai', model: 'a' });
+      await callListener(
+        err,
+        stepErrAs(shared.agent, 1, 1, 'openai'),
+        async () => undefined,
+      ),
+    ).toEqual({ kind: 'retry' });
+    expect(shared.selections).toEqual([
+      { provider: 'openai', model: 'a' },
+      { provider: 'anthropic', model: 'b' },
+    ]);
   });
 });
 
@@ -360,95 +402,172 @@ describe('perTurn=false 单次切换档(apply 集成)', () => {
   it('同 turn:step 至多切换一次:名额消耗后同 step 再失败不再切换,透传上游', async () => {
     const { req, err } = setup({ perTurn: false });
     const seed = { provider: 'deepseek', model: 'x' };
-    await callListener(req, stepReq(1, 1), async () => ({ ...seed }));
-    // 首失败:预算耗尽(默认 0)→ 切到 openai/a,名额消耗
+    const agent = makeAgent('sess-1');
+    await callListener(req, stepReqAs(agent.agent, 1, 1), async () => ({
+      ...seed,
+    }));
+    // 首失败:预算耗尽(默认 0)→ 切到 openai/a,名额消耗(select 持久化)
     expect(
-      await callListener(err, stepErr(1, 1, 'deepseek'), async () => undefined),
+      await callListener(
+        err,
+        stepErrAs(agent.agent, 1, 1, 'deepseek'),
+        async () => undefined,
+      ),
     ).toEqual({ kind: 'retry' });
+    expect(agent.selections).toEqual([{ provider: 'openai', model: 'a' }]);
     // 同 step 二次预算耗尽:one-shot 已消耗 → 不再切换,透传上游(无决策 → undefined)
     expect(
-      await callListener(err, stepErr(1, 1, 'openai'), async () => undefined),
+      await callListener(
+        err,
+        stepErrAs(agent.agent, 1, 1, 'openai'),
+        async () => undefined,
+      ),
     ).toBeUndefined();
-    // index 未推进:请求仍改写为 openai/a,而非 anthropic/b
-    expect(
-      await callListener(req, stepReq(1, 1), async () => ({ ...seed })),
-    ).toEqual({ provider: 'openai', model: 'a' });
+    // 名额未恢复:无二次 select(index 不再推进)
+    expect(agent.selections).toEqual([{ provider: 'openai', model: 'a' }]);
   });
 
   it('官方 retry 透传(预算内)不消耗名额;切换后同候选代执行照常,预算再耗尽也不得二次切换', async () => {
     const { req, err } = setup({ perTurn: false, retriesBeforeSwitch: 1 });
     const seed = { provider: 'deepseek', model: 'x' };
-    await callListener(req, stepReq(1, 1), async () => ({ ...seed }));
-    // 预算内官方 retry 决策 → 原样透传,不消耗 one-shot 名额
+    const agent = makeAgent('sess-1');
+    await callListener(req, stepReqAs(agent.agent, 1, 1), async () => ({
+      ...seed,
+    }));
+    // 预算内官方 retry 决策 → 原样透传,不消耗 one-shot 名额(无 select)
     const official = { kind: 'retry' } as const;
     expect(
-      await callListener(err, stepErr(1, 1, 'deepseek'), async () => official),
+      await callListener(
+        err,
+        stepErrAs(agent.agent, 1, 1, 'deepseek'),
+        async () => official,
+      ),
     ).toBe(official);
+    expect(agent.selections).toEqual([]);
     // 二次失败预算耗尽 → 仍能完成本 step 的那次切换
     expect(
-      await callListener(err, stepErr(1, 1, 'deepseek'), async () => undefined),
+      await callListener(
+        err,
+        stepErrAs(agent.agent, 1, 1, 'deepseek'),
+        async () => undefined,
+      ),
     ).toEqual({ kind: 'retry' });
+    expect(agent.selections).toEqual([{ provider: 'openai', model: 'a' }]);
+    // 切换后 openai 预算内代执行重试照常(不经过 one-shot 闸门,无 select)
     expect(
-      await callListener(req, stepReq(1, 1), async () => ({ ...seed })),
-    ).toEqual({ provider: 'openai', model: 'a' });
-    // 切换后 openai 预算内代执行重试照常(不经过 one-shot 闸门)
-    expect(
-      await callListener(err, stepErr(1, 1, 'openai'), async () => undefined),
+      await callListener(
+        err,
+        stepErrAs(agent.agent, 1, 1, 'openai'),
+        async () => undefined,
+      ),
     ).toEqual({ kind: 'retry' });
-    // 代执行重试不是切换:index 仍在 openai
-    expect(
-      await callListener(req, stepReq(1, 1), async () => ({ ...seed })),
-    ).toEqual({ provider: 'openai', model: 'a' });
+    expect(agent.selections).toEqual([{ provider: 'openai', model: 'a' }]);
     // openai 预算再耗尽:名额已消耗 → 不二次切换,透传上游
     expect(
-      await callListener(err, stepErr(1, 1, 'openai'), async () => undefined),
+      await callListener(
+        err,
+        stepErrAs(agent.agent, 1, 1, 'openai'),
+        async () => undefined,
+      ),
     ).toBeUndefined();
-    expect(
-      await callListener(req, stepReq(1, 1), async () => ({ ...seed })),
-    ).toEqual({ provider: 'openai', model: 'a' });
+    expect(agent.selections).toEqual([{ provider: 'openai', model: 'a' }]);
   });
 
   it('新 step 天然重置:同 turn 下一 step 恢复完整切换名额', async () => {
     const { req, err } = setup({ perTurn: false, cooldownEnabled: false });
     const seed = { provider: 'deepseek', model: 'x' };
+    const agent = makeAgent('sess-1');
     // step (1,1):切换一次后名额耗尽,二次失败不再切换
-    await callListener(req, stepReq(1, 1), async () => ({ ...seed }));
+    await callListener(req, stepReqAs(agent.agent, 1, 1), async () => ({
+      ...seed,
+    }));
     expect(
-      await callListener(err, stepErr(1, 1, 'deepseek'), async () => undefined),
+      await callListener(
+        err,
+        stepErrAs(agent.agent, 1, 1, 'deepseek'),
+        async () => undefined,
+      ),
     ).toEqual({ kind: 'retry' });
+    expect(agent.selections).toEqual([{ provider: 'openai', model: 'a' }]);
     expect(
-      await callListener(err, stepErr(1, 1, 'openai'), async () => undefined),
+      await callListener(
+        err,
+        stepErrAs(agent.agent, 1, 1, 'openai'),
+        async () => undefined,
+      ),
     ).toBeUndefined();
-    // step (1,2):新 step 新状态 → 首失败照常切换
-    await callListener(req, stepReq(1, 2), async () => ({ ...seed }));
+    expect(agent.selections).toEqual([{ provider: 'openai', model: 'a' }]);
+    // step (1,2):新 step 新状态 → 首失败照常切换(名额完整恢复;会话模型
+    // 已被持久化为 openai/a,故失败方传 openai,推进从 index=-1 起算跳过
+    // pageModel 切 anthropic/b)
+    await callListener(req, stepReqAs(agent.agent, 1, 2), async () => ({
+      ...seed,
+    }));
     expect(
-      await callListener(err, stepErr(1, 2, 'deepseek'), async () => undefined),
+      await callListener(
+        err,
+        stepErrAs(agent.agent, 1, 2, 'openai'),
+        async () => undefined,
+      ),
     ).toEqual({ kind: 'retry' });
-    expect(
-      await callListener(req, stepReq(1, 2), async () => ({ ...seed })),
-    ).toEqual({ provider: 'openai', model: 'a' });
+    expect(agent.selections).toEqual([
+      { provider: 'openai', model: 'a' },
+      { provider: 'anthropic', model: 'b' },
+    ]);
   });
 
-  it('新 turn 天然重置:冷却起点改写不算切换、旧冷却不受状态清理影响,名额完整恢复', async () => {
-    const { req, err } = setup({ perTurn: false });
+  it('新 turn 天然重置:状态清理只清状态表,冷却表跨 turn 存活且名额完整恢复', async () => {
+    const { req, err } = setup({
+      perTurn: false,
+      fallbackChains: ['openai/a', 'anthropic/b', 'google/c'],
+    });
     const seed = { provider: 'deepseek', model: 'x' };
+    const agent = makeAgent('sess-1');
     // turn 1 step 1:主模型失败 → 切到 openai(名额消耗),deepseek 记入冷却
-    await callListener(req, stepReq(1, 1), async () => ({ ...seed }));
+    await callListener(req, stepReqAs(agent.agent, 1, 1), async () => ({
+      ...seed,
+    }));
     expect(
-      await callListener(err, stepErr(1, 1, 'deepseek'), async () => undefined),
+      await callListener(
+        err,
+        stepErrAs(agent.agent, 1, 1, 'deepseek'),
+        async () => undefined,
+      ),
     ).toEqual({ kind: 'retry' });
-    // turn 2 step 1:新 turn 建态清掉 turn 1 的键,但冷却表独立——
-    // deepseek 仍在冷却 → 首个请求直接改写为 openai(起点改写,不算切换)
+    expect(agent.selections).toEqual([{ provider: 'openai', model: 'a' }]);
+    // turn 2 step 1:新 turn 建态清掉 turn 1 的状态键,但冷却表独立——
+    // 名额完整恢复:openai 失败照常切换到 anthropic(openai 记入冷却)
+    await callListener(req, stepReqAs(agent.agent, 2, 1), async () => ({
+      ...seed,
+    }));
     expect(
-      await callListener(req, stepReq(2, 1), async () => ({ ...seed })),
-    ).toEqual({ provider: 'openai', model: 'a' });
-    // openai 失败:新 turn 名额完整 → 照常切换到 anthropic
-    expect(
-      await callListener(err, stepErr(2, 1, 'openai'), async () => undefined),
+      await callListener(
+        err,
+        stepErrAs(agent.agent, 2, 1, 'openai'),
+        async () => undefined,
+      ),
     ).toEqual({ kind: 'retry' });
+    expect(agent.selections).toEqual([
+      { provider: 'openai', model: 'a' },
+      { provider: 'anthropic', model: 'b' },
+    ]);
+    // turn 3 step 1:turn 2 记下的 openai 冷却跨 turn 存活(状态清理不碰
+    // 冷却表)→ anthropic 失败时推进跳过冷却中的 openai/a 直达 google/c
+    await callListener(req, stepReqAs(agent.agent, 3, 1), async () => ({
+      ...seed,
+    }));
     expect(
-      await callListener(req, stepReq(2, 1), async () => ({ ...seed })),
-    ).toEqual({ provider: 'anthropic', model: 'b' });
+      await callListener(
+        err,
+        stepErrAs(agent.agent, 3, 1, 'anthropic'),
+        async () => undefined,
+      ),
+    ).toEqual({ kind: 'retry' });
+    expect(agent.selections).toEqual([
+      { provider: 'openai', model: 'a' },
+      { provider: 'anthropic', model: 'b' },
+      { provider: 'google', model: 'c' },
+    ]);
   });
 });
 
@@ -458,23 +577,40 @@ describe('perTurn=true 默认行为(回归)', () => {
   it('同一 step 可连切多个候选(行为与旧版一致)', async () => {
     const { req, err } = setup({ cooldownEnabled: false });
     const seed = { provider: 'deepseek', model: 'x' };
-    await callListener(req, stepReq(1, 1), async () => ({ ...seed }));
+    const agent = makeAgent('sess-1');
+    await callListener(req, stepReqAs(agent.agent, 1, 1), async () => ({
+      ...seed,
+    }));
     expect(
-      await callListener(err, stepErr(1, 1, 'deepseek'), async () => undefined),
+      await callListener(
+        err,
+        stepErrAs(agent.agent, 1, 1, 'deepseek'),
+        async () => undefined,
+      ),
     ).toEqual({ kind: 'retry' });
     expect(
-      await callListener(err, stepErr(1, 1, 'openai'), async () => undefined),
+      await callListener(
+        err,
+        stepErrAs(agent.agent, 1, 1, 'openai'),
+        async () => undefined,
+      ),
     ).toEqual({ kind: 'retry' });
-    expect(
-      await callListener(req, stepReq(1, 1), async () => ({ ...seed })),
-    ).toEqual({ provider: 'anthropic', model: 'b' });
+    expect(agent.selections).toEqual([
+      { provider: 'openai', model: 'a' },
+      { provider: 'anthropic', model: 'b' },
+    ]);
     // 链耗尽 → 透传上游
     expect(
       await callListener(
         err,
-        stepErr(1, 1, 'anthropic'),
+        stepErrAs(agent.agent, 1, 1, 'anthropic'),
         async () => undefined,
       ),
     ).toBeUndefined();
+    // 耗尽不再切换
+    expect(agent.selections).toEqual([
+      { provider: 'openai', model: 'a' },
+      { provider: 'anthropic', model: 'b' },
+    ]);
   });
 });
