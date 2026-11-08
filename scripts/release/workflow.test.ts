@@ -303,6 +303,9 @@ describe('release workflow(临时 git 仓库端到端)', () => {
   });
 
   it('非 git 目录抛 NOT_A_GIT_REPO', () => {
+    // 实现侧所有 git 子进程固定 LC_ALL=C,错误文案归类在任何宿主 locale
+    // 下可靠;本测试刻意**不**强设 locale,在宿主真实 locale(本机 zh_CN)
+    // 下运行,实现若丢失 env 固定即在此回归。
     const dir = mkdtempSync(join(tmpdir(), 'dsh-release-nogit-'));
     fixtures.push(dir);
     writeFileSync(
