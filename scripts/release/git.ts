@@ -5,9 +5,16 @@
 import { spawnSync } from 'node:child_process';
 import { ReleaseError } from './core.ts';
 
+/**
+ * 错误归类依赖 git 的英文 stderr 文案(/not a git repository/i),
+ * 而 git 报错文案随宿主 locale 本地化(如 zh_CN 输出「不是 Git 仓库」),
+ * 故所有子进程统一固定 LC_ALL=C,让归类在任何 locale 下可靠。
+ */
+const gitEnv = { ...process.env, LC_ALL: 'C' } as NodeJS.ProcessEnv;
+
 /** 同步执行一条 git 命令,成功返回去首尾空白的 stdout。 */
 function runGit(args: readonly string[], cwd: string): string {
-  const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8', env: gitEnv });
   if (result.error !== undefined) {
     throw new ReleaseError(
       'GIT_FAILURE',
@@ -32,6 +39,7 @@ export function findRepoRoot(startDir: string): string {
   const result = spawnSync('git', ['rev-parse', '--show-toplevel'], {
     cwd: startDir,
     encoding: 'utf8',
+    env: gitEnv,
   });
   if (result.error !== undefined) {
     throw new ReleaseError(
@@ -62,7 +70,7 @@ export function tagExists(rootDir: string, tag: string): boolean {
   const result = spawnSync(
     'git',
     ['rev-parse', '-q', '--verify', `refs/tags/${tag}`],
-    { cwd: rootDir, encoding: 'utf8' },
+    { cwd: rootDir, encoding: 'utf8', env: gitEnv },
   );
   return result.status === 0;
 }
@@ -89,6 +97,7 @@ function refExists(rootDir: string, ref: string): boolean {
   const result = spawnSync('git', ['rev-parse', '-q', '--verify', ref], {
     cwd: rootDir,
     encoding: 'utf8',
+    env: gitEnv,
   });
   return result.status === 0;
 }
@@ -124,6 +133,7 @@ export function commitReachableFrom(
   const result = spawnSync('git', ['merge-base', '--is-ancestor', rev, base], {
     cwd: rootDir,
     encoding: 'utf8',
+    env: gitEnv,
   });
   if (result.error !== undefined) {
     throw new ReleaseError(

@@ -1,77 +1,20 @@
 /**
- * Ambient declaration:扩展 `@deepseek-ai/cordis` 的 Context.Events,
- * 增加 dsh-agent-loop 暴露的两个 waterfall 事件。
+ * 类型增强（0.6.0 起已移交官方）。
  *
- * 为什么是独立 .d.ts 文件而不是 inline `declare module`:
- * - TypeScript 的 declaration merging 受 tsconfig include 规则约束;
- *   当外部项目(如 dsh desktop)加载本插件时,host 的 tsconfig 只能"看到"
- *   host 自己 include 的 .d.ts 文件,看不到本仓库 .ts 源码文件内的 augmentation;
- * - 通过本插件 package.json 的 `types` 字段指向这个 .d.ts 文件,
- *   dsh desktop 在加载 plugin 时,TypeScript 编译器会沿着 main 的导入链找到
- *   这个 ambient 类型,augmentation 跨包生效;
- * - 这样 `ctx.on('agent/request', listener)` 就能在 host 的 tsconfig 下编译通过,
- *   避免 dsh: warning: ... failed to import 错误。
+ * 历史:0.5.0 及以前,`agent/request` / `agent/request-error` 两个 waterfall
+ * 事件由本文件以 `declare module '@deepseek-ai/cordis'` ambient 增强——彼时
+ * 宿主类型未声明它们,插件需要自己补全才能 typecheck。
+ *
+ * 现状:宿主 `@deepseek-ai/dsh-agent`(0.2.2-rc.1 起)的 runtime-types.d.ts
+ * 已自带 `interface Events` 增强(payload 含 `agent: Agent`,Agent 挂
+ * `session` 与 `model`),本文件与它重复声明会触发 TS 重复成员冲突,故全部
+ * 移除。事件与模型类型统一从官方包取:
+ * - 事件 payload/决策类型:`@deepseek-ai/dsh-agent`(Context.Events);
+ * - `Agent`:`@deepseek-ai/dsh-agent`(`payload.agent`,挂 `session: Session`
+ *   与 `model: Model`,即 `model.current()` / `model.select()`);
+ * - `LlmFailure`:`@deepseek-ai/dsh-llm`。
+ *
+ * 本文件保留为 package.json `types` 字段的指向目标(纯注释壳),避免宿主
+ * 沿导入链解析 types 时落空。
  */
-declare module '@deepseek-ai/cordis' {
-  interface Events {
-    'agent/request'(
-      payload: {
-        turn: number;
-        step: number;
-        signal: AbortSignal;
-        /**
-         * 主体 agent(官方类型 dsh-agent runtime-types.d.ts 的
-         * 'agent/request' 声明 `agent: Agent`)。本插件只读 `session.id`
-         * 作 step 状态键的会话段(会话隔离);标可选以防御非 agent 作用域
-         * dispatch 或旧宿主。
-         */
-        agent?: { session: { id?: string } };
-      },
-      next: () => Promise<{
-        provider: string;
-        model: string;
-        reasoningEffort?: unknown;
-        maxTokens?: number;
-      }>,
-    ): Promise<{
-      provider: string;
-      model: string;
-      reasoningEffort?: unknown;
-      maxTokens?: number;
-    }>;
-    'agent/request-error'(
-      payload: {
-        turn: number;
-        step: number;
-        provider: string;
-        failure: {
-          readonly message: string;
-          readonly code: string;
-          readonly status?: number;
-          readonly providerRetryAfterMs?: number;
-          readonly requestId?: string;
-        };
-        retryPolicy?: unknown;
-        signal: AbortSignal;
-        /**
-         * 主体 agent(dsh-agent fused dispatcher 注入 `{ ...payload, agent }`;
-         * 官方类型 dsh-agent runtime-types.d.ts 的 'agent/request-error' 声明
-         * `agent: Agent`)。`agent.session` 是 append-only 会话日志,插件用它
-         * 写官方 `llm/retry` / `llm/retry-started` 轨迹事件。标可选以防御
-         * 非 agent 作用域 dispatch 或旧宿主。
-         */
-        agent?: {
-          session: {
-            /** 会话标识(源 durable header;step 状态键会话段取自它)。 */
-            id?: string;
-            append(type: 'llm/retry', data: unknown): unknown;
-            append(type: 'llm/retry-started', data: unknown): unknown;
-          };
-        };
-      },
-      next: () => Promise<{ kind: 'retry' } | undefined | void>,
-    ): Promise<{ kind: 'retry' } | undefined | void>;
-  }
-}
-
 export {};
