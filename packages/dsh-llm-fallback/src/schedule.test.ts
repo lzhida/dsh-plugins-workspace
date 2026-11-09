@@ -1,19 +1,22 @@
 /**
  * 时间窗切换/错峰优先(时段计划 v2,「时间窗=预填冷却表」)行为契约测试。
  *
- * 覆盖(验收清单 DoD 2):
+ * 覆盖(验收清单 DoD 2;0.6.0 起 agent/request 只读:时间窗只在起点预填
+ * 冷却表、seed 一律原样放行,预填的效果经 error 推进链的冷却感知扫描
+ * (nextCandidate)体现,切换经官方 agent.model.select 持久化):
  * - 窗口边界切换:半开区间 [start,end)——起点生效、终点即失效;
  * - 跨夜区间:start > end 回绕(晚间段与凌晨段都生效),次日窗口外恢复;
- * - 惰性过期恢复:预填冷却到期 = 窗口结束,过期后 seed 不再被改写
+ * - 惰性过期恢复:预填冷却到期 = 窗口结束,过期后推进恢复原优先级
  *   (复用既有惰性过期,无定时器);
- * - 全候选在窗外/被窗口覆盖时的降级:全部候选被预填冷却 → 降级回原顺序
- *   放行(时间窗绝不吞掉全部候选);全部候选都匹配 prefer 规则 → 无人被
- *   冷却,seed 原样;
+ * - 全候选在窗外/被窗口覆盖时的降级:全部候选被预填冷却 → 推进降级回原
+ *   顺序放行(时间窗绝不吞掉全部候选);全部候选都匹配 prefer 规则 → 无人
+ *   被冷却,seed 原样;
  * - 纯函数面:parseHHmm / matchProviderPattern / windowActiveAt /
  *   minutesUntilWindowEnd / resolveTimeWindowCooldowns / resolveTimeWindow
  *   (非法配置抛错,last-good 保留);
- * - apply 集成:窗口内 block 改写切走 / prefer 链内优先 DeepSeek /
- *   cooldownEnabled=false 时时间窗整体不生效(预填依赖冷却通道)。
+ * - apply 集成:窗口内 block 预填冷却(经推进跳过体现)/ prefer 错峰直达
+ *   链内 DeepSeek / cooldownEnabled=false 时时间窗整体不生效(预填依赖
+ *   冷却通道)。
  *
  * 时间控制:vi.useFakeTimers()(vitest 默认同时 mock Date)+
  * vi.setSystemTime 固化本地时区墙钟——窗口判定与测试时间同为宿主本地
@@ -70,7 +73,7 @@ function stubCtx(): {
   return { ctx, listeners };
 }
 
-/** apply() 装载 + 取出 agent/request listener(时间窗只在起点预填改写)。 */
+/** apply() 装载 + 取出 agent/request listener(时间窗只在起点预填冷却表)。 */
 function setupReq(config: Record<string, unknown> = {}): unknown {
   const { ctx, listeners } = stubCtx();
   apply(ctx, {
@@ -82,17 +85,89 @@ function setupReq(config: Record<string, unknown> = {}): unknown {
   return listeners.find((l) => l.event === 'agent/request')?.listener;
 }
 
+/** apply() 装载 + 取出 agent/request 与 agent/request-error 两个 listener
+ * (0.6.0 起 request 只读,预填效果经 error 推进链的冷却感知扫描断言)。 */
+function setup(config: Record<string, unknown> = {}): {
+  req: unknown;
+  err: unknown;
+} {
+  const { ctx, listeners } = stubCtx();
+  apply(ctx, {
+    fallbackChains: ['openai/a', 'anthropic/b'],
+    baseDelayMs: 0,
+    maxDelayMs: 0,
+    ...config,
+  });
+  return {
+    req: listeners.find((l) => l.event === 'agent/request')?.listener,
+    err: listeners.find((l) => l.event === 'agent/request-error')?.listener,
+  };
+}
+
+/** agent 假体:model.current()/select() 模拟宿主官方 API;select 记录进
+ * selections 并同步更新 current(模拟持久化)。 */
+function stubAgent(
+  initial: { provider: string; model: string } = {
+    provider: 'deepseek-account',
+    model: 'x',
+  },
+): {
+  agent: unknown;
+  selections: Array<{ provider: string; model: string }>;
+} {
+  let current: { provider: string; model: string } | undefined = { ...initial };
+  const selections: Array<{ provider: string; model: string }> = [];
+  const agent = {
+    session: {
+      id: 'sess-tw',
+      append: (): void => {},
+    },
+    model: {
+      current: (): { provider: string; model: string } | undefined => current,
+      select(selection: { provider: string; model: string }): void {
+        selections.push({ ...selection });
+        current = { ...selection };
+      },
+    },
+  };
+  return { agent, selections };
+}
+
 async function callRequest(
   listener: unknown,
   turn: number,
   step: number,
   seed: { provider: string; model: string },
+  agent?: unknown,
 ): Promise<unknown> {
   return (
     listener as (p: unknown, n: () => Promise<unknown>) => Promise<unknown>
-  )({ turn, step, signal: new AbortController().signal }, async () => ({
+  )({ turn, step, signal: new AbortController().signal, agent }, async () => ({
     ...seed,
   }));
+}
+
+/** 触发 agent/request-error 监听器(预算耗尽切换经 agent.model.select 持久化)。 */
+async function callError(
+  listener: unknown,
+  turn: number,
+  step: number,
+  provider: string,
+  agent?: unknown,
+): Promise<unknown> {
+  return (
+    listener as (p: unknown, n: () => Promise<unknown>) => Promise<unknown>
+  )(
+    {
+      turn,
+      step,
+      provider,
+      failure: { code: 'RATE_LIMIT', message: 'fake failure' },
+      signal: new AbortController().signal,
+      agent,
+    },
+    async () => undefined,
+  );
 }
 
 /** 固定本地时区墙钟(月/日/时/分;Date 构造即本地时区,与窗口判定同侧)。 */
@@ -373,7 +448,7 @@ describe('resolveTimeWindow', () => {
   });
 });
 
-// ── 5. apply 集成(agent/request 起点预填 + 改写)────────────────────
+// ── 5. apply 集成(agent/request 起点预填,只读放行)────────────────
 
 describe('时间窗预填(apply 集成)', () => {
   const blockPreset = [
@@ -385,15 +460,23 @@ describe('时间窗预填(apply 集成)', () => {
   ];
   const seed = { provider: 'deepseek-account', model: 'x' };
 
-  it('窗口内:block 命中候选在起点被改写切走,并留下 time-window 日志', async () => {
+  it('窗口内:block 命中候选被预填冷却,seed 原样放行且留下 time-window 日志', async () => {
     vi.useFakeTimers();
     setLocalTime(10, 21, 8, 45); // 窗口 [08:30,09:00) 内
-    const req = setupReq({
+    const { req, err } = setup({
       timeWindowEnabled: true,
-      timeWindowRules: blockPreset,
+      timeWindowRules: [
+        {
+          match: 'openai',
+          action: 'block',
+          windows: [{ start: '08:30', end: '09:00' }],
+        },
+      ],
     });
-    const result = await callRequest(req, 1, 1, seed);
-    expect(result).toEqual({ provider: 'openai', model: 'a' });
+    const { agent, selections } = stubAgent();
+    // request 只读:预填进冷却表后 seed 原样返回(0.6.0 起不再改写)
+    const result = await callRequest(req, 1, 1, seed, agent);
+    expect(result).toEqual({ ...seed });
     // 轨迹/日志证据:预填走冷却通道且可辨识
     const logged = vi
       .mocked(console.log)
@@ -401,57 +484,106 @@ describe('时间窗预填(apply 集成)', () => {
         String(args[0]).includes('[dsh-llm-fallback] time-window:'),
       );
     expect(logged).toBe(true);
+    // 预填效果:error 推进链的冷却感知扫描跳过被冷却的 openai/a → anthropic/b
+    expect(await callError(err, 1, 1, 'deepseek-account', agent)).toEqual({
+      kind: 'retry',
+    });
+    expect(selections).toEqual([{ provider: 'anthropic', model: 'b' }]);
   });
 
-  it('窗口结束:预填条目惰性过期,seed 恢复原优先级(无定时器)', async () => {
+  it('窗口结束:预填条目惰性过期,失败推进恢复原优先级(无定时器)', async () => {
     vi.useFakeTimers();
-    setLocalTime(10, 21, 8, 45);
-    const req = setupReq({
-      timeWindowEnabled: true,
-      timeWindowRules: blockPreset,
-    });
-    expect(await callRequest(req, 1, 1, seed)).toEqual({
-      provider: 'openai',
-      model: 'a',
-    });
-    // 推进到窗口终点(半开区间,09:00 已出窗):预填到期(=09:00)惰性过期
-    setLocalTime(10, 21, 9, 0);
-    expect(await callRequest(req, 1, 2, seed)).toEqual({ ...seed });
-    // 再推进:无新预填,持续恢复
-    setLocalTime(10, 21, 9, 30);
-    expect(await callRequest(req, 1, 3, seed)).toEqual({ ...seed });
-  });
-
-  it('跨夜区间 [22:00,06:00):深夜与凌晨都改写,日间窗口外恢复', async () => {
-    vi.useFakeTimers();
-    const req = setupReq({
+    const { req, err } = setup({
       timeWindowEnabled: true,
       timeWindowRules: [
         {
-          match: 'deepseek-*',
+          match: 'openai',
+          action: 'block',
+          windows: [{ start: '08:30', end: '09:00' }],
+        },
+      ],
+    });
+    // 窗口内:openai/a 被预填冷却 → 失败推进跳过它切 anthropic/b
+    setLocalTime(10, 21, 8, 45);
+    const first = stubAgent();
+    expect(await callRequest(req, 1, 1, seed, first.agent)).toEqual({
+      ...seed,
+    });
+    expect(await callError(err, 1, 1, 'deepseek-account', first.agent)).toEqual(
+      { kind: 'retry' },
+    );
+    expect(first.selections).toEqual([{ provider: 'anthropic', model: 'b' }]);
+    // 推进到窗口终点(半开区间,09:00 已出窗):预填到期(=09:00)惰性过期,
+    // 失败推进不再跳过 → 恢复原优先级切回链首
+    setLocalTime(10, 21, 9, 0);
+    const second = stubAgent();
+    expect(await callRequest(req, 1, 2, seed, second.agent)).toEqual({
+      ...seed,
+    });
+    expect(
+      await callError(err, 1, 2, 'deepseek-account', second.agent),
+    ).toEqual({ kind: 'retry' });
+    expect(second.selections).toEqual([{ provider: 'openai', model: 'a' }]);
+    // 再推进:无新预填,持续恢复
+    setLocalTime(10, 21, 9, 30);
+    const third = stubAgent();
+    expect(await callRequest(req, 1, 3, seed, third.agent)).toEqual({
+      ...seed,
+    });
+    expect(await callError(err, 1, 3, 'deepseek-account', third.agent)).toEqual(
+      { kind: 'retry' },
+    );
+    expect(third.selections).toEqual([{ provider: 'openai', model: 'a' }]);
+  });
+
+  it('跨夜区间 [22:00,06:00):深夜与凌晨都预填冷却,日间窗口外恢复优先级', async () => {
+    vi.useFakeTimers();
+    const { req, err } = setup({
+      timeWindowEnabled: true,
+      timeWindowRules: [
+        {
+          match: 'openai',
           action: 'block',
           windows: [{ start: '22:00', end: '06:00' }],
         },
       ],
     });
-    setLocalTime(10, 21, 23, 0); // 深夜段
-    expect(await callRequest(req, 1, 1, seed)).toEqual({
-      provider: 'openai',
-      model: 'a',
+    // 深夜段:openai/a 被预填冷却至 06:00 → 失败推进跳过它切 anthropic/b
+    setLocalTime(10, 21, 23, 0);
+    const first = stubAgent();
+    expect(await callRequest(req, 1, 1, seed, first.agent)).toEqual({
+      ...seed,
     });
-    setLocalTime(10, 22, 5, 59); // 次日凌晨段(跨夜回绕仍生效)
-    expect(await callRequest(req, 1, 2, seed)).toEqual({
-      provider: 'openai',
-      model: 'a',
+    expect(await callError(err, 1, 1, 'deepseek-account', first.agent)).toEqual(
+      { kind: 'retry' },
+    );
+    expect(first.selections).toEqual([{ provider: 'anthropic', model: 'b' }]);
+    // 次日凌晨段(跨夜回绕仍生效):openai/a 仍在冷却中 → 依旧跳过
+    setLocalTime(10, 22, 5, 59);
+    const second = stubAgent();
+    expect(await callRequest(req, 1, 2, seed, second.agent)).toEqual({
+      ...seed,
     });
-    setLocalTime(10, 22, 12, 0); // 日间:窗口外
-    expect(await callRequest(req, 1, 3, seed)).toEqual({ ...seed });
+    expect(
+      await callError(err, 1, 2, 'deepseek-account', second.agent),
+    ).toEqual({ kind: 'retry' });
+    expect(second.selections).toEqual([{ provider: 'anthropic', model: 'b' }]);
+    // 日间窗口外:预填过期,失败推进恢复原优先级
+    setLocalTime(10, 22, 12, 0);
+    const third = stubAgent();
+    expect(await callRequest(req, 1, 3, seed, third.agent)).toEqual({
+      ...seed,
+    });
+    expect(await callError(err, 1, 3, 'deepseek-account', third.agent)).toEqual(
+      { kind: 'retry' },
+    );
+    expect(third.selections).toEqual([{ provider: 'openai', model: 'a' }]);
   });
 
-  it('prefer 错峰反向:非 DeepSeek 会话模型与候选被预填冷却,请求改写为链内 DeepSeek 候选', async () => {
+  it('prefer 错峰反向:链内非 DeepSeek 候选被预填冷却,失败推进直达链内 DeepSeek 候选', async () => {
     vi.useFakeTimers();
     setLocalTime(10, 21, 2, 0); // 半价窗 [00:30,08:30) 内
-    const req = setupReq({
+    const { req, err } = setup({
       fallbackChains: ['anthropic/c', 'deepseek-account/z'],
       timeWindowEnabled: true,
       timeWindowRules: [
@@ -462,13 +594,23 @@ describe('时间窗预填(apply 集成)', () => {
         },
       ],
     });
-    // 会话模型 openai/x 与链首 anthropic/c 都被冷却 → 改写为链内 deepseek-account/z
-    expect(
-      await callRequest(req, 1, 1, { provider: 'openai', model: 'x' }),
-    ).toEqual({ provider: 'deepseek-account', model: 'z' });
+    // 会话模型 openai/x(不在链上)与链首 anthropic/c 都被预填冷却 →
+    // 失败推进的冷却感知扫描跳过 anthropic/c,直达链内 deepseek-account/z
+    const pageSeed = { provider: 'openai', model: 'x' };
+    const { agent, selections } = stubAgent({
+      provider: 'openai',
+      model: 'x',
+    });
+    expect(await callRequest(req, 1, 1, pageSeed, agent)).toEqual({
+      ...pageSeed,
+    });
+    expect(await callError(err, 1, 1, 'openai', agent)).toEqual({
+      kind: 'retry',
+    });
+    expect(selections).toEqual([{ provider: 'deepseek-account', model: 'z' }]);
   });
 
-  it('prefer 错峰反向:会话模型已是 DeepSeek 时起点不改写(起点即优先目标)', async () => {
+  it('prefer 错峰反向:会话模型已是 DeepSeek 时 seed 原样放行(起点即优先目标)', async () => {
     vi.useFakeTimers();
     setLocalTime(10, 21, 2, 0);
     const req = setupReq({
