@@ -1,0 +1,13 @@
+# bundle 层：本包经 dsh plugin add 安装时自动激活的插件行（cordis patch insert）。
+#
+# 这里**故意不声明行级 inject**：cordis 的 inject 是**硬依赖**——所声明的服务未全部就绪时
+# 插件整体不装载（@deepseek-ai/cordis 的 src/fiber.ts 里 _refresh() 会把 fiber 置为 INACTIVE，
+# apply 根本不执行，连 39 个工具与 skill 一起消失）。本插件没有任何 web 面，
+# 只声明 tools / skills 两个宿主必然提供的服务。
+#
+# 行级 inject 与插件自身 export const inject 会被 loader 合并
+# （cordis-plugin-loader 在 internal/plugin 里执行 Inject.resolve(entry.options.inject, fiber.inject)），
+# 两处都不得声明硬依赖。
+- insert:
+    - id: dsh-victauri
+      name: '@zhidal/dsh-victauri'

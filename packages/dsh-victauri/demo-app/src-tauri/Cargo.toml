@@ -1,0 +1,23 @@
+[package]
+name = "dsh-victauri-demo"
+version = "0.1.0"
+description = "e2e demo Tauri app for the dsh-victauri plugin"
+edition = "2021"
+rust-version = "1.88"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# victauri 以 optional feature 接入：`cargo run --features victauri`（调试）才编译进
+# victauri 代码；不带 feature 的构建（发布）零 victauri 成本（官方 victauri init
+# --optional 脚手架同款模式，见 https://4da-systems.github.io/Victauri/getting-started.html）。
+victauri-plugin = { version = "0.10", optional = true }
+victauri-core = { version = "0.10", optional = true } # #[inspectable] 生成的代码按路径引用
+
+[features]
+victauri = ["dep:victauri-plugin", "dep:victauri-core"]

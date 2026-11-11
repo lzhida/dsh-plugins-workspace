@@ -2,7 +2,7 @@
 
 [English](./README.en.md) | 简体中文
 
-[dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)(DeepSeek Harness)插件仓库——TypeScript + cordis 插件 monorepo。当前仅收录一个插件:[@zhidal/dsh-llm-fallback](./packages/dsh-llm-fallback/README.md)(构建式发行,入口为 esbuild 打包的 dist,已发布 [npm](https://www.npmjs.com/package/@zhidal/dsh-llm-fallback))。
+[dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)(DeepSeek Harness)插件仓库——TypeScript + cordis 插件 monorepo。当前收录四个包:[@zhidal/dsh-llm-fallback](./packages/dsh-llm-fallback/README.md)与 [@zhidal/dsh-patent](./packages/dsh-patent/README.md)(已发布 npm)、[@zhidal/dsh-victauri](./packages/dsh-victauri/README.md)(构建式发行,首发版本)与内部私有包 [@zhidal/dsh-anytype](./packages/dsh-anytype/README.md)(private,未发布);三个公开包均为构建式发行,入口为 esbuild 打包的 dist。
 
 > **纯 AI 开发**:本仓库的全部代码均由 AI 编码代理生成。
 
@@ -12,6 +12,14 @@
 
 dsh 的模型回退插件:拦截全局 LLM 调用,**会话页面指定的模型**(事实主模型)失败时,按回退队列自动切换到下一个 `provider/model`,**对话不中断**。支持每候选重试次数(`retriesBeforeSwitch`)、失败候选冷却跳过与可视化配置卡,失败码路由只按宿主稳定失败码决策。特性、原理、配置与故障排查详见 [packages/dsh-llm-fallback/README.md](./packages/dsh-llm-fallback/README.md);后续策略演进(时段限制、成本路由等)的盘点与决策清单见 [docs/llm-fallback-roadmap.md](./docs/llm-fallback-roadmap.md)。
 
+### @zhidal/dsh-patent
+
+dsh 的「专利交底」预设包:以发明人模式提供交底书撰写工具行——权利要求结构校验、交底书模板填充(bundled docx / 用户自带模板 / markdown 自填三路径)与格式合规检查,并内嵌方法论 skill。详见 [packages/dsh-patent/README.md](./packages/dsh-patent/README.md)。
+
+### @zhidal/dsh-victauri
+
+dsh 的 Tauri 开发测试环境插件:把 [Victauri](https://github.com/4da-systems/Victauri)(Tauri 应用内嵌的 MCP 服务器)暴露的 **35 个调试/测试工具**全量桥接为 dsh 原生工具,并桥接 `victauri` CLI 能力(check / test / doctor / coverage 等),合计 **39 个 dsh 工具**(含 CLI 桥、CLI 探测、工具发现与 `victauri_doctor` 桥接体检)。主通道 REST 直连 Victauri discovery,辅通道 spawn CLI,连接惰性建立。工具清单、配置与故障排查详见 [packages/dsh-victauri/README.md](./packages/dsh-victauri/README.md)。
+
 ## 安装
 
 前置:Node ≥ 22、pnpm 11、已安装 dsh。
@@ -19,16 +27,22 @@ dsh 的模型回退插件:拦截全局 LLM 调用,**会话页面指定的模型*
 ```sh
 dsh plugin add @zhidal/dsh-llm-fallback                       # npm 安装(推荐)
 dsh plugin add link:<仓库绝对路径>/packages/dsh-llm-fallback  # 仓库内开发(link: 必须是绝对路径)
+
+dsh plugin add @zhidal/dsh-victauri                           # npm 安装(推荐)
+dsh plugin add link:<仓库绝对路径>/packages/dsh-victauri      # 仓库内开发(link: 必须是绝对路径)
+
+dsh plugin add @zhidal/dsh-patent                             # npm 安装(推荐)
+dsh plugin add link:<仓库绝对路径>/packages/dsh-patent        # 仓库内开发(link: 必须是绝对路径)
 ```
 
-完整安装方式(npm / link / git / tarball)、`allowBuilds` 放行与安装验证见 [packages/dsh-llm-fallback/README.md](./packages/dsh-llm-fallback/README.md)。
+完整安装方式(npm / link / git / tarball)、`allowBuilds` 放行与安装验证见各包 README([dsh-llm-fallback](./packages/dsh-llm-fallback/README.md) / [dsh-victauri](./packages/dsh-victauri/README.md) / [dsh-patent](./packages/dsh-patent/README.md))。
 
 > **新增 TS 源码入口插件时注意**:TS 源码入口(`main: "src/index.ts"`)仅支持本地 `link:`(绝对路径)安装——`link:` 相对路径按 pnpm 语义解析到 profile 目录,必败;git/npm/tarball 实体安装会被 Node 以 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING` 拒绝。需要实体安装必须像 dsh-llm-fallback 一样以 dist 为入口(esbuild 构建)。
 
 ## 开发
 
 ```sh
-pnpm install        # 安装依赖并自动执行 lefthook install;同时触发 llm-fallback 的 prepare 构建 dist
+pnpm install        # 安装依赖并自动执行 lefthook install;同时触发各构建式插件的 prepare 构建 dist
 pnpm lint           # ESLint(flat config,TS)
 pnpm format         # Prettier 写入(format:check 仅校验)
 pnpm typecheck      # 递归各包 tsc --noEmit

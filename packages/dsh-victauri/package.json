@@ -1,0 +1,57 @@
+{
+  "name": "@zhidal/dsh-victauri",
+  "description": "dsh-victauri 插件：把 Victauri（Tauri 应用内嵌 MCP 服务器）的 35 个工具与 victauri CLI 桥接为 dsh 原生工具（合计 39 个 dsh 工具，含 CLI 桥、CLI 探测、工具发现与 victauri_doctor 桥接体检），为 dsh 会话提供 Tauri 框架开发测试环境。",
+  "version": "0.1.0",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "cordis.patch.yml"
+  ],
+  "homepage": "https://github.com/lzhida/dsh-plugins-workspace/tree/main/packages/dsh-victauri#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lzhida/dsh-plugins-workspace.git",
+    "directory": "packages/dsh-victauri"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "build": "npm run build:server",
+    "build:server": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js --sourcemap --sources-content=false && tsc -p tsconfig.build.json && node scripts/prune-dist-declarations.mjs",
+    "prepare": "npm run build",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "@deepseek-ai/cordis": "~4.0.5",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "~3.18.5"
+  },
+  "devDependencies": {
+    "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
+    "@types/node": "^26.6.2",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.3"
+  }
+}
