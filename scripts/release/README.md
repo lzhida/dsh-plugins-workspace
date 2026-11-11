@@ -64,6 +64,7 @@ Release(notes = 包 CHANGELOG 版本段,见下):
 | tag 形态                                        | 决策      | 行为                                                                                                                                                          |
 | ----------------------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `{短名}-v{正式版}`,短名命中唯一**公开**包       | `publish` | CI 执行 `npm stage publish --access public`(OIDC 暂存)+ 创建 GitHub Release(notes = CHANGELOG 版本段);本地默认 `pnpm publish --no-git-checks --access public` |
+| 同上,但该版本**已存在于 npm registry**          | `publish` | 幂等跳过 npm 发布(退出 0,不打 npm),流水线**继续**创建 GitHub Release;结果标 `skipped: 'already-published'`(见「registry 幂等守卫」)                           |
 | `{短名}-v{预发布版}`(如 `-rc.1`)                | `skip`    | 按约定不发 npm、不建 GitHub Release,退出 0 并留日志                                                                                                           |
 | `{短名}-v{正式版}` 但包为 `private: true`       | `skip`    | 私有包不发 npm、不建 GitHub Release,退出 0 并留日志                                                                                                           |
 | 不符合 `{短名}-v{semver}` 约定的 tag            | `skip`    | 与流水线无关,退出 0                                                                                                                                           |
@@ -105,6 +106,21 @@ Release(notes = 包 CHANGELOG 版本段,见下):
   CI 全新检出天然干净,本地执行加 `--allow-dirty` 可显式越过。
 - **构建**:发布触发各包自带 `prepack`(如 dsh-llm-fallback 自动 esbuild 出
   dist),流水线无需额外构建步骤。
+- **registry 幂等守卫(2026-11-11 起)**:publish 决策落地前先用
+  `npm view <包名>@<版本> version --json` 探测该版本是否已存在于 registry——已存在
+  则跳过重复发布(结果标 `alreadyPublished` / `skipped: 'already-published'`,
+  退出 0),让同一条流水线继续走后续步骤(CI 里的 GitHub Release 创建),而不是
+  让 npm 以 EPUBLISHCONFLICT 把整条流水线拖红。动机:新包首发无法走 CI 的 OIDC
+  (必须先有包才能在包页登记 Trusted Publisher,循环依赖),只能本地手工发布;
+  首发后再推 tag 就会撞上重复发布。探测失败按 fail-open(视为未发布,交由 npm
+  裁决),不因一次网络抖动卡死发布;探测器自身抛异常同样按 fail-open(视为未发布,
+  交由 npm 裁决);dry-run 全程不触网(版本探测一并跳过)——因此
+  **`--dry-run` 预览不会体现「该版本已存在、会跳过」**(预览只给命令,不查 registry);
+  版本已存在时不再要求工作树干净(本次本就不发布)。**边界**:守卫只看**已公开**
+  到 registry 的版本——若首发走的是 npm 暂存队列(本地 `--client npm-stage`)
+  且尚未放行,版本只在暂存队列、不在公开 packument,守卫探测不到(需鉴权才能
+  查暂存态,CI 的 OIDC 凭证仅在发布时铸造),此时仍会重复暂存并由 registry 侧
+  拒绝——请首发后先在 npm 后台放行,再推 tag。
 - **GitHub Release(tag 内容的"给人看"形态,2026-10-14 起)**:npm 暂存
   成功后,工作流执行 `pnpm release github-release <tag>` 自动创建 GitHub
   Release——title 为 `{包名} v{版本}`,notes 取包 CHANGELOG.md 中该版本的
@@ -158,7 +174,7 @@ scripts/
     git.ts             git 子进程薄封装(结构化错误)+ 发布线解析与可达性判定
     changelog.ts       包 CHANGELOG 版本段提取(纯函数)+ tag message / release notes 组装
     workflow.ts        tagPackage / tagAllPackages 编排(dry-run、脏树与 tag 冲突检查、CHANGELOG tag message)
-    publish.ts         发布流水线:parseReleaseTag / isStableVersion / decidePublish 纯函数 + 发布编排(pnpm/npm 双客户端,发布线 main 可达性守护)
+    publish.ts         发布流水线:parseReleaseTag / isStableVersion / decidePublish / parseVersionProbeResult 纯函数 + 发布编排(pnpm/npm 双客户端,发布线 main 可达性守护,registry 版本探测幂等守卫)
     github-release.ts  GitHub Release 创建:复用 decidePublish,notes 取包 CHANGELOG 版本段(gh 执行器注入,幂等)
     *.test.ts          单测 + 临时 git 仓库端到端回归
 .github/workflows/

@@ -14,6 +14,12 @@
  *
  * 版本递增与 CHANGELOG 由 Changesets 负责,tag 创建由 pkg-release.ts 的
  * tag 命令负责;本模块只消费 tag 字符串与 package.json 当前版本。
+ *
+ * 幂等守卫:非 dry-run 时先用 `npm view <pkg>@<version> version` 探测该版本
+ * 是否已存在于 registry——已存在则跳过重复发布(结果标 alreadyPublished),
+ * 让同一条流水线继续走后续步骤(如 CI 里的 GitHub Release),而不是让 npm
+ * 以 EPUBLISHCONFLICT 把整条流水线拖红。探测失败按 fail-open 处理(视为
+ * 未发布,交由 npm 裁决);dry-run 全程不触网(版本探测一并跳过)。
  */
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
@@ -219,15 +225,111 @@ export const runPublishCommand: PublishRunner = ({ cwd, command, args }) => {
   }
 };
 
-/** publishForTag 的结果:决策 + 是否真的执行了发布(+ 预览的命令)。 */
+/** publishForTag 的结果:决策 + 发布处理结果(+ 预览的命令)。 */
 export interface PublishOutcome {
   readonly decision: PublishDecision;
   readonly dryRun: boolean;
-  /** 仅 decision 为 publish 时存在:实际执行(dry-run 为预览)的完整命令。 */
+  /** 仅 decision 为 publish 时存在:将要执行(dry-run 为预览)的发布命令。 */
   readonly command?: string;
-  /** 真正执行了发布命令(非 dry-run 且决策为 publish)。 */
+  /**
+   * publish 决策已被处理:要么真实执行了发布命令,要么因版本已存在而
+   * 幂等跳过(此时 `skipped` = 'already-published',未执行任何命令)。
+   */
   readonly published: boolean;
+  /**
+   * 版本此前已存在于 npm registry,本次按幂等跳过重复发布(未执行发布命令)。
+   * 首发场景常见:新包首发无法走 CI 的 OIDC(须先有包才能登记 trusted
+   * publisher),由维护者本地发布;随后 tag 推上去再跑同一条流水线时,
+   * 版本已在 registry → 跳过而不是让 npm 以 EPUBLISHCONFLICT 报错。
+   */
+  readonly alreadyPublished?: boolean;
+  /** 本次未执行发布命令的原因;未跳过时不存在。 */
+  readonly skipped?: 'already-published';
+  /**
+   * registry 版本探测结论(仅 publish 决策路径有值;skip/fail 路径不探测)。
+   * `unknown` 表示探测失败,按 fail-open 继续发布(真实失败原因由 npm 报出)。
+   */
+  readonly probe?: VersionProbeResult;
 }
+
+/**
+ * registry 版本探测的三态结论:
+ * - `exists`:该版本已发布;
+ * - `missing`:包或版本不存在(可安全发布);
+ * - `unknown`:探测本身失败(网络/权限等),无法判定——按 fail-open 处理
+ *   (视为未发布,交给 npm 自己裁决),不阻断发布。
+ */
+export type VersionProbeResult = 'exists' | 'missing' | 'unknown';
+
+/** 版本探测函数的输入(包名 + 精确版本)。 */
+export interface VersionProbeInput {
+  readonly pkgName: string;
+  readonly version: string;
+}
+
+/** 版本探测函数:返回该版本在 registry 的存在状态。 */
+export type VersionProbe = (input: VersionProbeInput) => VersionProbeResult;
+
+/** 子进程执行结果的最小形状(便于测试注入替身)。 */
+export interface SpawnResult {
+  readonly status: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+/** 子进程执行器:返回执行结果(测试可注入替身)。 */
+export type SpawnRunner = (
+  command: string,
+  args: readonly string[],
+) => SpawnResult;
+
+/**
+ * 解析 `npm view <pkg>@<version> version --json` 的执行结果:
+ * 退出码 0 且 stdout 非空 → 版本存在;退出码非 0 且 stderr 命中 E404 →
+ * 包或版本不存在;其余(网络抖动、registry 报错等)→ 无法判定。
+ */
+export function parseVersionProbeResult(outcome: {
+  readonly status: number | null;
+  readonly stdout: string;
+  readonly stderr: string;
+}): VersionProbeResult {
+  if (outcome.status === 0) {
+    return outcome.stdout.trim().length > 0 ? 'exists' : 'missing';
+  }
+  if (/E404/.test(outcome.stderr)) return 'missing';
+  return 'unknown';
+}
+
+/** 默认子进程执行器:同步执行并收集输出(Windows 下 npm 为 .cmd,需 shell)。 */
+const defaultSpawn: SpawnRunner = (command, args) => {
+  const result = spawnSync(command, args, {
+    encoding: 'utf8',
+    shell: process.platform === 'win32',
+    timeout: 30_000,
+  });
+  return {
+    status: result.status,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+  };
+};
+
+/**
+ * 构造基于 `npm view <pkg>@<version> version --json` 的版本探测器。
+ * 只读、不发布;探测失败返回 `unknown`(调用方按 fail-open 处理)。
+ * 抽出工厂是为了让默认实现也能被单测覆盖(注入 spawn 替身)。
+ */
+export function createNpmVersionExists(
+  spawn: SpawnRunner = defaultSpawn,
+): VersionProbe {
+  return ({ pkgName, version }) =>
+    parseVersionProbeResult(
+      spawn('npm', ['view', `${pkgName}@${version}`, 'version', '--json']),
+    );
+}
+
+/** 默认版本探测器(真实调 npm CLI)。 */
+export const npmVersionExists: VersionProbe = createNpmVersionExists();
 
 /**
  * 发布线守护:publish 决策落地前,tag 必须存在,且其指向的提交可从发布线
@@ -269,6 +371,7 @@ export function publishForTag(input: {
   readonly allowDirty?: boolean;
   readonly client?: PublishClient;
   readonly exec?: PublishRunner;
+  readonly versionExists?: VersionProbe;
 }): PublishOutcome {
   const {
     rootDir,
@@ -277,6 +380,7 @@ export function publishForTag(input: {
     allowDirty = false,
     client = 'pnpm',
     exec = runPublishCommand,
+    versionExists = npmVersionExists,
   } = input;
   const decision = decidePublish({
     tag,
@@ -290,19 +394,47 @@ export function publishForTag(input: {
   }
   const { pkg } = decision;
   assertTagOnReleaseLine(rootDir, tag);
-  if (!dryRun && !allowDirty && !worktreeIsClean(rootDir)) {
-    throw new ReleaseError(
-      'DIRTY_WORKTREE',
-      `工作树存在未提交改动,发布会打包工作树而非 tag ${tag} 指向的内容;请先提交,确有必要时加 --allow-dirty`,
-    );
-  }
   const args = publishArgsFor(client, pkg);
   // 可执行二进制:pnpm 客户端为 pnpm;npm / npm-stage 都由 npm CLI 执行
   const bin = client === 'pnpm' ? 'pnpm' : 'npm';
   const command = `${bin} ${args.join(' ')}(cwd: ${pkg.dir})`;
   if (dryRun) {
+    // dry-run 全程不触网:版本探测也一并跳过(预览只给命令,不查 registry)
     return { decision, dryRun: true, command, published: false };
   }
+  // 幂等守卫:版本此前已发布(首发本地手工发布后再推 tag 的常见路径)→ 跳过
+  // 重复发布,让流水线继续走后续步骤(如 CI 里的 GitHub Release),而不是
+  // 让 npm 以 EPUBLISHCONFLICT 报错把整条流水线拖红。探测放在脏树门禁
+  // 之前:版本已存在时本次本就不发布,不该被脏树挡住。
+  // 探测本身异常(如探测器抛错)按 fail-open 处理:视为未发布继续,真实
+  // 失败原因交由 npm 报出——不让一次探测故障把发布整体卡死。
+  let probe: VersionProbeResult;
+  try {
+    probe = versionExists({
+      pkgName: pkg.name,
+      version: decision.version,
+    });
+  } catch {
+    probe = 'unknown';
+  }
+  if (probe === 'exists') {
+    return {
+      decision,
+      dryRun: false,
+      command,
+      published: true,
+      alreadyPublished: true,
+      skipped: 'already-published',
+      probe,
+    };
+  }
+  if (!allowDirty && !worktreeIsClean(rootDir)) {
+    throw new ReleaseError(
+      'DIRTY_WORKTREE',
+      `工作树存在未提交改动,发布会打包工作树而非 tag ${tag} 指向的内容;请先提交,确有必要时加 --allow-dirty`,
+    );
+  }
+  // probe === 'unknown':探测失败按 fail-open 继续发布(真实失败原因由 npm 报出)
   exec({ cwd: join(rootDir, pkg.dir), command: bin, args });
-  return { decision, dryRun: false, command, published: true };
+  return { decision, dryRun: false, command, published: true, probe };
 }

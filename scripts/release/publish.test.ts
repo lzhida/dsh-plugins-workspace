@@ -6,22 +6,53 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import { ReleaseError, shortNameOf } from './core.ts';
 import type { WorkspacePackage } from './core.ts';
 import {
+  createNpmVersionExists,
   decidePublish,
   isStableVersion,
   parseReleaseTag,
+  parseVersionProbeResult,
   publishArgsFor,
   publishForTag,
 } from './publish.ts';
-import type { PublishRunner } from './publish.ts';
+import type { PublishOutcome, PublishRunner, VersionProbe } from './publish.ts';
 
 // 临时 git 仓库端到端在本机 Windows 上单次 git 子进程调用可达数秒(杀毒
 // 扫描),与本目录 workflow.test.ts 同样放宽超时。
 vi.setConfig({ testTimeout: 60_000 });
 
+/**
+ * 禁触网 tripwire:任何 `npm` 子进程调用都被拦下(抛错,不真正执行),并记录
+ * 到 npmSpawnAttempts。单测必须显式注入 versionExists 替身;若将来新增
+ * 用例漏注入,默认探测器会被这里拦下(不会真访问 registry),且 afterAll
+ * 的断言会让该套件变红。
+ */
+const { npmSpawnAttempts } = vi.hoisted(() => ({
+  npmSpawnAttempts: [] as { command: string; args: string[] }[],
+}));
+
+vi.mock('node:child_process', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:child_process')>();
+  return {
+    ...actual,
+    spawnSync: (
+      command: string,
+      args: readonly string[] = [],
+      options?: unknown,
+    ): unknown => {
+      if (String(command).toLowerCase().includes('npm')) {
+        npmSpawnAttempts.push({ command, args: [...args] });
+        throw new Error('单测禁止触网:npm 调用必须走注入的 versionExists 替身');
+      }
+      return Reflect.apply(actual.spawnSync, actual, [command, args, options]);
+    },
+  };
+});
+
 /** 收集本套件创建的临时目录,套件结束后统一清理。 */
 const fixtures: string[] = [];
 
 afterAll(() => {
+  expect(npmSpawnAttempts).toEqual([]);
   for (const dir of fixtures) {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -106,6 +137,11 @@ function makeGitFixture(): string {
   git(['init', '-b', 'main'], dir);
   git(['config', 'user.name', 'test'], dir);
   git(['config', 'user.email', 'test@example.com'], dir);
+  // 固化签名与模板开关:开发者本机的全局 commit.gpgsign / tag.gpgSign /
+  // init.templateDir 会让 fixture 的 commit/tag 偶发失败(CI 容器无此配置)。
+  git(['config', 'commit.gpgsign', 'false'], dir);
+  git(['config', 'tag.gpgSign', 'false'], dir);
+  git(['config', 'core.hooksPath', join(dir, '.git', 'no-hooks')], dir);
   git(['add', '.'], dir);
   git(['commit', '-m', 'init'], dir);
   git(['tag', 'dsh-beta-v1.2.3'], dir);
@@ -140,6 +176,25 @@ function recorder(): {
       });
     },
   };
+}
+
+/**
+ * 测试里统一注入的版本探测替身:恒为「未发布」。
+ * publishForTag 默认走 npm view 真实触网,测试必须显式注入,否则单测会
+ * 依赖 registry 状态(既慢又不确定)。
+ */
+const notPublished: VersionProbe = () => 'missing';
+
+/**
+ * 包一层 publishForTag:统一注入「未发布」探测替身,避免真实触网。
+ * 需要验证幂等守卫本身的用例直接调 publishForTag 并显式注入探测器。
+ */
+function publishInFixture(
+  input: Omit<Parameters<typeof publishForTag>[0], 'versionExists'>,
+): PublishOutcome {
+  return publishForTag(
+    Object.assign({}, input, { versionExists: notPublished }),
+  );
 }
 
 describe('release publish(tag 解析与版本判定纯函数)', () => {
@@ -224,6 +279,47 @@ describe('release publish(tag 解析与版本判定纯函数)', () => {
     });
   });
 
+  describe('parseVersionProbeResult registry 版本探测结果解析', () => {
+    it('退出码 0 且 stdout 非空 → exists(版本已发布)', () => {
+      expect(
+        parseVersionProbeResult({
+          status: 0,
+          stdout: '"1.2.3"\n',
+          stderr: '',
+        }),
+      ).toBe('exists');
+    });
+
+    it('退出码 0 但 stdout 为空 → missing(查无此版本)', () => {
+      expect(
+        parseVersionProbeResult({ status: 0, stdout: '  \n', stderr: '' }),
+      ).toBe('missing');
+    });
+
+    it('退出码非 0 且 stderr 命中 E404 → missing(包或版本不存在)', () => {
+      expect(
+        parseVersionProbeResult({
+          status: 1,
+          stdout: '',
+          stderr: 'npm error code E404\nnpm error 404 Not Found',
+        }),
+      ).toBe('missing');
+    });
+
+    it('其余失败形态 → unknown(无法判定,fail-open 按未发布处理)', () => {
+      expect(
+        parseVersionProbeResult({
+          status: 1,
+          stdout: '',
+          stderr: 'npm error code E401 Unauthorized',
+        }),
+      ).toBe('unknown');
+      expect(
+        parseVersionProbeResult({ status: null, stdout: '', stderr: '' }),
+      ).toBe('unknown');
+    });
+  });
+
   describe('decidePublish 三态发布决策(纯函数矩阵)', () => {
     const packages = [
       pkg('@zhidal/dsh-alpha', '0.1.0', true),
@@ -285,7 +381,7 @@ describe('release publish(临时 workspace 端到端)', () => {
   it('skip 决策不执行任何命令且不要求 git 仓库', () => {
     const root = makePlainFixture();
     const { calls, exec } = recorder();
-    const outcome = publishForTag({
+    const outcome = publishInFixture({
       rootDir: root,
       tag: 'dsh-alpha-v0.1.0',
       exec,
@@ -301,7 +397,7 @@ describe('release publish(临时 workspace 端到端)', () => {
   it('prerelease tag 跳过发布:公开包也不走 npm', () => {
     const root = makePlainFixture();
     const { calls, exec } = recorder();
-    const outcome = publishForTag({
+    const outcome = publishInFixture({
       rootDir: root,
       tag: 'dsh-gamma-v2.0.0-rc.1',
       exec,
@@ -317,7 +413,7 @@ describe('release publish(临时 workspace 端到端)', () => {
     const root = makePlainFixture();
     const { calls, exec } = recorder();
     expect(() =>
-      publishForTag({ rootDir: root, tag: 'dsh-beta-v9.9.9', exec }),
+      publishInFixture({ rootDir: root, tag: 'dsh-beta-v9.9.9', exec }),
     ).toThrowError(expect.objectContaining({ code: 'TAG_VERSION_MISMATCH' }));
     expect(calls).toEqual([]);
   });
@@ -325,7 +421,7 @@ describe('release publish(临时 workspace 端到端)', () => {
   it('dry-run 完整预览 publish 命令但不执行(scoped 包自动带 --access public)', () => {
     const root = makeGitFixture();
     const { calls, exec } = recorder();
-    const outcome = publishForTag({
+    const outcome = publishInFixture({
       rootDir: root,
       tag: 'dsh-beta-v1.2.3',
       dryRun: true,
@@ -345,7 +441,7 @@ describe('release publish(临时 workspace 端到端)', () => {
   it('干净工作树上执行发布:注入执行器收到包目录 cwd 与 publish 参数', () => {
     const root = makeGitFixture();
     const { calls, exec } = recorder();
-    const outcome = publishForTag({
+    const outcome = publishInFixture({
       rootDir: root,
       tag: 'dsh-beta-v1.2.3',
       exec,
@@ -364,7 +460,7 @@ describe('release publish(临时 workspace 端到端)', () => {
   it('client=npm 走 npm CLI:无 --no-git-checks,适配 OIDC trusted publishing', () => {
     const root = makeGitFixture();
     const { calls, exec } = recorder();
-    const outcome = publishForTag({
+    const outcome = publishInFixture({
       rootDir: root,
       tag: 'dsh-beta-v1.2.3',
       client: 'npm',
@@ -386,7 +482,7 @@ describe('release publish(临时 workspace 端到端)', () => {
   it('client=npm-stage 走 stage publish:版本进暂存队列,人工放行后才公开', () => {
     const root = makeGitFixture();
     const { calls, exec } = recorder();
-    const outcome = publishForTag({
+    const outcome = publishInFixture({
       rootDir: root,
       tag: 'dsh-beta-v1.2.3',
       client: 'npm-stage',
@@ -410,11 +506,11 @@ describe('release publish(临时 workspace 端到端)', () => {
     writeFileSync(join(root, 'stray.txt'), 'uncommitted', 'utf8');
     const { calls, exec } = recorder();
     expect(() =>
-      publishForTag({ rootDir: root, tag: 'dsh-beta-v1.2.3', exec }),
+      publishInFixture({ rootDir: root, tag: 'dsh-beta-v1.2.3', exec }),
     ).toThrowError(expect.objectContaining({ code: 'DIRTY_WORKTREE' }));
     expect(calls).toEqual([]);
     // dry-run 只预览,不受脏树限制
-    const preview = publishForTag({
+    const preview = publishInFixture({
       rootDir: root,
       tag: 'dsh-beta-v1.2.3',
       dryRun: true,
@@ -422,7 +518,7 @@ describe('release publish(临时 workspace 端到端)', () => {
     });
     expect(preview.decision.action).toBe('publish');
     // 显式 --allow-dirty 是逃生门
-    const forced = publishForTag({
+    const forced = publishInFixture({
       rootDir: root,
       tag: 'dsh-beta-v1.2.3',
       allowDirty: true,
@@ -438,7 +534,11 @@ describe('release publish(临时 workspace 端到端)', () => {
       throw new ReleaseError('PUBLISH_FAILED', 'pnpm publish 失败(exit 1)');
     };
     expect(() =>
-      publishForTag({ rootDir: root, tag: 'dsh-beta-v1.2.3', exec: failing }),
+      publishInFixture({
+        rootDir: root,
+        tag: 'dsh-beta-v1.2.3',
+        exec: failing,
+      }),
     ).toThrowError(expect.objectContaining({ code: 'PUBLISH_FAILED' }));
   });
 });
@@ -448,10 +548,10 @@ describe('release publish(发布线守护)', () => {
     const root = makeGitFixtureWithTagOffMain();
     const { calls, exec } = recorder();
     expect(() =>
-      publishForTag({ rootDir: root, tag: 'dsh-beta-v1.2.3', exec }),
+      publishInFixture({ rootDir: root, tag: 'dsh-beta-v1.2.3', exec }),
     ).toThrowError(expect.objectContaining({ code: 'TAG_NOT_ON_MAIN' }));
     expect(() =>
-      publishForTag({
+      publishInFixture({
         rootDir: root,
         tag: 'dsh-beta-v1.2.3',
         dryRun: true,
@@ -465,7 +565,7 @@ describe('release publish(发布线守护)', () => {
     const root = makeGitFixtureWithTagOffMain();
     git(['merge', 'dev'], root);
     const { calls, exec } = recorder();
-    const outcome = publishForTag({
+    const outcome = publishInFixture({
       rootDir: root,
       tag: 'dsh-beta-v1.2.3',
       exec,
@@ -487,7 +587,7 @@ describe('release publish(发布线守护)', () => {
     git(['remote', 'add', 'origin', '.'], dir);
     git(['update-ref', 'refs/remotes/origin/main', 'dsh-beta-v1.2.3'], dir);
     const { calls, exec } = recorder();
-    const outcome = publishForTag({
+    const outcome = publishInFixture({
       rootDir: dir,
       tag: 'dsh-beta-v1.2.3',
       exec,
@@ -505,7 +605,7 @@ describe('release publish(发布线守护)', () => {
     git(['commit', '-m', 'init'], dir);
     git(['tag', 'dsh-beta-v1.2.3'], dir);
     expect(() =>
-      publishForTag({
+      publishInFixture({
         rootDir: dir,
         tag: 'dsh-beta-v1.2.3',
         exec: recorder().exec,
@@ -522,10 +622,10 @@ describe('release publish(发布线守护)', () => {
     });
     const { calls, exec } = recorder();
     expect(() =>
-      publishForTag({ rootDir: root, tag: 'dsh-beta-v9.9.9', exec }),
+      publishInFixture({ rootDir: root, tag: 'dsh-beta-v9.9.9', exec }),
     ).toThrowError(expect.objectContaining({ code: 'TAG_NOT_FOUND' }));
     expect(() =>
-      publishForTag({
+      publishInFixture({
         rootDir: root,
         tag: 'dsh-beta-v9.9.9',
         dryRun: true,
@@ -533,5 +633,204 @@ describe('release publish(发布线守护)', () => {
       }),
     ).toThrowError(expect.objectContaining({ code: 'TAG_NOT_FOUND' }));
     expect(calls).toEqual([]);
+  });
+});
+
+describe('release publish(registry 幂等守卫)', () => {
+  it('版本已存在于 registry → 不执行发布命令,标记 alreadyPublished/skipped', () => {
+    const root = makeGitFixture();
+    const { calls, exec } = recorder();
+    const probes: { pkgName: string; version: string }[] = [];
+    const outcome = publishForTag({
+      rootDir: root,
+      tag: 'dsh-beta-v1.2.3',
+      exec,
+      versionExists: (input) => {
+        probes.push({ pkgName: input.pkgName, version: input.version });
+        return 'exists';
+      },
+    });
+    expect(outcome.published).toBe(true);
+    expect(outcome.alreadyPublished).toBe(true);
+    expect(outcome.skipped).toBe('already-published');
+    expect(outcome.probe).toBe('exists');
+    expect(outcome.command).toBe(
+      'pnpm publish --no-git-checks --access public(cwd: packages/dsh-beta)',
+    );
+    expect(calls).toEqual([]);
+    expect(probes).toEqual([{ pkgName: '@zhidal/dsh-beta', version: '1.2.3' }]);
+  });
+
+  it('版本未发布 → 照旧执行发布命令(不标 alreadyPublished)', () => {
+    const root = makeGitFixture();
+    const { calls, exec } = recorder();
+    let probeCalls = 0;
+    const outcome = publishForTag({
+      rootDir: root,
+      tag: 'dsh-beta-v1.2.3',
+      exec,
+      versionExists: () => {
+        probeCalls += 1;
+        return 'missing';
+      },
+    });
+    expect(outcome.published).toBe(true);
+    expect(outcome.alreadyPublished).toBeUndefined();
+    expect(outcome.skipped).toBeUndefined();
+    expect(outcome.probe).toBe('missing');
+    expect(probeCalls).toBe(1);
+    expect(calls).toEqual([
+      {
+        cwd: join(root, 'packages', 'dsh-beta'),
+        command: 'pnpm',
+        args: ['publish', '--no-git-checks', '--access', 'public'],
+      },
+    ]);
+  });
+
+  it('探测器抛异常 → fail-open:仍按未发布继续执行发布,不中断流水线', () => {
+    const root = makeGitFixture();
+    const { calls, exec } = recorder();
+    const outcome = publishForTag({
+      rootDir: root,
+      tag: 'dsh-beta-v1.2.3',
+      exec,
+      versionExists: () => {
+        throw new Error('probe boom');
+      },
+    });
+    expect(outcome.probe).toBe('unknown');
+    expect(outcome.skipped).toBeUndefined();
+    expect(outcome.alreadyPublished).toBeUndefined();
+    expect(outcome.published).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('探测失败(unknown)按 fail-open 继续发布,probe 结论透出', () => {
+    const root = makeGitFixture();
+    const { calls, exec } = recorder();
+    const outcome = publishForTag({
+      rootDir: root,
+      tag: 'dsh-beta-v1.2.3',
+      exec,
+      versionExists: () => 'unknown',
+    });
+    expect(outcome.probe).toBe('unknown');
+    expect(outcome.skipped).toBeUndefined();
+    expect(outcome.published).toBe(true);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('版本已存在时不因脏工作树被拦(本次本就不发布)', () => {
+    const root = makeGitFixture();
+    writeFileSync(join(root, 'dirty.txt'), 'dirty', 'utf8');
+    const { calls, exec } = recorder();
+    const outcome = publishForTag({
+      rootDir: root,
+      tag: 'dsh-beta-v1.2.3',
+      exec,
+      versionExists: () => 'exists',
+    });
+    expect(outcome.skipped).toBe('already-published');
+    expect(calls).toEqual([]);
+  });
+
+  it('dry-run 不做版本探测(全程不触网)', () => {
+    const root = makeGitFixture();
+    const { calls, exec } = recorder();
+    let probed = false;
+    const outcome = publishForTag({
+      rootDir: root,
+      tag: 'dsh-beta-v1.2.3',
+      dryRun: true,
+      exec,
+      versionExists: () => {
+        probed = true;
+        return 'exists';
+      },
+    });
+    expect(outcome.dryRun).toBe(true);
+    expect(probed).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it('skip 决策(私有包/预发布)不触发版本探测', () => {
+    const root = makePlainFixture();
+    const { calls, exec } = recorder();
+    let probed = false;
+    const outcome = publishForTag({
+      rootDir: root,
+      tag: 'dsh-alpha-v0.1.0',
+      exec,
+      versionExists: () => {
+        probed = true;
+        return 'exists';
+      },
+    });
+    expect(outcome.decision).toMatchObject({
+      action: 'skip',
+      reason: 'PRIVATE_PACKAGE',
+    });
+    expect(probed).toBe(false);
+    expect(calls).toEqual([]);
+  });
+
+  it('fail 决策(版本不一致)不触发版本探测,直接抛错', () => {
+    const root = makePlainFixture();
+    const { calls, exec } = recorder();
+    let probed = false;
+    expect(() =>
+      publishForTag({
+        rootDir: root,
+        tag: 'dsh-beta-v9.9.9',
+        exec,
+        versionExists: () => {
+          probed = true;
+          return 'exists';
+        },
+      }),
+    ).toThrowError(expect.objectContaining({ code: 'TAG_VERSION_MISMATCH' }));
+    expect(probed).toBe(false);
+    expect(calls).toEqual([]);
+  });
+});
+
+describe('release publish(默认 npm 探测器的可测性)', () => {
+  it('createNpmVersionExists 走 npm view <pkg>@<版本> version --json', () => {
+    const seen: { command: string; args: readonly string[] }[] = [];
+    const probe = createNpmVersionExists((command, args) => {
+      seen.push({ command, args: [...args] });
+      return { status: 0, stdout: '"1.2.3"\n', stderr: '' };
+    });
+    expect(probe({ pkgName: '@zhidal/dsh-beta', version: '1.2.3' })).toBe(
+      'exists',
+    );
+    expect(seen).toEqual([
+      {
+        command: 'npm',
+        args: ['view', '@zhidal/dsh-beta@1.2.3', 'version', '--json'],
+      },
+    ]);
+  });
+
+  it('退出码 0 但 stdout 为空 → missing;E404 → missing;其余 → unknown', () => {
+    const empty = createNpmVersionExists(() => ({
+      status: 0,
+      stdout: '',
+      stderr: '',
+    }));
+    expect(empty({ pkgName: 'x', version: '1.0.0' })).toBe('missing');
+    const notFound = createNpmVersionExists(() => ({
+      status: 1,
+      stdout: '',
+      stderr: 'npm error code E404',
+    }));
+    expect(notFound({ pkgName: 'x', version: '1.0.0' })).toBe('missing');
+    const broken = createNpmVersionExists(() => ({
+      status: 1,
+      stdout: '',
+      stderr: 'npm error code E401 Unauthorized',
+    }));
+    expect(broken({ pkgName: 'x', version: '1.0.0' })).toBe('unknown');
   });
 });

@@ -57,6 +57,8 @@ const HELP_TEXT = `dsh-plugins-workspace 子包发布辅助
       prerelease 与私有包明确跳过(退出 0);tag 与清单版本不一致报错。
       发布线守护:tag 必须存在且指向的提交可从 main 到达(TAG_NOT_ON_MAIN),
       从 dev 等集线提交打的 tag 会被拒绝。
+      幂等守卫:发布前探测该版本是否已存在于 npm registry,已存在则跳过
+      重复发布(退出 0),让流水线继续走 GitHub Release 创建。
       推送 tag 后由 .github/workflows/release.yml 自动执行同一逻辑
       (CI 用 --client npm-stage 走 OIDC 暂存发布,免 token;发布后需
       维护者在 npm 后台或 npm stage approve 人工放行)。
@@ -200,6 +202,17 @@ function printPublish(outcome: PublishOutcome): void {
     if (outcome.dryRun) {
       console.log(`${prefix}将执行: ${outcome.command ?? ''}`);
       console.log(`${prefix}未产生任何改动;去掉 --dry-run 执行实际发布`);
+      return;
+    }
+    if (outcome.probe === 'unknown') {
+      console.warn(
+        `⚠ 无法确认 ${decision.pkg.name}@${decision.version} 是否已发布(npm view 探测失败),按未发布继续`,
+      );
+    }
+    if (outcome.skipped === 'already-published') {
+      console.log(
+        `✔ 该版本此前已发布,本次跳过重复发布: ${decision.pkg.name}@${decision.version}`,
+      );
       return;
     }
     console.log(`✔ 已发布: ${decision.pkg.name}@${decision.version}`);
