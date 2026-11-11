@@ -33,6 +33,10 @@ pnpm dsh plugin --profile test add link:<仓库绝对路径>/packages/dsh-victau
 ```sh
 # github: 简写 + &path: 子目录（pnpm 安装 git monorepo 子目录的标准语法）
 dsh plugin add github:lzhida/dsh-plugins-workspace#main&path:packages/dsh-victauri
+
+# pnpm 11 消费端建议钉具体 commit sha：allowBuilds 的键需是「完整 spec + commit sha」全形态，
+# #main 形态大概率被 pnpm 判为 ERR_PNPM_GIT_DEP_PREPARE_NOT_ALLOWED 而拒绝安装
+dsh plugin add github:lzhida/dsh-plugins-workspace#<commit-sha>&path:packages/dsh-victauri
 ```
 
 本插件为**构建式发行**（`main` 指向 esbuild 产出的 `dist/index.js`，`prepare`/`prepack` 自动构建），git/npm 安装可直接使用。

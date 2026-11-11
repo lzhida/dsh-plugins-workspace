@@ -67,4 +67,4 @@ cargo check                       # feature-off 构建检查（发布形态）
 
 ## 构建产物
 
-`src-tauri/target/` 与 `dist/` 之外的临时产物均已 gitignore（见仓库根 `.gitignore`），不提交。
+`src-tauri/target/`（Rust cargo 构建产物）由本目录的 `.gitignore` 排除，不提交；`dist/` 是**源码**（纯静态前端，`tauri.conf.json` 的 `frontendDist` 指向它），以强制入库方式跟踪。仓库根 `.gitignore` 的 `dist/` 通配只作用于未跟踪文件。

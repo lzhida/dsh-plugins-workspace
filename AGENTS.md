@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/cordis`）插件集合，pnpm workspaces 单层结构。插件默认以 TS 源码形态被宿主 dsh loader 直接加载——**没有构建步骤、不产出 dist**；需要实体安装（git/npm/tarball）的插件必须以 JS 为入口。当前仅包含 `packages/dsh-llm-fallback`（构建式发行，见下）。
+dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/cordis`）插件集合，pnpm workspaces 单层结构。插件默认以 TS 源码形态被宿主 dsh loader 直接加载——**没有构建步骤、不产出 dist**；需要实体安装（git/npm/tarball）的插件必须以 JS 为入口。当前包含 `packages/dsh-llm-fallback`、`packages/dsh-patent`、`packages/dsh-victauri`（三者均为构建式发行，见下）与内部私有包 `packages/dsh-anytype`（private，未发布 npm）。
 
 ## Architecture & Data Flow
 
@@ -13,7 +13,7 @@ dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/c
   - 业务辅助纯函数（如 `greet`）。
 - **生命周期**：副作用一律用 `ctx.effect(fn)` 注册。`fn` **立即执行**，其返回的函数在插件卸载时被 cordis 自动调用（事件监听、定时器、连接的清理都走这条路径，勿手写 removeListener/clearInterval 之外的反注册逻辑）。
 - **依赖注入**：需要其他服务时 `export const inject = ['tools']`，框架保证 `ctx.tools` 就绪后才调 `apply`（`dsh-tool-nushell` 即用此模式；该插件已在 2026-10-08 整包下线，示例仅供契约参考）。
-- **依赖策略**：`@deepseek-ai/cordis` 只放插件的 `devDependencies` 且仅 `import type` 引入——运行时由宿主提供，插件不打包框架。
+- **依赖策略**：`@deepseek-ai/cordis` 通常只放插件的 `devDependencies` 且仅 `import type` 引入——运行时由宿主提供，插件不打包框架。**例外**：构建式发行的插件若在公开 `.d.ts` 里引用框架类型（`Context` 等）或运行时需要其提供的工具函数（如 `defineTool`），则把 cordis / schemastery / dsh-tools 放 `dependencies` 并钉版本，保证消费端安装树中必然可解析（详见 `packages/dsh-victauri/docs/release.md` 的依赖设计表）。
 
 ## Key Directories
 
@@ -32,7 +32,7 @@ pnpm typecheck      # 递归各包 tsc --noEmit
 pnpm test           # vitest run（集中在根，子包无 test 脚本）
 pnpm changeset       # 声明一次子包变更（选包、semver 档位、摘要 → .changeset/*.md）
 pnpm changeset:version   # 消费 changeset：写回版本号 + 生成各包 CHANGELOG.md
-pnpm changeset:publish   # 发布公开包到 npm（目前仅 @zhidal/dsh-llm-fallback）
+pnpm changeset:publish   # 发布公开包到 npm（@zhidal/dsh-llm-fallback / dsh-patent / dsh-victauri；private 包跳过）
 pnpm release list    # 列出子包版本与 tag 预览
                      # tag <包名|--all>：为当前已提交版本补 {短名}-v{X.Y.Z} tag（--all 幂等批量）
                      # publish <tag>：按 tag 决策并发布 npm（仅公开包正式版；prerelease/私有包跳过）
@@ -43,9 +43,9 @@ pnpm release list    # 列出子包版本与 tag 预览
 
 ## Subpackage Versioning & Release
 
-- 子包版本管理走 **Changesets**（`.changeset/` + `@changesets/cli`，2026-10-12 由自研 CLI 切换而来）：`pnpm changeset` 声明变更 → `pnpm changeset:version` 写回版本号并生成各包 CHANGELOG.md（提交由人执行）→ `pnpm changeset:publish` 发布公开包到 npm（目前仅 `@zhidal/dsh-llm-fallback`）。`privatePackages: { version: true, tag: false }`——私有包同样参与版本递增与 CHANGELOG。
+- 子包版本管理走 **Changesets**（`.changeset/` + `@changesets/cli`，2026-10-12 由自研 CLI 切换而来）：`pnpm changeset` 声明变更 → `pnpm changeset:version` 写回版本号并生成各包 CHANGELOG.md（提交由人执行）→ `pnpm changeset:publish` 发布公开包到 npm（公开包：`@zhidal/dsh-llm-fallback`、`@zhidal/dsh-patent`、`@zhidal/dsh-victauri`；`@zhidal/dsh-anytype` 为 private，发布链路跳过）。`privatePackages: { version: true, tag: false }`——私有包同样参与版本递增与 CHANGELOG。**首发例外**：`0.1.0` 首发包（如 dsh-patent、dsh-victauri）不经 changeset，版本号在 `package.json` 落定后直接打 tag 发布（对齐 dsh-patent 先例）。
 - git tag 发布由 `scripts/pkg-release.ts`（jiti 直跑零构建）补足：tag 名固定 `{短包名}-v{X.Y.Z}`（如 `dsh-llm-fallback-v0.5.0`），与插件一一对应；`pnpm release tag --all` 幂等批量为当前版本补 tag。Changesets 原生 tag 硬编码 `pkg@version` 且格式不可配置，故全部关闭，tag 语义由本工具统一（该 `{pkg}-v{X.Y.Z}` 形态与 Tauri 官方插件 monorepo 实际 tag 约定一致）。
-- npm 发布流水线由 `.github/workflows/release.yml` 承担（2026-10-12 新增，2026-10-13 迁移 OIDC 暂存发布）：推送 `*-v*` tag 自动触发，先跑与 CI 相同的门禁链，再按 `scripts/release/publish.ts` 的三态决策执行——仅「公开包 + 正式版本」真正发布：CI 走 `--client npm-stage` 的 OIDC 暂存发布（免 token，`npm stage publish` 进暂存队列，维护者在 npm 后台或 `npm stage approve` 人工放行后才公开；前置是在 npm 包后台登记 trusted publisher；本地默认 `pnpm publish`）；`dsh-llm-fallback` 经 `prepack` 自动构建 dist；prerelease（如 `-rc.1`）与 private 包明确跳过（退出 0），tag 与清单版本不一致/短名无对应包直接失败。发布线守护（2026-10-13 起）：tag 必须存在且指向的提交可从 main 到达（`TAG_NOT_ON_MAIN`），发布 tag 一律在 dev 合入 main 后于 main 上打；工作流以 `fetch-depth: 0` 拉全量历史解析发布线（本地 `main` 优先，回退 `origin/main`）。备选 token 方案的 `NPM_TOKEN` 必须是 **Granular Access Token** 且创建时勾选 **Bypass 2FA**（npm 2025-12-09 起经典 token 已全部吊销、包默认强制 2FA，未勾选则发布被 OTP 验证码拦下）。
+- npm 发布流水线由 `.github/workflows/release.yml` 承担（2026-10-12 新增，2026-10-13 迁移 OIDC 暂存发布）：推送 `*-v*` tag 自动触发，先跑与 CI 相同的门禁链，再按 `scripts/release/publish.ts` 的三态决策执行——仅「公开包 + 正式版本」真正发布：CI 走 `--client npm-stage` 的 OIDC 暂存发布（免 token，`npm stage publish` 进暂存队列，维护者在 npm 后台或 `npm stage approve` 人工放行后才公开；前置是在 npm 包后台登记 trusted publisher；本地默认 `pnpm publish`）；`dsh-llm-fallback` / `dsh-patent` / `dsh-victauri` 经 `prepack` 自动构建 dist；prerelease（如 `-rc.1`）与 private 包明确跳过（退出 0），tag 与清单版本不一致/短名无对应包直接失败。发布线守护（2026-10-13 起）：tag 必须存在且指向的提交可从 main 到达（`TAG_NOT_ON_MAIN`），发布 tag 一律在 dev 合入 main 后于 main 上打；工作流以 `fetch-depth: 0` 拉全量历史解析发布线（本地 `main` 优先，回退 `origin/main`）。备选 token 方案的 `NPM_TOKEN` 必须是 **Granular Access Token** 且创建时勾选 **Bypass 2FA**（npm 2025-12-09 起经典 token 已全部吊销、包默认强制 2FA，未勾选则发布被 OTP 验证码拦下）。
 - agent 只可跑 `--dry-run`、`list` 与 `changeset status`；实际 version 提交/tag/publish 属发布动作，须用户明确授意后由用户执行或经确认后代跑，push 一律留给用户。
 - 设计决策与语义边界见 `scripts/release/README.md` 与 `.changeset/README.md`。
 
@@ -70,7 +70,7 @@ pnpm release list    # 列出子包版本与 tag 预览
 - Node ≥22（`engines`），包管理器锁定 pnpm 11（`packageManager` 字段），勿用 npm/yarn。
 - **纯 TypeScript**：源码与工具链配置均为 `.ts`（`eslint.config.ts` 由 ESLint 加载）；仓库内无 `.js`/`.mjs` 源文件。
 - TypeScript 锁 5.x 稳定线——typescript-eslint 8 的 peer 范围是 `<6.1.0`，勿升级 TS 7。
-- 插件默认禁止引入构建步骤；`dist`、`coverage` 等产物目录已入 `.gitignore`。**例外**：`dsh-llm-fallback` 为构建式发行（esbuild 打包 `dist/index.js`，`main` 指 dist，`prepare`/`prepack` 自动构建）——因为 Node 拒绝对 realpath 位于 node_modules 之下的 `.ts` 文件做 type-stripping（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`），TS 源码入口在 git/npm/tarball 实体安装下必然加载失败；其他 TS 插件如需支持实体安装，照此模式改造（构建依赖 esbuild、运行时依赖放 `dependencies`——pnpm 对 git 依赖不保证安装 devDeps；git 安装的消费方还需在 allowBuilds 放行且 pnpm 要求 sha 全形态键，详见 dsh-llm-fallback README）。
+- 插件默认禁止引入构建步骤；`dist`、`coverage` 等产物目录已入 `.gitignore`。**例外**：`dsh-llm-fallback` / `dsh-patent` / `dsh-victauri` 为构建式发行（esbuild 打包 `dist/index.js`，`main` 指 dist，`prepare`/`prepack` 自动构建）——因为 Node 拒绝对 realpath 位于 node_modules 之下的 `.ts` 文件做 type-stripping（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`），TS 源码入口在 git/npm/tarball 实体安装下必然加载失败；其他 TS 插件如需支持实体安装，照此模式改造（构建依赖 esbuild、运行时依赖放 `dependencies`——pnpm 对 git 依赖不保证安装 devDeps；git 安装的消费方还需在 allowBuilds 放行且 pnpm 要求 sha 全形态键，详见 dsh-llm-fallback README）。**注意**：根 `.gitignore` 的 `dist/` 通配也会命中「名为 dist 但其实是源码」的目录（`packages/dsh-victauri/demo-app/dist/` 是纯静态前端源码）——此类文件须用 `git add -f` 强制入库并在包内自建 `.gitignore` 覆盖 cargo 产物。
 - remote origin：`github:lzhida/dsh-plugins-workspace`（push 操作留给用户）。
 - 编辑器（如 Zed）的 ESLint 行内提示若不识别 `eslint.config.ts`，属编辑器集成限制；CLI 门禁 `pnpm lint` 始终权威。
 

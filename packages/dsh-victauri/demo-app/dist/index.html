@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>dsh-victauri demo</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 24px;
+        background: #f6f7f9;
+      }
+      h1 {
+        font-size: 20px;
+      }
+      section {
+        margin: 16px 0;
+        padding: 12px;
+        background: #fff;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+      }
+      button {
+        padding: 6px 14px;
+        margin-right: 8px;
+      }
+      input {
+        padding: 6px 10px;
+        width: 160px;
+      }
+      #out {
+        min-height: 20px;
+        color: #2456c4;
+      }
+      #count {
+        font-size: 28px;
+        font-weight: 700;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>dsh-victauri demo</h1>
+    <p>e2e 验证页：victauri 工具（dom_snapshot / interact / eval_js / invoke_command …）的目标界面。</p>
+
+    <section id="greet-section">
+      <h2>invoke greet</h2>
+      <input id="name" placeholder="输入名字" value="dsh" />
+      <button id="greet-btn" onclick="doGreet()">Greet</button>
+      <pre id="out">（点击 Greet 调用后端命令 greet）</pre>
+    </section>
+
+    <section id="counter-section">
+      <h2>计数器</h2>
+      <button id="dec" onclick="bump(-1)">-1</button>
+      <span id="count">0</span>
+      <button id="inc" onclick="bump(1)">+1</button>
+    </section>
+
+    <script>
+      let n = 0;
+      const { invoke } = window.__TAURI__.core;
+      function doGreet() {
+        const name = document.getElementById('name').value || 'dsh';
+        invoke('greet', { name: name })
+          .then((msg) => {
+            document.getElementById('out').textContent = msg;
+          })
+          .catch((err) => {
+            document.getElementById('out').textContent = 'error: ' + err;
+          });
+      }
+      function bump(d) {
+        n += d;
+        document.getElementById('count').textContent = String(n);
+      }
+    </script>
+  </body>
+</html>
