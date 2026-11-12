@@ -12,4 +12,8 @@ describe('插件版本号', () => {
   it('PLUGIN_VERSION 与 package.json version 一致', () => {
     expect(PLUGIN_VERSION).toBe(packageVersion());
   });
+
+  it('PLUGIN_VERSION 为合法 semver(运行期从 package.json 读出,不是残留常量)', () => {
+    expect(PLUGIN_VERSION).toMatch(/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/);
+  });
 });

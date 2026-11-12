@@ -61,14 +61,14 @@ describe('release-workspace(真实仓库)', () => {
     }
   });
 
-  it('dsh-victauri 已入 workspace 且为首发 0.1.0 公开包', () => {
+  it('dsh-victauri 已入 workspace 且为公开包(版本不写死,随发布推进)', () => {
     const victauri = resolvePackageName('dsh-victauri', packages);
     expect(victauri.name).toBe('@zhidal/dsh-victauri');
     expect(victauri.dir).toBe('packages/dsh-victauri');
-    expect(victauri.version).toBe('0.1.0');
+    expect(victauri.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(victauri.isPrivate).toBe(false);
     expect(tagFor(victauri.shortName, victauri.version)).toBe(
-      'dsh-victauri-v0.1.0',
+      `dsh-victauri-v${victauri.version}`,
     );
   });
 
