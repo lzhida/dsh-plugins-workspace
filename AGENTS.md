@@ -13,7 +13,7 @@ dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/c
   - 业务辅助纯函数（如 `greet`）。
 - **生命周期**：副作用一律用 `ctx.effect(fn)` 注册。`fn` **立即执行**，其返回的函数在插件卸载时被 cordis 自动调用（事件监听、定时器、连接的清理都走这条路径，勿手写 removeListener/clearInterval 之外的反注册逻辑）。
 - **依赖注入**：需要其他服务时 `export const inject = ['tools']`，框架保证 `ctx.tools` 就绪后才调 `apply`（`dsh-tool-nushell` 即用此模式；该插件已在 2026-10-08 整包下线，示例仅供契约参考）。
-- **依赖策略**：`@deepseek-ai/cordis` 通常只放插件的 `devDependencies` 且仅 `import type` 引入——运行时由宿主提供，插件不打包框架。**例外**：构建式发行的插件若在公开 `.d.ts` 里引用框架类型（`Context` 等）或运行时需要其提供的工具函数（如 `defineTool`），则把 cordis / schemastery / dsh-tools 放 `dependencies` 并钉版本，保证消费端安装树中必然可解析（详见 `packages/dsh-victauri/docs/release.md` 的依赖设计表）。
+- **依赖策略**：`@deepseek-ai/cordis` 通常只放插件的 `devDependencies` 且仅 `import type` 引入——运行时由宿主提供，插件不打包框架。**例外**：构建式发行的插件若在公开 `.d.ts` 里引用框架类型（`Context` 等）或运行时需要其提供的工具函数（如 `defineTool`），则把 cordis / schemastery / dsh-tools 放 `peerDependencies`（宿主提供），并在 esbuild 构建时用 `--external` 把它们交回宿主解析——**禁止放 `dependencies`**：消费端用 pnpm（profile 侧 `nodeLinker: hoisted`）安装时，会把精确钉死的旧版框架包平铺进 profile 根 `node_modules`，顶替宿主运行时版本，dsh 兼容性守卫随即禁用对应插件行，整个实例启动失败（2026-11-12 实测：`@zhidal/dsh-victauri@0.1.0` 装上即崩，根因是 `dependencies` 里钉死 `dsh-tools@0.2.1-rc.2` 顶替了宿主的 `0.2.2-rc.1`）。详见 `packages/dsh-victauri/docs/release.md` 的依赖设计表。
 
 ## Key Directories
 

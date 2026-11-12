@@ -37,19 +37,22 @@
   },
   "scripts": {
     "build": "npm run build:server",
-    "build:server": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js --sourcemap --sources-content=false && tsc -p tsconfig.build.json && node scripts/prune-dist-declarations.mjs",
+    "build:server": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node22 --outfile=dist/index.js --sourcemap --sources-content=false --external:@deepseek-ai/cordis --external:@deepseek-ai/dsh-tools --external:@deepseek-ai/schemastery && tsc -p tsconfig.build.json && node scripts/prune-dist-declarations.mjs",
     "prepare": "npm run build",
     "prepack": "npm run build",
     "typecheck": "tsc --noEmit",
     "smoke": "node scripts/smoke.mjs"
   },
-  "dependencies": {
-    "@deepseek-ai/cordis": "~4.0.5",
-    "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
-    "@deepseek-ai/schemastery": "~3.18.5"
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.5",
+    "@deepseek-ai/dsh-tools": ">=0.2.1-rc.2 <0.3.0",
+    "@deepseek-ai/schemastery": ">=3.18.5 <4.0.0"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "~4.0.5",
     "@deepseek-ai/dsh-llm": "0.2.1-rc.2",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "~3.18.5",
     "@types/node": "^26.6.2",
     "esbuild": "^0.28.2",
     "typescript": "^5.9.3"

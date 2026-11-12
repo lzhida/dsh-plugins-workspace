@@ -23,7 +23,9 @@ interface PackageManifest {
   publishConfig?: { access?: string };
   engines?: { node?: string };
   dependencies?: Record<string, string>;
+  peerDependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
+  scripts?: Record<string, string>;
   dsh?: { bundle?: { patch?: string } };
 }
 
@@ -41,7 +43,7 @@ const pkg = JSON.parse(readPackageFile('../package.json')) as PackageManifest;
 const REPO_DIR_URL =
   'https://github.com/lzhida/dsh-plugins-workspace/tree/main/packages/dsh-victauri';
 
-/** 运行时依赖(消费端安装树里必然可得的三个包)。 */
+/** 运行时三件套(宿主提供:peerDependencies + 构建 external,消费端不安装)。 */
 const RUNTIME_DEPS = [
   '@deepseek-ai/cordis',
   '@deepseek-ai/dsh-tools',
@@ -120,9 +122,25 @@ describe('dsh-victauri', () => {
   });
 
   describe('依赖分置', () => {
-    it('运行时三件套在 dependencies(公开 .d.ts 引用其类型,消费端须可得)', () => {
+    it('运行时三件套在 peerDependencies(宿主提供,消费端不重复安装)', () => {
       for (const dep of RUNTIME_DEPS) {
-        expect(Object.keys(pkg.dependencies ?? {})).toContain(dep);
+        expect(Object.keys(pkg.peerDependencies ?? {})).toContain(dep);
+      }
+    });
+
+    it('dependencies 不含 @deepseek-ai 运行时包(装进消费端会顶替宿主版本,导致 dsh 启动失败)', () => {
+      // 2026-11-12 实测事故:dependencies 里精确钉死 dsh-tools@0.2.1-rc.2 时,
+      // pnpm(hoisted)把它平铺进 profile 根 node_modules,顶替宿主 0.2.2-rc.1 的 dsh-tools,
+      // dsh 兼容性守卫随即禁用 "tools" 插件行,整个实例启动失败。
+      for (const dep of Object.keys(pkg.dependencies ?? {})) {
+        expect(dep.startsWith('@deepseek-ai/')).toBe(false);
+      }
+    });
+
+    it('构建 external 掉框架三件套(运行时用宿主版本,不产生双副本)', () => {
+      const buildServer = pkg.scripts?.['build:server'] ?? '';
+      for (const dep of RUNTIME_DEPS) {
+        expect(buildServer).toContain(`--external:${dep}`);
       }
     });
 
