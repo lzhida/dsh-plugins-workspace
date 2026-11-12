@@ -1,7 +1,7 @@
 {
   "name": "@zhidal/dsh-victauri",
   "description": "dsh-victauri 插件：把 Victauri（Tauri 应用内嵌 MCP 服务器）的 35 个工具与 victauri CLI 桥接为 dsh 原生工具（合计 39 个 dsh 工具，含 CLI 桥、CLI 探测、工具发现与 victauri_doctor 桥接体检），为 dsh 会话提供 Tauri 框架开发测试环境。",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
