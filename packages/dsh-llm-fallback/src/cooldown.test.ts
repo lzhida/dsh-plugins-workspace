@@ -1468,3 +1468,92 @@ describe('角色级回退链(apply 集成,0.8.0)', () => {
     expect(outB).toEqual({ provider: 'openai', model: 'a', maxTokens: 2048 });
   });
 });
+
+// ── 流式中途失败的行为边界(0.10.0)─────────────────────────────────────
+
+/**
+ * 边界定稿(见 README「流式中途失败的行为边界」):
+ * 宿主把适配器/流迭代中途的失败归一化成 terminal finish chunk(reason.kind
+ * ='error'),落盘失败 attempt 后派发 agent/request-error——插件看得到这类
+ * 失败,但失败对象没有"流已开始/已产出内容"信号,无法区分产出前与产出后,
+ * 故两类失败同路径处理:白名单内照常切换;插件从不携带任何部分输出
+ * (重试请求由宿主从零重建,失败半截不进模型上下文)。
+ */
+describe('流式中途失败的行为边界(0.10.0)', () => {
+  const T0 = Date.UTC(2026, 4, 15, 12, 0, 0);
+  const seed = { provider: 'deepseek', model: 'x' };
+
+  it('产出前失败(首 token 前,空响应)→ 命中白名单照常切换下一候选', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const { req, err } = setup();
+    const agent = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 1), agent: agent.agent },
+      async () => ({ ...seed }),
+    );
+    const out = await callListener(
+      err,
+      {
+        ...stepErr(1, 1, 'deepseek', 'EMPTY_RESPONSE'),
+        agent: agent.agent,
+      },
+      async () => undefined,
+    );
+    expect(agent.selections).toEqual([{ provider: 'openai', model: 'a' }]);
+    expect(out).toEqual({ kind: 'retry' });
+  });
+
+  it('产出后失败(流中途中断)→ 同路径照常切换,且插件不携带任何部分输出', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const { req, err } = setup();
+    const agent = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 1), agent: agent.agent },
+      async () => ({ ...seed }),
+    );
+    const out = await callListener(
+      err,
+      {
+        ...stepErr(1, 1, 'deepseek', 'TRANSPORT'),
+        agent: agent.agent,
+        failure: stubFailure(
+          'TRANSPORT',
+          'stream interrupted after partial output',
+        ),
+      },
+      async () => undefined,
+    );
+    // 与产出前失败同路径:白名单内照常切换到下一候选
+    expect(agent.selections).toEqual([{ provider: 'openai', model: 'a' }]);
+    // 返回值只有重试决策——插件不注入任何部分内容
+    expect(out).toEqual({ kind: 'retry' });
+    // 轨迹事件同样不带部分内容(插件无从获得,也不该臆造)
+    const retryEvent = agent.appends.find((e) => e.type === 'llm/retry');
+    expect(retryEvent).toBeDefined();
+    expect(Object.keys(retryEvent?.data ?? {})).not.toContain('content');
+  });
+
+  it('流失败码不在白名单(鉴权类)→ 不切换,原样透传给宿主', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const { req, err } = setup();
+    const agent = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 1), agent: agent.agent },
+      async () => ({ ...seed }),
+    );
+    const upstream = { kind: 'throw' };
+    const out = await callListener(
+      err,
+      { ...stepErr(1, 1, 'deepseek', 'AUTH'), agent: agent.agent },
+      async () => upstream,
+    );
+    expect(agent.selections).toEqual([]);
+    expect(out).toBe(upstream);
+  });
+});

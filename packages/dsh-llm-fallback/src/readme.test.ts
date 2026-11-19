@@ -115,6 +115,20 @@ describe('dsh-llm-fallback README', () => {
     expect(readme).toContain('从 1 起严格连续');
   });
 
+  it('流式中途失败边界小节锚定核心语义(同事件决策面/无流状态信号/从零重建/继续唤醒不采纳)', () => {
+    // 0.10.0 边界定稿:宿主把流式中途失败归一化走同一失败事件,失败对象
+    // 无流状态信号,插件不区分产出前/后、不臆造判定;重试由宿主从零重建。
+    expect(readme).toContain('## 流式中途失败的行为边界');
+    expect(readme).toContain('terminal finish chunk');
+    expect(readme).toContain('没有任何「流已开始 / 已产出内容」的信号');
+    expect(readme).toContain('不进模型上下文');
+    // 决策面边界:流管线外的裸 throw 不经失败事件(与产出前失败的区别)
+    expect(readme).toContain('流管线外的裸 `throw`');
+    // 「继续」唤醒评估:结论必须落档为不采纳
+    expect(readme).toContain('### 「继续」唤醒评估（本插件只评估，不纳入）');
+    expect(readme).toContain('**结论：不采纳**');
+  });
+
   it('perTurn 已实装:配置表与行为段写明单次切换档,已知限制不再声称未实装', () => {
     // 0.5.x 曾是半成品字段(schema 声明、解析存在、状态机未读);实装后
     // 文档若再出现"预留/未实装"即为文档漂移。

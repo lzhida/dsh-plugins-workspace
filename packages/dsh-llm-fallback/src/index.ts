@@ -617,6 +617,17 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
   // 6. 监听 agent/request-error:失败时按每候选重试预算(固定跟随官方
   //    provider retryPolicy)决定"再试当前候选"(透传官方)还是
   //    "切下一候选"(model.select 持久化,下一 step 生效)
+  //
+  //    流式中途失败边界(0.10.0 定稿,见 README「流式中途失败的行为
+  //    边界」):宿主把适配器/流迭代中途的失败归一化成 terminal finish
+  //    chunk(reason.kind='error'),由 agent-loop 落盘失败 attempt 后
+  //    派发本事件——插件看得到它,与首 token 前失败同路径。但宿主失败
+  //    对象 LlmFailure 只有 message/code/status?/providerRetryAfterMs?/
+  //    requestId?/offloadImages? 六个字段,没有"流已开始/已产出内容"
+  //    信号(失败路径上 usage 也被丢弃),插件因此无法区分产出前与产出后
+  //    失败,不对该粒度做臆造判定:两类失败都按同一套白名单+预算+
+  //    名额+链耗尽的门推进切换。重复内容担忧不成立:宿主重试请求从零
+  //    重建,失败半截落在 assistant/attempt 轨迹事件里,不进模型上下文。
   ctx.effect(() => {
     const dispose = ctx.on('agent/request-error', async (payload, next) => {
       const { turn, step, failure, signal } = payload;
