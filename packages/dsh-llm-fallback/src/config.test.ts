@@ -338,6 +338,36 @@ describe('resolveConfig', () => {
     ).toBe(DEFAULT_COOLDOWN_MS);
   });
 
+  it('熔断配置:cooldownBreakerEnabled 默认 true;封顶默认 30 分钟(≤0 回落);观察期默认 10 分钟(0 合法)', () => {
+    const d = resolveConfig({});
+    expect(d.cooldownBreakerEnabled).toBe(true);
+    expect(d.cooldownBreakerCapMs).toBe(1_800_000);
+    expect(d.cooldownStabilizationMs).toBe(600_000);
+    expect(
+      resolveConfig({ cooldownBreakerEnabled: false }).cooldownBreakerEnabled,
+    ).toBe(false);
+    expect(
+      resolveConfig({ cooldownBreakerCapMs: 1500 }).cooldownBreakerCapMs,
+    ).toBe(1500);
+    // 封顶不接受 0(递增档护栏必须有界)
+    expect(
+      resolveConfig({ cooldownBreakerCapMs: 0 }).cooldownBreakerCapMs,
+    ).toBe(1_800_000);
+    expect(
+      resolveConfig({ cooldownBreakerCapMs: -1 }).cooldownBreakerCapMs,
+    ).toBe(1_800_000);
+    // 观察期 0 合法(显式关闭迟滞 = 到期即恢复)
+    expect(
+      resolveConfig({ cooldownStabilizationMs: 0 }).cooldownStabilizationMs,
+    ).toBe(0);
+    expect(
+      resolveConfig({ cooldownStabilizationMs: -5 }).cooldownStabilizationMs,
+    ).toBe(600_000);
+    expect(
+      resolveConfig({ cooldownStabilizationMs: 2.9 }).cooldownStabilizationMs,
+    ).toBe(2);
+  });
+
   // ── 0.2.x → 0.3.0 schema 迁移(向后兼容) ─────────────────────────
 
   it('旧 string[] 输入("provider/model")自动归一为 object entries', () => {

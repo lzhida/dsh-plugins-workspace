@@ -38,7 +38,17 @@
  *   窗口耗尽失败(GLM 1308/1310、MiniMax 2056,详见 src/quota.ts 样本依据)
  *   冷却至报错携带的重置时间(带重置时间直接采用),无重置时间时用配额档
  *   `quotaCooldownMs`;普通失败(瞬时限流/服务器错误)维持 `cooldownMs`
- *   固定档,行为与旧版完全一致;所有延长结果被 `cooldownCapMs` 封顶
+ *   固定档,行为与旧版完全一致;配额类时长被 `cooldownCapMs` 封顶
+ * - `cooldownBreakerEnabled` / `cooldownBreakerCapMs` / `cooldownStabilizationMs`:
+ *   连续失败熔断递增(默认开,封顶 1800000ms = 30 分钟,观察期 600000ms =
+ *   10 分钟)——同一候选**已连续失败 N 次**后,冷却窗取 `cooldownMs × 2^N`
+ *   (首次失败仍是固定档,单次偶发失败零变化),封顶于 `cooldownBreakerCapMs`
+ *   (与 `cooldownCapMs` 分离:熔断是本地故障放大,不需要配额级上限;封顶
+ *   不会低于固定档——递增只让冷却变长);冷却窗到期进入稳定观察期,期间
+ *   该候选继续接流量作半开试探,再失败则窗口继续翻倍,安静度过即视为恢复
+ *   并清零计数(观察期 0 = 到期即恢复的旧语义)
+ * - 冷却档决策优先级(详见 src/quota.ts):配额族 → retry-after 对齐 →
+ *   熔断递增 → 固定档
  * - `retryableCodes`:视为可重试的失败码(白名单;默认对齐 dsh 宿主官方重试码
  *   `dsh-llm` 的 DEFAULT_RETRYABLE_CODES,并保留配额/上下文类超集)
  * - `perTurn`:同一 step(`turn:step`)内是否允许多次切换;`false` = 至多切换一次(one-shot)
@@ -148,11 +158,27 @@ export const DEFAULT_COOLDOWN_MS = 300_000;
 export const DEFAULT_QUOTA_COOLDOWN_MS = 18_000_000;
 
 /**
- * `cooldownCapMs` 的默认值:自适应冷却时长的硬上限,7 天——防解析异常把
- * 候选冻死(报错重置时间被解析到极远未来时被截断到这里,冷却到期后重新
- * 验证语义自然衔接:未恢复则再次冷却)。
+ * `cooldownCapMs` 的默认值:配额派生与 retry-after 自适应冷却时长的硬上限,7 天——防解析异常或上游异常长等待把
+ * 候选冻死(报错重置时间 / retry-after 被解析到极远未来时截断到这里,冷却到期后重新
+ * 验证语义自然衔接:未恢复则再次冷却)。熔断递增另由 cooldownBreakerCapMs 封顶。
  */
 export const DEFAULT_COOLDOWN_CAP_MS = 604_800_000;
+
+/**
+ * `cooldownBreakerCapMs` 的默认值:连续失败熔断递增窗口的独立封顶,30 分钟。
+ * 与 `cooldownCapMs`(自适应冷却总上限,7 天)分离:熔断是**本地**故障放大
+ * (同一候选连续失败 → 窗口指数递增),不需要配额级的周/月上限;两套封顶
+ * 各司其职,互不牵连。
+ */
+export const DEFAULT_COOLDOWN_BREAKER_CAP_MS = 1_800_000;
+
+/**
+ * `cooldownStabilizationMs` 的默认值:稳定观察期时长,10 分钟。
+ * 冷却窗到期后进入观察期(该候选继续接流量、半开试探):期间再失败 → 连败
+ * 计数 +1、窗口继续翻倍;观察期满且期间无失败 → 视为恢复,连败计数清零。
+ * `0` = 关闭观察期(= 到期即恢复的旧语义,此时熔断递增不再触发)。
+ */
+export const DEFAULT_COOLDOWN_STABILIZATION_MS = 600_000;
 
 /**
  * schemastery `meta.description` 的 i18n 映射形态。
@@ -387,6 +413,24 @@ export interface ResolvedConfig {
    * clamp 到它;非法(≤0/非有限)回落默认 7 天。
    */
   cooldownCapMs: number;
+  /**
+   * 连续失败熔断递增总开关(默认开):同一候选连续失败时,冷却窗口按
+   * `cooldownMs × 2^failures` 指数递增(首次失败仍为 1 倍,零回归);
+   * 关闭后冷却窗口恒为固定档(与旧版行为完全一致)。语义见 src/state.ts
+   * 的熔断三态与 src/quota.ts 的 breaker 决策档。
+   */
+  cooldownBreakerEnabled: boolean;
+  /**
+   * 熔断递增窗口的独立封顶(毫秒):递增结果被 clamp 到它;非法(≤0/
+   * 非有限)回落默认 30 分钟。与 `cooldownCapMs`(自适应冷却总上限)分离。
+   */
+  cooldownBreakerCapMs: number;
+  /**
+   * 稳定观察期时长(毫秒):冷却窗到期后进入观察期,期间再失败 → 连败
+   * 计数 +1、窗口继续翻倍;观察期满且期间无失败 → 视为恢复、计数清零。
+   * `0` = 关闭观察期(到期即恢复的旧语义)。
+   */
+  cooldownStabilizationMs: number;
   retryableCodes: ReadonlySet<string>;
   perTurn: boolean;
   /**
@@ -429,6 +473,9 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     quotaCooldownEnabled?: unknown;
     quotaCooldownMs?: unknown;
     cooldownCapMs?: unknown;
+    cooldownBreakerEnabled?: unknown;
+    cooldownBreakerCapMs?: unknown;
+    cooldownStabilizationMs?: unknown;
     retryableCodes?: unknown;
     perTurn?: unknown;
     timeWindowEnabled?: unknown;
@@ -493,6 +540,25 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     Number.isFinite(cooldownCapMsRaw) && cooldownCapMsRaw > 0
       ? Math.floor(cooldownCapMsRaw)
       : DEFAULT_COOLDOWN_CAP_MS;
+  // 连续失败熔断递增:总开关默认开;封顶非法(≤0/非有限)回落默认 30 分钟
+  // (递增档的护栏必须有界,与 cooldownCapMs 分离);观察期 0 合法(显式关闭
+  // 迟滞 = 到期即恢复的旧语义),负数/非有限回落默认 10 分钟。
+  const cooldownBreakerEnabled = raw.cooldownBreakerEnabled !== false; // 默认 true
+  const cooldownBreakerCapMsRaw = Number(
+    raw.cooldownBreakerCapMs ?? DEFAULT_COOLDOWN_BREAKER_CAP_MS,
+  );
+  const cooldownBreakerCapMs =
+    Number.isFinite(cooldownBreakerCapMsRaw) && cooldownBreakerCapMsRaw > 0
+      ? Math.floor(cooldownBreakerCapMsRaw)
+      : DEFAULT_COOLDOWN_BREAKER_CAP_MS;
+  const cooldownStabilizationMsRaw = Number(
+    raw.cooldownStabilizationMs ?? DEFAULT_COOLDOWN_STABILIZATION_MS,
+  );
+  const cooldownStabilizationMs =
+    Number.isFinite(cooldownStabilizationMsRaw) &&
+    cooldownStabilizationMsRaw >= 0
+      ? Math.floor(cooldownStabilizationMsRaw)
+      : DEFAULT_COOLDOWN_STABILIZATION_MS;
   const codesRaw = Array.isArray(raw.retryableCodes)
     ? (raw.retryableCodes as unknown[]).map((c) => String(c))
     : [...DEFAULT_RETRYABLE_CODES];
@@ -525,6 +591,9 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     quotaCooldownEnabled,
     quotaCooldownMs,
     cooldownCapMs,
+    cooldownBreakerEnabled,
+    cooldownBreakerCapMs,
+    cooldownStabilizationMs,
     retryableCodes,
     perTurn,
     timeWindow,
@@ -709,8 +778,8 @@ export const Config = Schema.object({
     setDescription(
       Schema.number().default(DEFAULT_QUOTA_COOLDOWN_MS),
       desc(
-        'Cooldown tier in ms for quota-type failures when the error carries no reset time (default 5h, aligned with the GLM/MiniMax usage-window period; 0 = disable extension, quota failures use the fixed cooldownMs tier); a reported reset time always wins and is capped by cooldownCapMs',
-        '配额型失败在报错无重置时间时的冷却档(毫秒,默认 5 小时,对齐 GLM/MiniMax 用量窗口周期;0 = 关闭延长,配额型同普通失败档);报错带重置时间时优先采用重置时间,并受 cooldownCapMs 封顶',
+        'Cooldown tier in ms for quota-type failures when the error carries no reset time (default 5h, aligned with the GLM/MiniMax usage-window period; 0 = disable quota extension, so quota failures fall through to retry-after / circuit-breaker / fixed cooldown); a reported reset time always wins within the quota tier and is capped by cooldownCapMs',
+        '配额型失败在报错无重置时间时的冷却档(毫秒,默认 5 小时,对齐 GLM/MiniMax 用量窗口周期;0 = 关闭配额延长,之后仍可走 retry-after / 熔断 / 固定冷却);报错带重置时间时优先采用配额档重置时间,并受 cooldownCapMs 封顶',
       ),
     ),
   ),
@@ -718,8 +787,35 @@ export const Config = Schema.object({
     setDescription(
       Schema.number().default(DEFAULT_COOLDOWN_CAP_MS),
       desc(
-        'Hard upper bound in ms for adaptive cooldown durations (a reset time parsed far into the future is clamped to this; when the cap expires the model is re-verified and re-cooled if still quota-limited; invalid values fall back to the 7-day default)',
-        '自适应冷却时长的硬上限(毫秒):报错重置时间被解析到极远未来时截断到这里,上限到期后重新验证、仍未恢复则再次冷却(非法值回落默认 7 天)',
+        'Hard upper bound in ms for quota-derived and retry-after cooldown durations (default 7 days; reset times or upstream waits parsed far into the future are clamped to this; circuit-breaker escalation uses its independent cap; invalid values fall back to the default)',
+        '配额派生与 retry-after 冷却时长的硬上限(毫秒,默认 7 天):报错重置时间或上游等待时间解析到极远未来时截断到这里;熔断递增使用独立封顶;非法值回落默认',
+      ),
+    ),
+  ),
+  cooldownBreakerEnabled: volatileField(
+    setDescription(
+      Schema.boolean().default(true),
+      desc(
+        'Circuit-breaker escalation: when the same candidate keeps failing, its cooldown window grows exponentially (cooldownMs × 2^failures — the first failure still uses the plain cooldownMs, so nothing changes for one-off failures). The window expires into a stabilization observation period: a further failure there doubles the window again, while a quiet observation period means the candidate is deemed recovered and the counter resets',
+        '连续失败熔断递增:同一候选反复失败时冷却窗口按指数增长(cooldownMs × 2^失败次数——首次失败仍是普通 cooldownMs,单次偶发失败零变化);窗口到期后进入稳定观察期,期间再失败则窗口继续翻倍,观察期安静度过即视为恢复并清零计数',
+      ),
+    ),
+  ),
+  cooldownBreakerCapMs: volatileField(
+    setDescription(
+      Schema.number().default(DEFAULT_COOLDOWN_BREAKER_CAP_MS),
+      desc(
+        'Independent upper bound in ms for the circuit-breaker escalated cooldown window (default 30 min; separate from cooldownCapMs, which governs quota-derived and retry-after durations; the bound never drops below the plain cooldownMs tier — escalation only ever lengthens a window; invalid values fall back to the default)',
+        '熔断递增窗口的独立封顶(毫秒,默认 30 分钟;与配额派生及 retry-after 时长所用的 cooldownCapMs 分离;封顶不会低于普通 cooldownMs 档——递增只让冷却变长;非法值回落默认)',
+      ),
+    ),
+  ),
+  cooldownStabilizationMs: volatileField(
+    setDescription(
+      Schema.number().default(DEFAULT_COOLDOWN_STABILIZATION_MS),
+      desc(
+        'Stabilization observation period in ms after a cooldown window expires (default 10 min): the candidate remains a half-open probe but is lower priority than other available candidates; another failure during the period doubles the window again, while a quiet period means recovery and resets the failure counter. 0 = no post-cooldown observation period; direct retries of the session model during its cooldown may still escalate',
+        '冷却窗口到期后的稳定观察期时长(毫秒,默认 10 分钟):候选仍可作为半开试探,但优先级低于其他可用候选;期间再失败则窗口继续翻倍,观察期安静度过即视为恢复并清零失败计数。0 = 冷却到期后不再观察;但冷却窗内会话指定模型直接重试仍可能递增',
       ),
     ),
   ),

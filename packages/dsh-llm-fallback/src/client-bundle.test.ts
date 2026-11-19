@@ -8,6 +8,11 @@ import {
   filteredCatalogGroups,
   modelMatches,
 } from '../client/src/lib/catalog.ts';
+import {
+  buildMutations,
+  isDirty,
+  readSavedSettings,
+} from '../client/src/lib/settings.ts';
 import { apply } from '../client/src/plugin.tsx';
 
 /** 读包目录下相对文件（产物 sanity 断言用）。 */
@@ -277,6 +282,63 @@ describe('模型搜索过滤纯函数', () => {
 
   it('无任何命中时返回空数组(UI 据此渲染空态文案)', () => {
     expect(filteredCatalogGroups(groups, '不存在的模型')).toEqual([]);
+  });
+});
+
+// ── 配置卡设置镜像（熔断三字段：宿主 schema ↔ client 读写面）────────
+
+describe('配置卡设置镜像（熔断三字段）', () => {
+  it('空快照按 schema 缺省显示熔断三字段（开关 true / 封顶 30 分钟 / 观察期 10 分钟）', () => {
+    const saved = readSavedSettings(null, 1);
+    expect(saved.cooldownBreakerEnabled).toBe(true);
+    expect(saved.cooldownBreakerCapMs).toBe(1_800_000);
+    expect(saved.cooldownStabilizationMs).toBe(600_000);
+  });
+
+  it('非法存储值归一（封顶 ≤0 回落默认；观察期负数回落默认、0 合法）', () => {
+    const saved = readSavedSettings(
+      {
+        cooldownBreakerEnabled: false,
+        cooldownBreakerCapMs: 0,
+        cooldownStabilizationMs: -1,
+      },
+      1,
+    );
+    expect(saved.cooldownBreakerEnabled).toBe(false);
+    expect(saved.cooldownBreakerCapMs).toBe(1_800_000);
+    expect(saved.cooldownStabilizationMs).toBe(600_000);
+    const zero = readSavedSettings({ cooldownStabilizationMs: 0 }, 1);
+    expect(zero.cooldownStabilizationMs).toBe(0);
+  });
+
+  it('保存载荷含熔断三字段(set op),脏检查对其敏感', () => {
+    const saved = readSavedSettings(null, 1);
+    const ops = buildMutations(saved);
+    const paths = ops.map((op) => op.path.join('.'));
+    expect(paths).toContain('cooldownBreakerEnabled');
+    expect(paths).toContain('cooldownBreakerCapMs');
+    expect(paths).toContain('cooldownStabilizationMs');
+    expect(ops.length).toBe(11);
+    const changed = readSavedSettings(
+      { ...saved, cooldownStabilizationMs: 0 },
+      1,
+    );
+    expect(isDirty(changed, saved)).toBe(true);
+    expect(isDirty(saved, saved)).toBe(false);
+  });
+
+  it('熔断三字段的中英文案齐备(配置卡不留裸键)', () => {
+    for (const key of [
+      'cooldownBreaker',
+      'cooldownBreakerHint',
+      'cooldownBreakerCapMs',
+      'cooldownBreakerCapMsHint',
+      'cooldownStabilizationMs',
+      'cooldownStabilizationMsHint',
+    ]) {
+      expect(DICT.zh[key], `zh.${key} 缺失`).toBeTruthy();
+      expect(DICT.en[key], `en.${key} 缺失`).toBeTruthy();
+    }
   });
 });
 

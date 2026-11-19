@@ -107,15 +107,19 @@ import { type ResolvedConfig, resolveConfig } from './config.ts';
 import { modelFallbackSection } from './protocol.ts';
 import { type CooldownDuration, resolveCooldownDuration } from './quota.ts';
 import {
+  type BreakerEntry,
   type FallbackState,
   type StepKey,
+  advanceBreaker,
   backoffDelayMs,
+  breakerFailures,
   cooldownKey,
   currentEffectiveCandidate,
   isFailureRetryable,
   markCooldown,
   nextCandidate,
   ourRetryChain,
+  purgeExpiredBreakers,
   resolveCandidateRetryPlan,
   stateFor,
   stepStateKey,
@@ -235,6 +239,15 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
   //     不再作为后续 step 的起点或推进目标;过期条目在标记时惰性清理。
   //     cooldownEnabled=false 时表保持为空、查询短路,行为与旧版完全一致。
   const cooldowns = new Map<string, number>();
+
+  // 4c. 连续失败熔断表(key = 'provider/model',value = { failures,
+  //     probationUntil })。与冷却表同生命周期(插件进程内存,宿主重启即
+  //     清零):记录每个候选的连续失败次数与稳定观察期到期时刻,供冷却
+  //     时长决策读出连败次数(窗口按 2^failures 递增)。三态时间基:
+  //     冷却窗内跳过 → 到期后半开试探(观察期)→ 观察期安静则恢复清零。
+  //     cooldownBreakerEnabled=false 时表保持为空、决策层不读不写,
+  //     行为与旧版完全一致。
+  const breakers = new Map<string, BreakerEntry>();
 
   /** 取出或惰性初始化该 step 的回退状态(从当前 chain 开始)。 */
   const getState = (key: StepKey): FallbackState =>
@@ -403,40 +416,72 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
       }
 
       // 预算耗尽 → 切下一候选(即使上游仍想重试也按配置覆盖)。
-      // 冷却感知扫描:跳过仍在冷却窗内的候选(它们在此前 step 失败过且
-      // 未到期),剩余候选全部在冷却中时降级回原顺序(见 nextCandidate)。
+      // 冷却与稳定观察期感知扫描:跳过仍在冷却窗内的候选,将稳定观察期内
+      // 的候选降为低优先级(有其它未冷却候选时先选它们);若其它候选都不可
+      // 用,仍允许半开试探。剩余候选全部在冷却中时降级回原顺序(见 nextCandidate)。
+      const now = Date.now();
+      const probationary =
+        cfg.cooldownBreakerEnabled && cfg.cooldownEnabled
+          ? new Set(
+              state.chain
+                .filter(
+                  (candidate) => breakerFailures(breakers, candidate, now) > 0,
+                )
+                .map(cooldownKey),
+            )
+          : undefined;
       const advance = nextCandidate(
         state,
         cfg.maxRetries,
         cfg.cooldownEnabled ? cooldowns : undefined,
-        Date.now(),
+        now,
+        probationary,
       );
       // 冷却标记:预算耗尽即认定失败方暂时不可用(无论随后是切换成功、
       // 退避被 abort 还是链耗尽)——白名单失败是既成事实,冷却窗内不再
       // 从它开始,窗口期满自动恢复优先级重新验证。失败方未知(极端时序
       // pageModel 缺失)或冷却禁用时不标记。
-      // 时长自适应(配额感知,决策逻辑见 src/quota.ts):配额型失败
-      // (订阅制用量窗口耗尽,GLM 1308/1310 / MiniMax 2056 等)冷却到
-      // 报错携带的重置时间,无重置时间用配额档 quotaCooldownMs;普通
-      // 失败维持 cooldownMs 固定档(与旧版行为一致)。延长发生时打日志
-      // (观察点),决策结果随下方切换事件写入轨迹(cooldownUntilMs /
+      // 时长自适应(决策优先级见 src/quota.ts):配额型失败先按 reported-reset /
+      // quota-window 冷却;非配额型限流按 retry-after 对齐;普通失败走熔断递增
+      // 或 cooldownMs 固定档。决策结果随下方切换事件写入轨迹(cooldownUntilMs /
       // cooldownSource 追加字段,读侧透传安全)。
       let cooldown: CooldownDuration | undefined;
       if (cfg.cooldownEnabled) {
         const failed = currentEffectiveCandidate(state);
         if (failed) {
-          const now = Date.now();
+          // 惰性清理已过观察期的熔断条目(观察期满 = 已恢复,连败计数归零)。
+          if (cfg.cooldownBreakerEnabled) purgeExpiredBreakers(breakers, now);
           cooldown = resolveCooldownDuration(failure, {
             cooldownMs: cfg.cooldownMs,
             quotaEnabled: cfg.quotaCooldownEnabled,
             quotaCooldownMs: cfg.quotaCooldownMs,
             cooldownCapMs: cfg.cooldownCapMs,
+            // 限流对齐:非配额型失败采用 provider 报告的 retry-after(ms),
+            // 配额族始终优先,避免短 retry-after 绕过较长的配额窗口保护。
+            retryAfterMs: failure.providerRetryAfterMs,
+            // 熔断递增:读该候选的连败次数(观察期已满 → 0,视为已恢复)。
+            breakerEnabled: cfg.cooldownBreakerEnabled,
+            breakerFailures: cfg.cooldownBreakerEnabled
+              ? breakerFailures(breakers, failed, now)
+              : 0,
+            breakerCapMs: cfg.cooldownBreakerCapMs,
             now,
           });
           markCooldown(cooldowns, failed, now, cooldown.durationMs);
+          // 熔断计数推进:本次失败计入连败,观察期从本次冷却到期起算
+          // (窗口到期后半开试探,期间再失败 → 窗口继续翻倍)。
+          if (cfg.cooldownBreakerEnabled) {
+            advanceBreaker(
+              breakers,
+              failed,
+              now,
+              cooldown.untilMs,
+              cfg.cooldownStabilizationMs,
+            );
+          }
           if (cooldown.source !== 'default') {
             console.log(
-              `[${name}] quota-aware cooldown for ${failed}: ${cooldown.durationMs}ms (${cooldown.source}, until ${new Date(cooldown.untilMs).toISOString()})`,
+              `[${name}] cooldown for ${failed}: ${cooldown.durationMs}ms (${cooldown.source}, until ${new Date(cooldown.untilMs).toISOString()})`,
             );
           }
         }

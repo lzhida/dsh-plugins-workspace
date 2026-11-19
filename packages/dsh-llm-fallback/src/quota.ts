@@ -46,9 +46,13 @@ export interface CooldownDuration {
   /**
    * 决策来源:`default` = 普通失败档(固定 cooldownMs);`quota-window` =
    * 配额型但报错无重置时间(固定 quotaCooldownMs);`reported-reset` =
-   * 报错携带的重置时间(直接采用,经 cap 封顶)。
+   * 报错携带的重置时间(直接采用,经 cap 封顶);`retry-after` = 服务端
+   * 结构化 retry-after 要求(限流对齐,优先于熔断/固定档,配额型除外);
+   * `breaker` = 连续失败熔断递增档(cooldownMs × 2^failures,经
+   * breakerCapMs 封顶)。
    */
-  source: 'default' | 'quota-window' | 'reported-reset';
+  source:
+    'default' | 'quota-window' | 'reported-reset' | 'retry-after' | 'breaker';
   /** 冷却到期绝对时间戳(= 决策时刻 now + durationMs;供轨迹事件展示)。 */
   untilMs: number;
 }
@@ -65,6 +69,33 @@ export interface CooldownDurationOptions {
   cooldownCapMs: number;
   /** 决策时刻(毫秒时间戳,测试可注入)。 */
   now: number;
+  /**
+   * 服务端要求的等待时长(毫秒;`LlmFailure.providerRetryAfterMs`,> 0
+   * 生效)——限流对齐档:它是服务端**明确要求**的等待时长,权威于本地
+   * 猜测档(熔断递增/固定档);仍受 cooldownCapMs 封顶(总上限是用户显式
+   * 配置,守护所有来源)。**优先级在配额族之后**:配额型失败已由配额档
+   * 接管,短 retry-after 不得把数小时的配额保护压成秒级。
+   */
+  retryAfterMs?: number;
+  /**
+   * 熔断递增:该候选**已发生**的连续失败次数(state.ts advanceBreaker
+   * 维护,观察期已满则读为 0)。`> 0` 时本次窗口 = cooldownMs ×
+   * 2^failures(已失败 1 次 → 2 倍,2 次 → 4 倍);从无失败(0)起算的
+   * 第一次失败仍走固定档(1 倍,零回归)。
+   */
+  breakerFailures?: number;
+  /**
+   * 熔断递增总开关(cooldownBreakerEnabled);`false` 跳过递增档。
+   * 缺省为开启(与配置层默认一致),只有显式 false 才关闭。
+   */
+  breakerEnabled?: boolean;
+  /**
+   * 熔断递增结果独立封顶(毫秒);非法(非有限/≤ 0)→ 不封顶。
+   * 注:配置层(resolveConfig)已把非法值归一到默认 30 分钟,故线上不会
+   * 出现"无封顶";此处的不封顶仅为纯函数层的兜底口径。封顶不生效于
+   * 低于固定档的值——递增只会让冷却变长,绝不缩短。
+   */
+  breakerCapMs?: number;
 }
 
 /**
@@ -247,13 +278,23 @@ export function parseResetTimeMs(message: string, now: number): number | null {
 /**
  * 按失败内容决策一次冷却的时长(记冷却前的唯一决策点)。
  *
- * - 非配额型(或配额延长关闭/配额档为 0)→ `cooldownMs` 固定档(default,
- *   与旧版行为完全一致);
- * - 配额型 + 报错带重置时间 → `resetAt - now`(reported-reset);
- * - 配额型无重置时间 → `quotaCooldownMs` 固定档(quota-window);
- * - 所有结果 clamp:`> 0` 且 `≤ cooldownCapMs`(cap > 0 时)——防解析
- *   异常把候选冻死;cap 内的周/月级重置时间被截断到 cap,冷却到期后
- *   重新验证语义自然衔接(未恢复则再次冷却)。
+ * 决策优先级(前者覆盖后者):
+ * 1. **配额型失败** → 报错带重置时间则采用(resetAt - now,reported-reset);
+ *    否则用 `quotaCooldownMs` 固定档(quota-window)。配额保护优先于
+ *    retry-after 对齐:配额窗口动辄数小时,短 retry-after 压过它会让
+ *    冷却骤降到秒级,等于绕过配额保护反复重试已耗尽的机器。
+ * 2. **服务端 retry-after**(`retryAfterMs` > 0)→ 直接采用(retry-after):
+ *    服务端明确要求的等待时长,权威于本地猜测档;仅受 cooldownCapMs
+ *    总上限封顶。仅对非配额型失败生效。
+ * 3. **熔断递增**(开关开且已发生连败次数 > 0)→ `cooldownMs × 2^failures`
+ *    (breaker),经 `breakerCapMs` 独立封顶(封顶不低于固定档,递增只会
+ *    让冷却变长);连败次数为 0(首次失败 / 观察期已满视为恢复)时不走
+ *    此档——窗口与固定档同值,零回归。
+ * 4. **普通失败** → `cooldownMs` 固定档(default,与旧版行为完全一致)。
+ *
+ * 配额派生与 retry-after 结果 clamp:`> 0` 且 `≤ cooldownCapMs`(cap > 0 时);熔断档使用独立 breakerCapMs(有效封顶不低于固定档)——防解析异常把
+ * 候选冻死;cap 内的周/月级重置时间被截断到 cap,冷却到期后重新验证
+ * 语义自然衔接(未恢复则再次冷却)。
  */
 export function resolveCooldownDuration(
   failure: LlmFailure,
@@ -267,6 +308,10 @@ export function resolveCooldownDuration(
   const clamp = (ms: number): number =>
     Math.min(Math.max(0, Math.floor(ms)), capMs);
 
+  // 1) 配额族:配额型失败(QUOTA/ACCOUNT_QUOTA 码,或 RATE_LIMIT + 配额
+  //    措辞)优先走配额档——配额保护优先于 retry-after 对齐:配额窗口
+  //    动辄数小时,若让一个短 retry-after 压过它,冷却会从 5 小时骤降到
+  //    秒级,等于绕过配额保护反复重试一台已耗尽的机器。
   const quotaLike =
     opts.quotaEnabled &&
     opts.quotaCooldownMs > 0 &&
@@ -292,6 +337,62 @@ export function resolveCooldownDuration(
       };
     }
   }
+
+  // 2) 限流对齐:服务端结构化 retry-after 对齐服务端给出的等待时间,
+  //    优先于本地猜测档(熔断/固定)。仅在非配额型失败上生效(配额型已
+  //    被上一档接管),避免绕过配额保护。
+  const retryAfterMs = opts.retryAfterMs;
+  if (
+    typeof retryAfterMs === 'number' &&
+    Number.isFinite(retryAfterMs) &&
+    retryAfterMs > 0
+  ) {
+    const durationMs = clamp(retryAfterMs);
+    if (durationMs > 0) {
+      return {
+        durationMs,
+        source: 'retry-after',
+        untilMs: now + durationMs,
+      };
+    }
+  }
+
+  // 3) 熔断递增:同候选连续失败 → 冷却窗口指数递增(2^failures,failures
+  //    = 已发生的连续失败次数),由 breakerCapMs 独立封顶(与配额档的
+  //    cooldownCapMs 分离:熔断是本地故障放大,不需要配额级的周/月
+  //    上限)。已失败次数为 0(首次失败/观察期已恢复)时不走此分支——
+  //    窗口与固定档相同,保持 default 来源(零回归)。
+  const failures =
+    typeof opts.breakerFailures === 'number' &&
+    Number.isFinite(opts.breakerFailures)
+      ? Math.floor(opts.breakerFailures)
+      : 0;
+  if (opts.breakerEnabled !== false && failures > 0) {
+    const base = Math.max(0, Math.floor(opts.cooldownMs));
+    const breakerCapMs =
+      typeof opts.breakerCapMs === 'number' &&
+      Number.isFinite(opts.breakerCapMs) &&
+      opts.breakerCapMs > 0
+        ? Math.floor(opts.breakerCapMs)
+        : Number.POSITIVE_INFINITY;
+    // 封顶不得低于固定档:用户把 cooldownMs 配得比 breakerCapMs 还长
+    // 时(如 1h vs 30min),递增结果若被封到 30min 反而比固定档更短——
+    // 递增只会让冷却变长、绝不缩短,故有效封顶取两者较大值。
+    const effectiveCap = Math.max(breakerCapMs, base);
+    const escalated = base * 2 ** failures;
+    const durationMs = Math.min(
+      Math.max(0, Math.floor(escalated)),
+      effectiveCap,
+    );
+    if (durationMs > 0) {
+      return {
+        durationMs,
+        source: 'breaker',
+        untilMs: now + durationMs,
+      };
+    }
+  }
+
   const durationMs = clamp(opts.cooldownMs);
   return { durationMs, source: 'default', untilMs: now + durationMs };
 }

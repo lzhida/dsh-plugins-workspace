@@ -72,11 +72,17 @@ API Key 提供商为 `deepseek-official`（`dsh-llm-deepseek-api-key`）。
 - [ ] **参数适配**——切换候选时连带调整 `reasoningEffort` / `maxTokens`
       （弱模型配高推理档常白烧 token）。先例：无直接对照，dsh 特有机会
       （proposedConfig 字段可写）。机制依托：链条项加 per-candidate 覆盖字段。
-- [ ] **熔断升级**——连续失败时冷却时长指数递增 + 半开试探。先例：LiteLLM
+- [x] **熔断升级**——连续失败时冷却时长指数递增 + 半开试探。先例：LiteLLM
       `cooldown_time` / `allowed_fails_policy`。机制依托：`markCooldown` 的窗口计算参数化。
-- [ ] **限流对齐**——`RATE_LIMIT` 失败时读 retry-after / 响应体，冷却到期时间
+      （✅ 实装，2026-11-19；连续失败计数 × `2^N` 递增，独立封顶
+      `cooldownBreakerCapMs`，冷却期满进稳定观察期 `cooldownStabilizationMs`，
+      观察期安静度过才恢复优先级——宿主无成功事件，恢复为时间基近似）
+- [x] **限流对齐**——`RATE_LIMIT` 失败时读 retry-after / 响应体，冷却到期时间
       对齐服务端要求而非固定值。先例：LiteLLM retry policy。
       数据面：需先验证 `LlmFailure` 是否携带响应细节。
+      （✅ 实装，2026-11-19；数据面已验证：宿主 `LlmFailure.providerRetryAfterMs`
+      由 deepseek 路由填充（秒数 / HTTP 日期两种格式），pi-ai 路由缺失该字段
+      → 优雅降级）
 - [ ] **会话粘性**——同会话已验证可用的候选，后续 step 不回会话指定模型重新验证
       （省首字延迟与失败成本）。先例：LiteLLM session affinity。
       风险：与「新 step 从会话指定模型重启」的基准语义需做开关兼容。

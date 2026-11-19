@@ -78,9 +78,12 @@ export interface LlmRetryEventData {
   /**
    * 冷却时长决策来源(本插件追加字段;见 src/quota.ts resolveCooldownDuration):
    * `default` = 普通失败固定档;`quota-window` = 配额型无重置时间的配额档;
-   * `reported-reset` = 报错携带的重置时间。与 cooldownUntilMs 同现。
+   * `reported-reset` = 报错携带的重置时间;`retry-after` = 服务端结构化
+   * retry-after 要求(限流对齐);`breaker` = 连续失败熔断递增档。
+   * 与 cooldownUntilMs 同现。
    */
-  cooldownSource?: 'default' | 'quota-window' | 'reported-reset';
+  cooldownSource?:
+    'default' | 'quota-window' | 'reported-reset' | 'retry-after' | 'breaker';
 }
 
 /** 官方 `llm/retry-started` 事件的 payload:退避完成、切换即将生效。 */

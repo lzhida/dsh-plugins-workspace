@@ -33,14 +33,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { apply } from './index.ts';
 import {
+  type BreakerEntry,
   type Candidate,
   type FallbackState,
+  advanceBreaker,
+  breakerFailures,
   cooldownKey,
   currentEffectiveCandidate,
   firstAvailableCandidateIndex,
   isCoolingDown,
   markCooldown,
   nextCandidate,
+  purgeExpiredBreakers,
   purgeExpiredCooldowns,
 } from './state.ts';
 import { modelFallbackSection } from './protocol.ts';
@@ -139,7 +143,10 @@ function stubAgent(
   },
 ): {
   agent: {
-    session: { id: string; append: () => void };
+    session: {
+      id: string;
+      append: (type: string, data: Record<string, unknown>) => void;
+    };
     model: {
       current: () => { provider: string; model: string } | undefined;
       select: (sel: {
@@ -154,16 +161,24 @@ function stubAgent(
     model: string;
     reasoningEffort?: unknown;
   }>;
+  /** 轨迹事件(官方 llm/retry / llm/retry-started)的写入记录。 */
+  appends: Array<{ type: string; data: Record<string, unknown> }>;
 } {
   const selections: Array<{
     provider: string;
     model: string;
     reasoningEffort?: unknown;
   }> = [];
+  const appends: Array<{ type: string; data: Record<string, unknown> }> = [];
   let currentSelection: { provider: string; model: string } | undefined =
     initial;
   const agent = {
-    session: { id: 'sess-cd', append: (): void => {} },
+    session: {
+      id: 'sess-cd',
+      append: (type: string, data: Record<string, unknown>): void => {
+        appends.push({ type, data });
+      },
+    },
     model: {
       current: (): { provider: string; model: string } | undefined =>
         currentSelection,
@@ -177,7 +192,7 @@ function stubAgent(
       },
     },
   };
-  return { agent, selections };
+  return { agent, selections, appends };
 }
 
 const sig = (): AbortSignal => new AbortController().signal;
@@ -405,6 +420,20 @@ describe('nextCandidate 冷却感知扫描', () => {
     expect(nextCandidate(s, 10, table, 1000)).toEqual({ index: 0, retries: 1 });
   });
 
+  it('稳定观察期候选降为低优先级,先选后续未冷却候选;没有其它候选时仍可半开试探', () => {
+    const s = initState(chain, page);
+    const probationary = new Set([cooldownKey(chain[0]!)]);
+    expect(nextCandidate(s, 10, new Map(), 1000, probationary)).toEqual({
+      index: 1,
+      retries: 1,
+    });
+    const onlyProbe = new Set(chain.map(cooldownKey));
+    expect(nextCandidate(s, 10, new Map(), 1000, onlyProbe)).toEqual({
+      index: 0,
+      retries: 1,
+    });
+  });
+
   it('不传冷却表时行为与旧版完全一致(向后兼容)', () => {
     const s = initState(chain, page);
     expect(nextCandidate(s, 10)).toEqual({ index: 0, retries: 1 });
@@ -510,7 +539,7 @@ describe('失败冷却(apply 集成)', () => {
     expect(next.selections).toEqual([{ provider: 'anthropic', model: 'b' }]);
   });
 
-  it('冷却期满后模型自动恢复优先级:失败推进不再跳过到期候选', async () => {
+  it('冷却期满后观察期候选降为低优先级,观察期结束后恢复原优先级', async () => {
     vi.useFakeTimers();
     const { req, err } = setup();
     const seed = { provider: 'deepseek', model: 'x' };
@@ -540,7 +569,8 @@ describe('失败冷却(apply 集成)', () => {
       ),
     ).toEqual({ kind: 'retry' });
     expect(second.selections).toEqual([{ provider: 'anthropic', model: 'b' }]);
-    // 窗口期满(默认 300000ms):到期候选恢复优先级——推进回到链首 openai/a
+    // 冷却窗到期后进入观察期:openai/a 仍可半开试探,但低于未观察的
+    // anthropic/b;此时优先推进 anthropic/b。
     vi.setSystemTime(Date.now() + 300_000 + 1);
     const third = stubAgent();
     expect(
@@ -550,7 +580,18 @@ describe('失败冷却(apply 集成)', () => {
         async () => undefined,
       ),
     ).toEqual({ kind: 'retry' });
-    expect(third.selections).toEqual([{ provider: 'openai', model: 'a' }]);
+    expect(third.selections).toEqual([{ provider: 'anthropic', model: 'b' }]);
+    // 再越过 10 分钟稳定观察期后,openai/a 恢复普通优先级。
+    vi.setSystemTime(Date.now() + 600_000 + 1);
+    const fourth = stubAgent();
+    expect(
+      await callListener(
+        err,
+        { ...stepErr(1, 4, 'deepseek'), agent: fourth.agent },
+        async () => undefined,
+      ),
+    ).toEqual({ kind: 'retry' });
+    expect(fourth.selections).toEqual([{ provider: 'openai', model: 'a' }]);
   });
 
   it('剩余候选全部在冷却中:新 step 保持 seed 原样,失败后降级按原顺序切换', async () => {
@@ -732,5 +773,466 @@ describe('protocol section 冷却说明', () => {
     expect(s.text).toContain('cooldown');
     expect(s.text).toContain('re-verified');
     expect(s.text).toContain('efficiency');
+  });
+});
+
+// ── 6. 连续失败熔断(breaker):纯函数 + apply 集成 ────────────────────
+
+describe('熔断状态(breaker)纯函数', () => {
+  const CAND: Candidate = { provider: 'openai', model: 'a' };
+
+  it('首次失败:连败计数为 1,观察期自本次冷却到期起算', () => {
+    const breakers = new Map<string, BreakerEntry>();
+    advanceBreaker(breakers, CAND, 1_000, 61_000, 600_000);
+    expect(breakers.get('openai/a')).toEqual({
+      failures: 1,
+      probationUntil: 661_000,
+    });
+  });
+
+  it('观察期内再失败:连败计数 +1(窗口继续翻倍)', () => {
+    const breakers = new Map<string, BreakerEntry>();
+    advanceBreaker(breakers, CAND, 1_000, 61_000, 600_000);
+    advanceBreaker(breakers, CAND, 30_000, 90_000, 600_000);
+    expect(breakers.get('openai/a')).toEqual({
+      failures: 2,
+      probationUntil: 690_000,
+    });
+  });
+
+  it('观察期已满再失败:连败计数重开为 1(视为已恢复)', () => {
+    const breakers = new Map<string, BreakerEntry>();
+    advanceBreaker(breakers, CAND, 1_000, 61_000, 600_000);
+    advanceBreaker(breakers, CAND, 700_000, 760_000, 600_000);
+    expect(breakers.get('openai/a')?.failures).toBe(1);
+  });
+
+  it('breakerFailures:观察期内返回计数,观察期满归零,无记录为 0', () => {
+    const breakers = new Map<string, BreakerEntry>();
+    expect(breakerFailures(breakers, CAND, 1_000)).toBe(0);
+    advanceBreaker(breakers, CAND, 1_000, 61_000, 600_000);
+    expect(breakerFailures(breakers, CAND, 30_000)).toBe(1);
+    expect(breakerFailures(breakers, CAND, 700_000)).toBe(0);
+  });
+
+  it('观察期时长为 0:冷却窗内的直接重试仍算连败,冷却到期后立即清零', () => {
+    const breakers = new Map<string, BreakerEntry>();
+    advanceBreaker(breakers, CAND, 1_000, 61_000, 0);
+    expect(breakerFailures(breakers, CAND, 30_000)).toBe(1);
+    // 会话指定模型不受候选冷却跳过约束,若冷却窗内又失败仍可递增。
+    advanceBreaker(breakers, CAND, 30_000, 90_000, 0);
+    expect(breakers.get('openai/a')?.failures).toBe(2);
+    // 冷却窗届满即恢复(无额外观察期),下一次失败重新从 1 起算。
+    expect(breakerFailures(breakers, CAND, 90_000)).toBe(0);
+    advanceBreaker(breakers, CAND, 90_000, 150_000, 0);
+    expect(breakers.get('openai/a')?.failures).toBe(1);
+  });
+
+  it('purgeExpiredBreakers 只删观察期已满的条目', () => {
+    const breakers = new Map<string, BreakerEntry>();
+    advanceBreaker(breakers, CAND, 1_000, 61_000, 600_000);
+    advanceBreaker(breakers, { provider: 'b', model: 'x' }, 1_000, 900_000, 0);
+    purgeExpiredBreakers(breakers, 700_000);
+    expect(breakers.has('openai/a')).toBe(false);
+    expect(breakers.has('b/x')).toBe(true);
+  });
+});
+
+describe('熔断递增(apply 集成)', () => {
+  const T0 = Date.UTC(2026, 4, 15, 12, 0, 0);
+  const seed = { provider: 'deepseek', model: 'x' };
+
+  /** 冷却来源日志(apply 只在 source !== 'default' 时打印)。 */
+  function cooldownLogs(): string[] {
+    return vi.mocked(console.log).mock.calls.map((call) => String(call[0]));
+  }
+
+  /** 推进到指定时刻并让主模型再失败一次(新 step + 全新会话 agent)。 */
+  async function failAgain(
+    req: unknown,
+    err: unknown,
+    turn: number,
+    step: number,
+    at: number,
+  ): Promise<void> {
+    vi.setSystemTime(at);
+    const agent = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(turn, step), agent: agent.agent },
+      async () => ({
+        ...seed,
+      }),
+    );
+    await callListener(
+      err,
+      { ...stepErr(turn, step, 'deepseek'), agent: agent.agent },
+      async () => undefined,
+    );
+  }
+
+  it('同一候选连续失败:冷却窗口按 2^失败次数 指数递增', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const { req, err } = setup({
+      cooldownMs: 1000,
+      cooldownStabilizationMs: 10_000,
+    });
+    const agent = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 1), agent: agent.agent },
+      async () => ({
+        ...seed,
+      }),
+    );
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'deepseek'), agent: agent.agent },
+      async () => undefined,
+    );
+    // 首次失败仍是普通冷却档(零回归,不产生 breaker 日志)
+    expect(cooldownLogs().some((l) => l.includes('(breaker'))).toBe(false);
+    // 冷却窗已到期但仍在观察期内 → 第 2 次失败窗口翻倍(2×)
+    await failAgain(req, err, 1, 2, T0 + 1500);
+    expect(
+      cooldownLogs().some(
+        (l) => l.includes('(breaker') && l.includes('2000ms'),
+      ),
+    ).toBe(true);
+    // 观察期内第 3 次失败 → 窗口 4×
+    await failAgain(req, err, 1, 3, T0 + 2000);
+    expect(cooldownLogs().some((l) => l.includes('4000ms'))).toBe(true);
+  });
+
+  it('熔断窗口按 cooldownBreakerCapMs 独立封顶', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const { req, err } = setup({
+      cooldownMs: 1000,
+      cooldownStabilizationMs: 10_000,
+      cooldownBreakerCapMs: 1500,
+    });
+    const agent = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 1), agent: agent.agent },
+      async () => ({
+        ...seed,
+      }),
+    );
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'deepseek'), agent: agent.agent },
+      async () => undefined,
+    );
+    // 2 倍窗口(2000ms)被封到 1500ms
+    await failAgain(req, err, 1, 2, T0 + 1500);
+    expect(
+      cooldownLogs().some(
+        (l) => l.includes('(breaker') && l.includes('1500ms'),
+      ),
+    ).toBe(true);
+  });
+
+  it('观察期安静度过视为恢复:下一次失败回落固定窗口', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const { req, err } = setup({
+      cooldownMs: 1000,
+      cooldownStabilizationMs: 10_000,
+    });
+    const agent = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 1), agent: agent.agent },
+      async () => ({
+        ...seed,
+      }),
+    );
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'deepseek'), agent: agent.agent },
+      async () => undefined,
+    );
+    // 越过观察期(冷却到期 + 10s)再失败 → 连败计数已清零,回落固定档
+    await failAgain(req, err, 1, 2, T0 + 20_000);
+    expect(cooldownLogs().some((l) => l.includes('(breaker'))).toBe(false);
+  });
+
+  it('熔断总开关关闭时窗口恒为固定档(行为与旧版一致)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const { req, err } = setup({
+      cooldownMs: 1000,
+      cooldownStabilizationMs: 10_000,
+      cooldownBreakerEnabled: false,
+    });
+    const agent = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 1), agent: agent.agent },
+      async () => ({
+        ...seed,
+      }),
+    );
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'deepseek'), agent: agent.agent },
+      async () => undefined,
+    );
+    await failAgain(req, err, 1, 2, T0 + 1500);
+    expect(cooldownLogs().some((l) => l.includes('(breaker'))).toBe(false);
+  });
+
+  it('限流对齐:provider 报告 retry-after 时冷却对齐服务端要求', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const { req, err } = setup({ cooldownMs: 1000 });
+    const agent = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 1), agent: agent.agent },
+      async () => ({
+        ...seed,
+      }),
+    );
+    await callListener(
+      err,
+      {
+        ...stepErr(1, 1, 'deepseek'),
+        failure: { ...stubFailure('RATE_LIMIT'), providerRetryAfterMs: 45_000 },
+        agent: agent.agent,
+      },
+      async () => undefined,
+    );
+    expect(
+      cooldownLogs().some(
+        (l) => l.includes('(retry-after') && l.includes('45000ms'),
+      ),
+    ).toBe(true);
+  });
+
+  // ── 轨迹断言(不只断言日志字符串:冷却决策直接进轨迹事件)────────────
+
+  /** 取轨迹里最后一条 llm/retry 事件的冷却字段。 */
+  function lastCooldown(
+    appends: Array<{ type: string; data: Record<string, unknown> }>,
+  ): { source?: unknown; untilMs?: unknown } {
+    const events = appends.filter((a) => a.type === 'llm/retry');
+    const last = events[events.length - 1];
+    return {
+      source: last?.data.cooldownSource,
+      untilMs: last?.data.cooldownUntilMs,
+    };
+  }
+
+  it('轨迹事件携带熔断档来源与到期时间(断言实际冷却时长)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const { req, err } = setup({
+      cooldownMs: 1000,
+      cooldownStabilizationMs: 10_000,
+    });
+    const first = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 1), agent: first.agent },
+      async () => ({ ...seed }),
+    );
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'deepseek'), agent: first.agent },
+      async () => undefined,
+    );
+    // 首次失败:固定档(source=default),到期 = 失败时刻 + 1000ms
+    expect(lastCooldown(first.appends)).toEqual({
+      source: 'default',
+      untilMs: T0 + 1000,
+    });
+
+    // 观察期内再失败:熔断档 2 倍(2000ms),到期 = 失败时刻 + 2000ms
+    const at = T0 + 1500;
+    vi.setSystemTime(at);
+    const second = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 2), agent: second.agent },
+      async () => ({ ...seed }),
+    );
+    await callListener(
+      err,
+      { ...stepErr(1, 2, 'deepseek'), agent: second.agent },
+      async () => undefined,
+    );
+    expect(lastCooldown(second.appends)).toEqual({
+      source: 'breaker',
+      untilMs: at + 2000,
+    });
+  });
+
+  it('熔断档不受 cooldownCapMs 总上限截断(轨迹到期时间为递增档时长)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const { req, err } = setup({
+      cooldownMs: 1000,
+      cooldownCapMs: 100, // 故意配得极小:固定档会被截到 100ms
+      cooldownStabilizationMs: 10_000,
+    });
+    const first = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 1), agent: first.agent },
+      async () => ({ ...seed }),
+    );
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'deepseek'), agent: first.agent },
+      async () => undefined,
+    );
+    // 固定档受总上限截断 → 100ms
+    expect(lastCooldown(first.appends)).toEqual({
+      source: 'default',
+      untilMs: T0 + 100,
+    });
+
+    const at = T0 + 1500;
+    vi.setSystemTime(at);
+    const second = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 2), agent: second.agent },
+      async () => ({ ...seed }),
+    );
+    await callListener(
+      err,
+      { ...stepErr(1, 2, 'deepseek'), agent: second.agent },
+      async () => undefined,
+    );
+    // 熔断档只受自己的 breakerCapMs 约束 → 2000ms(不被 100ms 截断)
+    expect(lastCooldown(second.appends)).toEqual({
+      source: 'breaker',
+      untilMs: at + 2000,
+    });
+  });
+
+  it('retry-after 压过熔断档(轨迹来源为 retry-after)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const { req, err } = setup({
+      cooldownMs: 1000,
+      cooldownStabilizationMs: 10_000,
+    });
+    const first = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 1), agent: first.agent },
+      async () => ({ ...seed }),
+    );
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'deepseek'), agent: first.agent },
+      async () => undefined,
+    );
+    const at = T0 + 1500;
+    vi.setSystemTime(at);
+    const second = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 2), agent: second.agent },
+      async () => ({ ...seed }),
+    );
+    await callListener(
+      err,
+      {
+        ...stepErr(1, 2, 'deepseek'),
+        failure: { ...stubFailure('RATE_LIMIT'), providerRetryAfterMs: 45_000 },
+        agent: second.agent,
+      },
+      async () => undefined,
+    );
+    expect(lastCooldown(second.appends)).toEqual({
+      source: 'retry-after',
+      untilMs: at + 45_000,
+    });
+  });
+
+  it('配额型失败走配额档(轨迹来源为 quota-window,不落熔断档)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const { req, err } = setup({
+      cooldownMs: 1000,
+      cooldownStabilizationMs: 10_000,
+    });
+    const agent = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 1), agent: agent.agent },
+      async () => ({ ...seed }),
+    );
+    await callListener(
+      err,
+      {
+        ...stepErr(1, 1, 'deepseek'),
+        failure: stubFailure('QUOTA', 'usage limit exceeded'),
+        agent: agent.agent,
+      },
+      async () => undefined,
+    );
+    expect(lastCooldown(agent.appends)).toEqual({
+      source: 'quota-window',
+      untilMs: T0 + 18_000_000,
+    });
+  });
+
+  it('冷却关闭时轨迹不携带冷却字段(与旧版一致)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const { req, err } = setup({ cooldownEnabled: false });
+    const agent = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 1), agent: agent.agent },
+      async () => ({ ...seed }),
+    );
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'deepseek'), agent: agent.agent },
+      async () => undefined,
+    );
+    expect(lastCooldown(agent.appends)).toEqual({
+      source: undefined,
+      untilMs: undefined,
+    });
+  });
+
+  it('配额延长关闭时配额型失败落熔断档(不再走配额档)', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const { req, err } = setup({
+      cooldownMs: 1000,
+      quotaCooldownEnabled: false,
+      cooldownStabilizationMs: 10_000,
+    });
+    const agent = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 1), agent: agent.agent },
+      async () => ({ ...seed }),
+    );
+    await callListener(
+      err,
+      {
+        ...stepErr(1, 1, 'deepseek'),
+        failure: stubFailure('QUOTA', 'usage limit exceeded'),
+        agent: agent.agent,
+      },
+      async () => undefined,
+    );
+    // 配额延长关闭 → 配额型不再走配额档;首次失败落固定档
+    expect(lastCooldown(agent.appends)).toEqual({
+      source: 'default',
+      untilMs: T0 + 1000,
+    });
   });
 });

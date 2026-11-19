@@ -334,6 +334,38 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
         onChange={(n) => patchDraft(() => ({ cooldownMs: n }))}
       />
 
+      <SwitchRow
+        checked={view.cooldownBreakerEnabled}
+        disabled={!writable || busy}
+        onChange={() =>
+          patchDraft(() => ({
+            cooldownBreakerEnabled: !view.cooldownBreakerEnabled,
+          }))
+        }
+        label={t('cooldownBreaker')}
+        hint={t('cooldownBreakerHint')}
+      />
+
+      {view.cooldownBreakerEnabled && (
+        <>
+          <NumberRow
+            label={t('cooldownBreakerCapMs')}
+            hint={t('cooldownBreakerCapMsHint')}
+            value={view.cooldownBreakerCapMs}
+            disabled={!writable || busy}
+            onChange={(n) => patchDraft(() => ({ cooldownBreakerCapMs: n }))}
+          />
+
+          <NumberRow
+            label={t('cooldownStabilizationMs')}
+            hint={t('cooldownStabilizationMsHint')}
+            value={view.cooldownStabilizationMs}
+            disabled={!writable || busy}
+            onChange={(n) => patchDraft(() => ({ cooldownStabilizationMs: n }))}
+          />
+        </>
+      )}
+
       <TimeWindowSection
         t={t}
         enabled={view.timeWindowEnabled}

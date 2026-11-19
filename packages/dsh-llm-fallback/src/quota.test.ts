@@ -226,3 +226,186 @@ describe('resolveCooldownDuration(冷却时长决策)', () => {
     expect(result.durationMs).toBe(18_000_000);
   });
 });
+
+describe('resolveCooldownDuration(限流对齐:retry-after 档)', () => {
+  it('provider 报告的 retry-after 直接对齐服务端要求', () => {
+    const result = resolveCooldownDuration(
+      failure('RATE_LIMIT', '429 too many requests'),
+      opts({ retryAfterMs: 30_000 }),
+    );
+    expect(result).toEqual({
+      durationMs: 30_000,
+      source: 'retry-after',
+      untilMs: NOW + 30_000,
+    });
+  });
+
+  it('配额型失败时 retry-after 不压过配额档(配额保护优先)', () => {
+    // 配额耗尽的冷却窗口动辄数小时:一个秒级 retry-after 若压过它,
+    // 冷却会骤降到秒级,等于绕过配额保护反复重试已耗尽的机器。
+    const result = resolveCooldownDuration(
+      failure('RATE_LIMIT', '429 已达到 Token Plan 用量上限 (2056)'),
+      opts({ retryAfterMs: 45_000 }),
+    );
+    expect(result.source).toBe('quota-window');
+    expect(result.durationMs).toBe(18_000_000);
+  });
+
+  it('非配额型失败时 retry-after 压过熔断档', () => {
+    const result = resolveCooldownDuration(
+      failure('SERVER', '503 no healthy deployment'),
+      opts({
+        retryAfterMs: 45_000,
+        breakerEnabled: true,
+        breakerFailures: 3,
+      }),
+    );
+    expect(result.source).toBe('retry-after');
+    expect(result.durationMs).toBe(45_000);
+  });
+
+  it('retry-after 受 cooldownCapMs 总上限 clamp', () => {
+    const result = resolveCooldownDuration(
+      failure('RATE_LIMIT', '429 too many requests'),
+      opts({ retryAfterMs: 900_000, cooldownCapMs: 600_000 }),
+    );
+    expect(result.source).toBe('retry-after');
+    expect(result.durationMs).toBe(600_000);
+  });
+
+  it('retry-after 非法(非正数)时回落下一档(配额档)', () => {
+    const result = resolveCooldownDuration(
+      failure('RATE_LIMIT', '429 已达到 Token Plan 用量上限 (2056)'),
+      opts({ retryAfterMs: 0 }),
+    );
+    expect(result.source).toBe('quota-window');
+    expect(result.durationMs).toBe(18_000_000);
+  });
+
+  it('provider 未报告 retry-after 时不启用该档(降级记录可见)', () => {
+    const result = resolveCooldownDuration(
+      failure('SERVER', '503 no healthy deployment'),
+      opts(),
+    );
+    expect(result.source).toBe('default');
+    expect(result.durationMs).toBe(300_000);
+  });
+});
+
+describe('resolveCooldownDuration(熔断递增档)', () => {
+  it('连续失败 1 次后窗口翻倍为 2 倍', () => {
+    const result = resolveCooldownDuration(
+      failure('SERVER', '503 no healthy deployment'),
+      opts({ breakerEnabled: true, breakerFailures: 1 }),
+    );
+    expect(result).toEqual({
+      durationMs: 600_000,
+      source: 'breaker',
+      untilMs: NOW + 600_000,
+    });
+  });
+
+  it('连续失败 2 次后窗口为 4 倍', () => {
+    const result = resolveCooldownDuration(
+      failure('SERVER', '503 no healthy deployment'),
+      opts({ breakerEnabled: true, breakerFailures: 2 }),
+    );
+    expect(result.source).toBe('breaker');
+    expect(result.durationMs).toBe(1_200_000);
+  });
+
+  it('窗口按 breakerCapMs 独立封顶(与配额总上限分离)', () => {
+    const result = resolveCooldownDuration(
+      failure('SERVER', '503 no healthy deployment'),
+      opts({
+        breakerEnabled: true,
+        breakerFailures: 5,
+        breakerCapMs: 1_800_000,
+      }),
+    );
+    expect(result.source).toBe('breaker');
+    // 300000 × 2^5 = 9_600_000 → 被封到 30 分钟
+    expect(result.durationMs).toBe(1_800_000);
+  });
+
+  it('熔断总开关关闭时走默认固定档', () => {
+    const result = resolveCooldownDuration(
+      failure('SERVER', '503 no healthy deployment'),
+      opts({ breakerEnabled: false, breakerFailures: 3 }),
+    );
+    expect(result.source).toBe('default');
+    expect(result.durationMs).toBe(300_000);
+  });
+
+  it('熔断档不受 cooldownCapMs 总上限二次截断', () => {
+    // 配额总上限(默认 7 天)是给配额延长档用的;熔断档只受自己的
+    // breakerCapMs 约束——cooldownCapMs 配得很小也不该把熔断档压短。
+    const result = resolveCooldownDuration(
+      failure('SERVER', '503 no healthy deployment'),
+      opts({
+        breakerEnabled: true,
+        breakerFailures: 1,
+        breakerCapMs: 1_800_000,
+        cooldownCapMs: 1_000,
+      }),
+    );
+    expect(result.source).toBe('breaker');
+    expect(result.durationMs).toBe(600_000);
+  });
+
+  it('递增封顶不低于固定档(封顶短于固定档时不把窗口压短)', () => {
+    // cooldownMs(1h) 比 breakerCapMs(30min) 还长:递增结果若被封到
+    // 30min 会比固定档更短——递增只让冷却变长、绝不缩短。
+    const result = resolveCooldownDuration(
+      failure('SERVER', '503 no healthy deployment'),
+      opts({
+        cooldownMs: 3_600_000,
+        breakerEnabled: true,
+        breakerFailures: 1,
+        breakerCapMs: 1_800_000,
+      }),
+    );
+    expect(result.source).toBe('breaker');
+    expect(result.durationMs).toBe(3_600_000);
+  });
+
+  it('配额型失败不落熔断档(配额档先行)', () => {
+    const result = resolveCooldownDuration(
+      failure('QUOTA', 'usage limit exceeded'),
+      opts({ breakerEnabled: true, breakerFailures: 3 }),
+    );
+    expect(result.source).toBe('quota-window');
+    expect(result.durationMs).toBe(18_000_000);
+  });
+
+  it('缺省(未传开关)时熔断档按默认开启处理', () => {
+    const result = resolveCooldownDuration(
+      failure('SERVER', '503 no healthy deployment'),
+      opts({ breakerFailures: 1 }),
+    );
+    expect(result.source).toBe('breaker');
+    expect(result.durationMs).toBe(600_000);
+  });
+
+  it('首次失败(连败计数为 0)不走上递增档(零回归)', () => {
+    const result = resolveCooldownDuration(
+      failure('SERVER', '503 no healthy deployment'),
+      opts({ breakerEnabled: true, breakerFailures: 0 }),
+    );
+    expect(result.source).toBe('default');
+    expect(result.durationMs).toBe(300_000);
+  });
+
+  it('熔断封顶非法(0)时视为无封顶', () => {
+    const result = resolveCooldownDuration(
+      failure('SERVER', '503 no healthy deployment'),
+      opts({
+        breakerEnabled: true,
+        breakerFailures: 1,
+        breakerCapMs: 0,
+      }),
+    );
+    expect(result.source).toBe('breaker');
+    expect(result.durationMs).toBe(600_000);
+  });
+});

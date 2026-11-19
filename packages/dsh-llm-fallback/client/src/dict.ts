@@ -55,6 +55,15 @@ export const DICT: Dict = {
     cooldownMs: '冷却窗口时长(毫秒)',
     cooldownMsHint:
       '失败模型保持跳过的时长,窗口过后重新验证并恢复其优先级;0 = 立即过期(等效禁用)',
+    cooldownBreaker: '连续失败熔断递增',
+    cooldownBreakerHint:
+      '同一候选反复失败时冷却窗口按指数增长(首次失败仍是普通冷却窗口,单次偶发失败零变化);冷却到期后进入稳定观察期,优先级低于其他可用候选,没有其他可用候选时仍会半开试探;期间再失败则继续翻倍,安静度过即视为恢复',
+    cooldownBreakerCapMs: '熔断窗口上限(毫秒)',
+    cooldownBreakerCapMsHint:
+      '熔断递增窗口的封顶(不会低于普通冷却窗口),与配额派生及 retry-after 时长上限相互独立',
+    cooldownStabilizationMs: '稳定观察期时长(毫秒)',
+    cooldownStabilizationMsHint:
+      '冷却到期后该候选仍可作为半开试探,但优先级低于其他可用候选;观察期内再失败则窗口继续翻倍,安静度过即视为恢复并清零失败计数;0 = 冷却到期后不再观察(会话指定模型在冷却窗内直接重试仍可能递增)',
     timeWindowEnabled: '时间窗切换/错峰优先',
     timeWindowEnabledHint:
       '配置的窗口内,按规则把候选预填进失败冷却表(到期 = 窗口结束),请求自动改写切走;窗口结束由惰性过期自动恢复优先级,无需定时器',
@@ -127,6 +136,15 @@ export const DICT: Dict = {
     cooldownMs: 'Cooldown window (ms)',
     cooldownMsHint:
       'How long a failed model stays skipped before being re-verified and restored to its priority position; 0 = expire immediately (disabled)',
+    cooldownBreaker: 'Circuit-breaker escalation',
+    cooldownBreakerHint:
+      'When the same candidate keeps failing, its cooldown window grows exponentially. The first failure still uses the plain window, so one-off failures change nothing. After the window expires, the candidate enters a lower-priority stabilization period; it remains a half-open probe when no other candidate is available.',
+    cooldownBreakerCapMs: 'Breaker window cap (ms)',
+    cooldownBreakerCapMsHint:
+      'Upper bound applied to the escalated window (never below the plain cooldown window); independent from the cap that governs quota-derived durations',
+    cooldownStabilizationMs: 'Stabilization period (ms)',
+    cooldownStabilizationMsHint:
+      'After the cooldown expires, the candidate remains a half-open probe but is lower priority than other available candidates; another failure during observation doubles the window again, while a quiet period means recovery and resets the counter; 0 = no post-cooldown observation (a direct retry of the session model during its cooldown may still escalate)',
     timeWindowEnabled: 'Time-window switching / off-peak priority',
     timeWindowEnabledHint:
       'During configured windows, candidates matching the rules are prefilled into the failure-cooldown table (expiry = window end) so requests switch away transparently; when a window ends the existing lazy expiry restores priority — no timers',

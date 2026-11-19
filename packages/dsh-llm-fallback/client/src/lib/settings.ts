@@ -18,6 +18,19 @@ import { routeKey, sameQueue, type Route } from './catalog.ts';
 /** 冷却窗口的 schema 默认值（300000ms = 5 分钟）。 */
 export const DEFAULT_COOLDOWN_MS = 300000;
 
+/**
+ * 熔断递增窗口的 schema 默认值（1800000ms = 30 分钟）：与宿主
+ * `cooldownCapMs`（配额类时长总上限）分离——熔断是本地连续失败放大，
+ * 独立封顶更贴合语义。
+ */
+export const DEFAULT_COOLDOWN_BREAKER_CAP_MS = 1800000;
+
+/**
+ * 稳定观察期的 schema 默认值（600000ms = 10 分钟）：冷却窗到期后进入
+ * 观察期，期间再失败则窗口继续翻倍，安静度过即视为恢复。
+ */
+export const DEFAULT_COOLDOWN_STABILIZATION_MS = 600000;
+
 // ── 时间窗切换/错峰优先（时段计划 v2：时间窗 = 预填冷却表）──────────
 
 /** 单条时间窗：`HH:mm` 半开区间 [start, end)；起点>终点 = 跨夜；相等 = 全天。 */
@@ -65,6 +78,12 @@ export interface SavedSettings {
   retriesBeforeSwitch: number;
   cooldownEnabled: boolean;
   cooldownMs: number;
+  /** 连续失败熔断递增总开关（schema 默认 true）。 */
+  cooldownBreakerEnabled: boolean;
+  /** 熔断递增窗口的独立封顶（schema 默认 30 分钟）。 */
+  cooldownBreakerCapMs: number;
+  /** 稳定观察期时长（schema 默认 10 分钟；0 = 到期即恢复）。 */
+  cooldownStabilizationMs: number;
   timeWindowEnabled: boolean;
   timeWindowRules: TimeWindowRuleInput[];
   revision: number;
@@ -82,6 +101,12 @@ export interface DraftState {
   retriesBeforeSwitch: number;
   cooldownEnabled: boolean;
   cooldownMs: number;
+  /** 连续失败熔断递增总开关（schema 默认 true）。 */
+  cooldownBreakerEnabled: boolean;
+  /** 熔断递增窗口的独立封顶（schema 默认 30 分钟）。 */
+  cooldownBreakerCapMs: number;
+  /** 稳定观察期时长（schema 默认 10 分钟；0 = 到期即恢复）。 */
+  cooldownStabilizationMs: number;
   timeWindowEnabled: boolean;
   timeWindowRules: TimeWindowRuleInput[];
   /** 进入草稿时的快照 revision（保存闸：与当前 revision 不一致 = 冲突）。 */
@@ -150,6 +175,28 @@ export function readSavedSettings(
   if (!Number.isFinite(cooldownMs) || cooldownMs < 0) {
     cooldownMs = DEFAULT_COOLDOWN_MS;
   }
+  // 熔断三字段的归一口径与宿主 resolveConfig 一致：开关缺省 true；
+  // 封顶非法（≤0/非有限）回落默认（不接受 0——递增档护栏必须有界）；
+  // 观察期 0 合法（显式关闭迟滞 = 到期即恢复），负数/非有限回落默认。
+  const rawBreakerCapMs = v.cooldownBreakerCapMs;
+  let cooldownBreakerCapMs =
+    rawBreakerCapMs === undefined || rawBreakerCapMs === null
+      ? DEFAULT_COOLDOWN_BREAKER_CAP_MS
+      : Number(rawBreakerCapMs);
+  if (!Number.isFinite(cooldownBreakerCapMs) || cooldownBreakerCapMs <= 0) {
+    cooldownBreakerCapMs = DEFAULT_COOLDOWN_BREAKER_CAP_MS;
+  }
+  const rawStabilizationMs = v.cooldownStabilizationMs;
+  let cooldownStabilizationMs =
+    rawStabilizationMs === undefined || rawStabilizationMs === null
+      ? DEFAULT_COOLDOWN_STABILIZATION_MS
+      : Number(rawStabilizationMs);
+  if (
+    !Number.isFinite(cooldownStabilizationMs) ||
+    cooldownStabilizationMs < 0
+  ) {
+    cooldownStabilizationMs = DEFAULT_COOLDOWN_STABILIZATION_MS;
+  }
   return {
     enabled: v.enabled !== false,
     queue: ((v.fallbackChains ?? []) as Array<Partial<Route>>).map((entry) => ({
@@ -160,6 +207,9 @@ export function readSavedSettings(
     retriesBeforeSwitch: Number(v.retriesBeforeSwitch ?? 0) || 0,
     cooldownEnabled: v.cooldownEnabled !== false,
     cooldownMs,
+    cooldownBreakerEnabled: v.cooldownBreakerEnabled !== false,
+    cooldownBreakerCapMs,
+    cooldownStabilizationMs,
     timeWindowEnabled: v.timeWindowEnabled === true,
     timeWindowRules: normalizeRules(v.timeWindowRules),
     revision,
@@ -175,6 +225,9 @@ export function beginDraft(saved: SavedSettings): DraftState {
     retriesBeforeSwitch: saved.retriesBeforeSwitch,
     cooldownEnabled: saved.cooldownEnabled,
     cooldownMs: saved.cooldownMs,
+    cooldownBreakerEnabled: saved.cooldownBreakerEnabled,
+    cooldownBreakerCapMs: saved.cooldownBreakerCapMs,
+    cooldownStabilizationMs: saved.cooldownStabilizationMs,
     timeWindowEnabled: saved.timeWindowEnabled,
     timeWindowRules: cloneRules(saved.timeWindowRules),
     revision: saved.revision,
@@ -202,6 +255,9 @@ export function resolveView(
     retriesBeforeSwitch: draft.retriesBeforeSwitch,
     cooldownEnabled: draft.cooldownEnabled,
     cooldownMs: draft.cooldownMs,
+    cooldownBreakerEnabled: draft.cooldownBreakerEnabled,
+    cooldownBreakerCapMs: draft.cooldownBreakerCapMs,
+    cooldownStabilizationMs: draft.cooldownStabilizationMs,
     timeWindowEnabled: draft.timeWindowEnabled,
     timeWindowRules: draft.timeWindowRules,
     revision: draft.revision,
@@ -217,12 +273,15 @@ export function isDirty(view: SavedSettings, saved: SavedSettings): boolean {
     view.retriesBeforeSwitch !== saved.retriesBeforeSwitch ||
     view.cooldownEnabled !== saved.cooldownEnabled ||
     view.cooldownMs !== saved.cooldownMs ||
+    view.cooldownBreakerEnabled !== saved.cooldownBreakerEnabled ||
+    view.cooldownBreakerCapMs !== saved.cooldownBreakerCapMs ||
+    view.cooldownStabilizationMs !== saved.cooldownStabilizationMs ||
     view.timeWindowEnabled !== saved.timeWindowEnabled ||
     !sameRules(view.timeWindowRules, saved.timeWindowRules)
   );
 }
 
-/** 构造保存载荷：8 个 set op（含时间窗两字段，与冷却区块同一载荷链路）。 */
+/** 构造保存载荷：11 个 set op（含熔断三字段，与冷却区块同一载荷链路）。 */
 export function buildMutations(view: SavedSettings): MutationOp[] {
   return [
     { op: 'set', path: ['enabled'], value: view.enabled },
@@ -242,6 +301,21 @@ export function buildMutations(view: SavedSettings): MutationOp[] {
     },
     { op: 'set', path: ['cooldownEnabled'], value: view.cooldownEnabled },
     { op: 'set', path: ['cooldownMs'], value: view.cooldownMs },
+    {
+      op: 'set',
+      path: ['cooldownBreakerEnabled'],
+      value: view.cooldownBreakerEnabled,
+    },
+    {
+      op: 'set',
+      path: ['cooldownBreakerCapMs'],
+      value: view.cooldownBreakerCapMs,
+    },
+    {
+      op: 'set',
+      path: ['cooldownStabilizationMs'],
+      value: view.cooldownStabilizationMs,
+    },
     { op: 'set', path: ['timeWindowEnabled'], value: view.timeWindowEnabled },
     {
       op: 'set',

@@ -217,11 +217,11 @@ export function resolveCandidateRetryPlan(
  * 起点 = `state.index + 1`(-1 时即链首):会话指定模型失败后直接切到
  * 队列第 1 项,再失败切第 2 项,依此推进。扫描时跳过与 `state.pageModel`
  * (会话指定模型)相同的候选——它刚失败过,切回去没有意义(用户把会话
- * 模型也配进队列时的防呆)。
- * 传入 `cooldowns` 时(失败冷却启用)再跳过仍在冷却窗内的候选——它们
- * 在此前的 step 里失败过且尚未到期,先试排在后面的可用候选效率更高;
- * 若冷却吞掉了全部剩余候选,降级回原语义(忽略冷却只跳 pageModel):
- * 冷却只是效率优化,绝不能让链失去全部候选而提前报错。
+ * 模型也配进队列时的防呆)。稳定观察期内的候选视为低优先级:有其它
+ * 未冷却候选时优先选其它候选;没有其它可用候选时仍允许该候选半开试探。
+ * 若冷却吞掉了全部剩余候选,降级回
+ * 原语义(忽略冷却只跳 pageModel):冷却只是效率优化,绝不能让链失去全部候选
+ * 而提前报错。
  * - 扫完无候选(或已达最后一项)→ 返回 null(链耗尽);
  * - 若 state.retries >= maxRetries → 返回 null(达到上限);
  * - 否则返回新 { index, retries }。
@@ -231,6 +231,7 @@ export function nextCandidate(
   maxRetries: number,
   cooldowns?: ReadonlyMap<string, number>,
   now: number = 0,
+  probationary?: ReadonlySet<string>,
 ): { index: number; retries: number } | null {
   if (state.exhausted) return null;
   if (state.retries >= maxRetries) return null;
@@ -240,6 +241,7 @@ export function nextCandidate(
     candidate.provider === page.provider &&
     candidate.model === page.model;
   let skippedCooling = false;
+  let firstProbationary: number | undefined;
   for (let i = state.index + 1; i < state.chain.length; i++) {
     const candidate = state.chain[i];
     if (!candidate) return null;
@@ -248,7 +250,16 @@ export function nextCandidate(
       skippedCooling = true;
       continue;
     }
+    if (probationary?.has(cooldownKey(candidate))) {
+      // 观察期候选是半开试探:有其他未冷却候选时先让它们接流量;
+      // 若没有其它候选,循环后仍会返回首个观察期候选,不饿死模型。
+      firstProbationary ??= i;
+      continue;
+    }
     return { index: i, retries: state.retries + 1 };
+  }
+  if (firstProbationary !== undefined) {
+    return { index: firstProbationary, retries: state.retries + 1 };
   }
   if (skippedCooling) {
     // 降级扫描:剩余候选全部在冷却中 → 忽略冷却,回到只跳 pageModel 的
@@ -267,10 +278,11 @@ export function nextCandidate(
 // ── 失败冷却(failure cooldown)───────────────────────────────────────
 //
 // 跨 step 的"优先级 × 效率"平衡:白名单失败耗尽每候选重试预算并切换后,
-// 失败方(provider/model)进入短冷却窗——窗口内后续 step 不再从它开始
-// (agent/request 直接改写为链上第一个可用候选),避免每个 step 都重复
-// 支付同一故障模型的失败成本;窗口期满自动恢复其优先级,下次请求按正常
-// 顺序重新验证是否恢复(恢复则继续优先使用,未恢复则再次冷却)。
+// 失败方(provider/model)进入短冷却窗——后续 step 的失败推进扫描跳过
+// 仍在冷却期的候选,优先选第一个未冷却候选;观察期内(熔断开启时)的候选
+// 作为半开试探但优先级低于其它未冷却候选。冷却与观察期均到期后恢复
+// 普通优先级,下次推进按正常顺序重新验证是否恢复(恢复则继续使用,未恢复
+// 则再次冷却)。
 // 表结构:key = cooldownKey(candidate),value = 冷却到期毫秒时间戳。
 // 存于插件进程内存(apply 闭包),跨 step/对话共享;宿主重启即清零。
 
@@ -316,6 +328,105 @@ export function markCooldown(
 ): void {
   purgeExpiredCooldowns(table, now);
   table.set(cooldownKey(candidate), now + Math.max(0, cooldownMs));
+}
+
+// ── 连续失败熔断(breaker)─────────────────────────────────────────────
+//
+// 三态时间基断路器:宿主不提供「请求成功」事件(插件只拿到 request 与
+// request-error 两个信号),故**纯时间基**是唯一可行口径——用时间推进
+// 代替成功信号,状态机如下:
+//
+//   ① 冷却窗内 → 在推进扫描 nextCandidate 中被跳过;
+//      firstAvailableCandidateIndex 仅保留旧冷却 helper 的导出,不感知观察期;
+//   ② 冷却窗到期 → 进入稳定观察期(probationUntil = 冷却到期 +
+//      stabilizationMs):该候选可作半开试探,但候选扫描中低于其它未冷却
+//      候选;没有其它可用候选时仍会尝试它。期间再失败 → 连败次数 +1,
+//      冷却窗口按 2^failures 继续翻倍;
+//   ③ 观察期满且期间无失败 → 视为恢复(连败计数清零,下次失败从头计)。
+//
+// 「连败计数清零时机延后到观察期结束」是刻意设计:窗口一到期就立刻
+// 清零会把「刚好恢复」的候选当成从未失败过,瞬时抖动(上游偶发 5xx)
+// 会被反复放大成越来越长的冷却;迟滞观察期给上游一个真正的恢复窗口。
+//
+// 表结构:key = cooldownKey(candidate),value = { failures, probationUntil }。
+// 存于插件进程内存(apply 闭包),与冷却表同生命周期,宿主重启即清零。
+
+/** 单候选的熔断状态(连败计数 + 稳定观察期)。 */
+export interface BreakerEntry {
+  /**
+   * 该候选**已发生**的连续失败次数(不含正在决策的本次失败)。
+   * 下一次失败时的冷却窗口倍率为 2^failures(0 → 1 倍,1 → 2 倍,
+   * 2 → 4 倍……)。
+   */
+  failures: number;
+  /**
+   * 稳定观察期到期时间戳(= 该轮冷却到期 + stabilizationMs)。
+   * - 观察期内再失败 → failures + 1(延续翻倍),观察期从新的冷却到期
+   *   重新起算;
+   * - 观察期满 → 视为已恢复,连败计数清零(stabilizationMs = 0 时该值
+   *   等于冷却到期时刻,即"到期即恢复"的旧语义)。
+   */
+  probationUntil: number;
+}
+
+/**
+ * 读该候选当前连败次数(= 已发生的连续失败次数)。
+ * - 无记录 → 0;
+ * - 观察期未满(now < probationUntil)→ entry.failures;
+ * - 观察期已满 → 0(已恢复,视为从未失败过)。
+ */
+export function breakerFailures(
+  breakers: ReadonlyMap<string, BreakerEntry>,
+  candidate: Candidate,
+  now: number,
+): number {
+  const entry = breakers.get(cooldownKey(candidate));
+  if (entry === undefined) return 0;
+  return now < entry.probationUntil ? entry.failures : 0;
+}
+
+/**
+ * 记冷却后推进该候选的熔断计数。
+ *
+ * - 观察期内(now < 旧 probationUntil)再失败 → failures + 1(延续翻倍);
+ * - 观察期已过(已恢复)或首次失败 → failures = 1(重开一轮)。
+ *
+ * 新的观察期从**本次冷却到期**起算:probationUntil = cooldownUntilMs +
+ * stabilizationMs。stabilizationMs 非法(非有限/负数)按 0 处理。
+ */
+export function advanceBreaker(
+  breakers: Map<string, BreakerEntry>,
+  candidate: Candidate,
+  now: number,
+  cooldownUntilMs: number,
+  stabilizationMs: number,
+): void {
+  const key = cooldownKey(candidate);
+  const prev = breakers.get(key);
+  const inProbation = prev !== undefined && now < prev.probationUntil;
+  const failures = inProbation ? prev.failures + 1 : 1;
+  const stabilization =
+    Number.isFinite(stabilizationMs) && stabilizationMs > 0
+      ? Math.floor(stabilizationMs)
+      : 0;
+  breakers.set(key, {
+    failures,
+    probationUntil: cooldownUntilMs + stabilization,
+  });
+}
+
+/**
+ * 清理观察期已满的熔断条目(惰性,防表随时间无限增长)。
+ * 观察期满 = 连败计数已归零(与 breakerFailures 的读取口径一致),
+ * 删除不丢信息:下次失败按 advanceBreaker 重开为 1。
+ */
+export function purgeExpiredBreakers(
+  breakers: Map<string, BreakerEntry>,
+  now: number,
+): void {
+  for (const [key, entry] of breakers) {
+    if (entry.probationUntil <= now) breakers.delete(key);
+  }
 }
 
 /**
