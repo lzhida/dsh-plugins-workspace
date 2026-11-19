@@ -81,7 +81,7 @@ function extractSectionBody(lines: string[], title: string): string[] {
  * 把正文切成「段落块」：按空行分段；剔除标题行、剥掉行首 markdown 列表
  * 标记与〔…〕占位，合并空白；过短的块（通用短语/孤立编号）不参与比对。
  */
-function extractParagraphBlocks(text: string, minChars = 8): string[] {
+export function extractParagraphBlocks(text: string, minChars = 8): string[] {
   return text
     .split(/\r?\n\s*\r?\n/)
     .map((block) =>
@@ -114,7 +114,7 @@ export function longestCommonSuffix(a: string, b: string): number {
  * 全文同源文本检测：任意两段的公共后缀 ≥ floor 即报一对。
  * 预筛（末尾 24 字相同）避免 O(n²) 全量逐字比较。
  */
-function checkDuplicateText(
+export function checkDuplicateText(
   blocks: string[],
   floor: number,
 ): DisclosureCheckIssue[] {
@@ -143,7 +143,7 @@ function checkDuplicateText(
  * 部分间成对复用检测：fromPart 与 toPart 的段落两两比较，公共后缀
  * ≥ floor 即报一对（发明内容 ↔ 实施方式逐字复用的初稿形态）。
  */
-function checkSectionPairDuplicates(
+export function checkSectionPairDuplicates(
   fromLines: string[],
   toLines: string[],
   fromLabel: string,
@@ -175,7 +175,7 @@ function checkSectionPairDuplicates(
  * 长度的对即报（「转义表 ⊂ 互逆转义表」「描述文件 ⊂ 协议描述文件」
  * 一类名称并存是初稿暴露的一词多义信号）。
  */
-function checkTermVariants(document: string): DisclosureCheckIssue[] {
+export function checkTermVariants(document: string): DisclosureCheckIssue[] {
   const terms = new Set<string>();
   // 逐个「所述」位置手动扫描：贪婪 matchAll 会吞掉紧邻的下一个「所述」
   // （「所述协议描述文件与所述描述文件」→ 第一个 match 吃到第二个的头部），
