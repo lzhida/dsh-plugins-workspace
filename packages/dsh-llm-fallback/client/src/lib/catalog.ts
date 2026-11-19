@@ -6,10 +6,17 @@
 
 import type { CatalogGroup, CatalogModel } from '../types.ts';
 
-/** 回退队列单条候选（provider/model 路由）。 */
+/** 回退队列单条候选（provider/model 路由 + 可选参数覆盖）。 */
 export interface Route {
   provider: string;
   model: string;
+  /**
+   * 候选级推理力度覆盖（adapter 自有力度 id，如 "medium"）。
+   * 缺省 = 沿用会话当前力度；候选不支持该 id 时请求报错并照常切下一候选。
+   */
+  reasoningEffort?: string;
+  /** 候选级单请求输出上限覆盖（正整数 token 数）。缺省 = 透传会话原值。 */
+  maxTokens?: number;
 }
 
 /** 目录条目的最小形状（sameQueue 之外的函数用到）。 */
@@ -116,13 +123,23 @@ export function pruneStaleRoutes(
   return kept.length === queue.length ? (queue as Route[]) : kept;
 }
 
-/** 队列是否一致（顺序敏感）。 */
+/** 单条路由的参数覆盖是否一致（undefined === undefined 视为相等）。 */
+function sameOverride(a: Route | undefined, b: Route | undefined): boolean {
+  if (!a || !b) return a === b;
+  return a.reasoningEffort === b.reasoningEffort && a.maxTokens === b.maxTokens;
+}
+
+/**
+ * 队列是否一致（顺序敏感，含候选级参数覆盖字段）。
+ * 覆盖字段不参与比较会让 isDirty 漏检（改了字段保存按钮不亮），必须全比。
+ */
 export function sameQueue(a: Route[], b: Route[]): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i += 1) {
     if (a[i].provider !== b[i].provider || a[i].model !== b[i].model) {
       return false;
     }
+    if (!sameOverride(a[i], b[i])) return false;
   }
   return true;
 }

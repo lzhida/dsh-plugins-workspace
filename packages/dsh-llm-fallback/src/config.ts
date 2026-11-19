@@ -299,6 +299,23 @@ export interface ChainEntry {
   displayName: string;
   /** 备注(可选);前端可作为副标题或 tooltip。 */
   description: string;
+  /**
+   * 候选级推理力度覆盖(adapter 自有的力度 id,如 "medium";dsh-llm 类型层
+   * 是不透明 branded string,插件不做枚举校验):链切到该候选时随
+   * agent.model.select 一起写入。缺省 = 沿用切换前 selection 的力度
+   * (旧行为)。候选不支持该 id 时宿主报 UNSUPPORTED_REASONING_EFFORT,
+   * 该次失败照常走回退流程切下一候选。
+   */
+  reasoningEffort?: string;
+  /**
+   * 候选级单请求输出上限覆盖(正整数 token 数):路由到该候选的请求在
+   * agent/request waterfall 里浅拷贝覆盖 maxTokens(waterfall 允许调整
+   * controls,不允许改 provider/model/effort)。会话指定模型不勾进队列
+   * 时其请求永不命中(命中判定纯按请求路由;若把会话模型也勾进队列,
+   * 该模型自身请求同样按路由命中该项覆盖)。
+   * 缺省 = 透传会话原值(零回归)。
+   */
+  maxTokens?: number;
 }
 
 /** 校验并规范化一条链项:`provider/model` 形式,且两段均非空。 */
@@ -341,6 +358,7 @@ export function normalizeChainEntry(
       model: parsed.model,
       displayName: `${parsed.provider}/${parsed.model}`,
       description: '',
+      // string 形态(旧配置)不带覆盖字段——缺省即沿用会话原值,零回归。
     };
   }
   if (raw && typeof raw === 'object') {
@@ -349,6 +367,8 @@ export function normalizeChainEntry(
       model?: unknown;
       displayName?: unknown;
       description?: unknown;
+      reasoningEffort?: unknown;
+      maxTokens?: unknown;
     };
     const provider = typeof obj.provider === 'string' ? obj.provider : '';
     const model = typeof obj.model === 'string' ? obj.model : '';
@@ -356,6 +376,37 @@ export function normalizeChainEntry(
       return {
         error: `fallbackChains[${index}] object must have non-empty "provider" and "model"`,
       };
+    }
+    // 候选级参数覆盖(缺省 = 缺键,即沿用会话原值):
+    // - reasoningEffort:非空字符串才收;空串/null/缺键视为未配置(UI 清空
+    //   输入即发空串,宽容语义保证"清空 = 沿用会话原值"可保存)。
+    // - maxTokens:正整数才收;其余(含 0/负数/非整数/非数字字符串)一律
+    //   配置错误,不静默丢弃——用户写错值比悄悄不生效更诚实;空串同上
+    //   视为未配置。
+    let reasoningEffort: string | undefined;
+    const effortRaw = obj.reasoningEffort;
+    if (effortRaw !== undefined && effortRaw !== null && effortRaw !== '') {
+      if (typeof effortRaw !== 'string') {
+        return {
+          error: `fallbackChains[${index}].reasoningEffort must be a non-empty string (adapter-owned effort id)`,
+        };
+      }
+      reasoningEffort = effortRaw;
+    }
+    let maxTokens: number | undefined;
+    const maxTokensRaw = obj.maxTokens;
+    if (
+      maxTokensRaw !== undefined &&
+      maxTokensRaw !== null &&
+      maxTokensRaw !== ''
+    ) {
+      const n = Number(maxTokensRaw);
+      if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
+        return {
+          error: `fallbackChains[${index}].maxTokens must be a positive integer (token count)`,
+        };
+      }
+      maxTokens = n;
     }
     return {
       provider,
@@ -365,6 +416,8 @@ export function normalizeChainEntry(
           ? obj.displayName
           : `${provider}/${model}`,
       description: typeof obj.description === 'string' ? obj.description : '',
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+      ...(maxTokens !== undefined ? { maxTokens } : {}),
     };
   }
   return {
@@ -628,6 +681,20 @@ const ChainEntrySchema = Schema.object({
     desc(
       'Optional note shown as a subtitle or tooltip in the settings UI',
       '可选备注,设置界面里作为副标题或提示展示',
+    ),
+  ),
+  reasoningEffort: setDescription(
+    Schema.string(),
+    desc(
+      'Optional per-candidate reasoning-effort override (adapter-owned effort id, e.g. "medium") written via agent.model.select when the chain switches to this candidate; empty/omitted keeps the session effort. An unsupported id fails the request (UNSUPPORTED_REASONING_EFFORT) and the chain moves on',
+      '可选的候选级推理力度覆盖(adapter 自有力度 id,如 "medium"),链切到该候选时随 agent.model.select 写入;缺省沿用会话当前力度。候选不支持该 id 时请求报错(UNSUPPORTED_REASONING_EFFORT)并继续切下一候选',
+    ),
+  ),
+  maxTokens: setDescription(
+    Schema.number(),
+    desc(
+      'Optional per-candidate output-cap override (positive integer tokens) applied to requests routed to this candidate; empty/omitted passes the session value through unchanged',
+      '可选的候选级单请求输出上限覆盖(正整数 token 数),路由到该候选的请求生效;缺省透传会话原值',
     ),
   ),
 });

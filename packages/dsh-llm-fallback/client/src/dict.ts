@@ -34,6 +34,14 @@ export const DICT: Dict = {
       '该模型已不在宿主模型目录中(被删除或模型 id 变更),请求会失败;请移除或在下方目录重新勾选',
     clearStale: '清除失效项',
     clearStaleHint: '把所有已不在目录中的候选从队列移除(保存后生效)',
+    queueEffort: '推理力度覆盖',
+    queueEffortHint:
+      '切换到该候选时随 select 写入的推理力度(adapter 自有力度 id,如 medium);留空沿用会话当前力度。候选不支持该 id 时请求报错并照常切下一候选',
+    queueEffortPlaceholder: '力度(留空沿用)',
+    queueMaxTokens: '输出上限覆盖',
+    queueMaxTokensHint:
+      '路由到该候选的请求单次输出上限(正整数 token);留空透传会话原值。超限会在请求期失败,是否切换取决于失败码是否在白名单',
+    queueMaxTokensPlaceholder: '上限(留空透传)',
     catalog: '可用模型',
     catalogLoading: '正在加载模型目录…',
     catalogError: '模型目录加载失败',
@@ -115,6 +123,14 @@ export const DICT: Dict = {
     clearStale: 'Remove unavailable',
     clearStaleHint:
       'Remove every candidate that is no longer in the catalog from the queue (takes effect on save)',
+    queueEffort: 'Reasoning effort override',
+    queueEffortHint:
+      'Reasoning effort written alongside model.select when the chain switches to this candidate (adapter-owned effort id, e.g. medium); leave empty to keep the session effort. An unsupported id fails the request (UNSUPPORTED_REASONING_EFFORT) and the chain moves on',
+    queueEffortPlaceholder: 'effort (empty = keep)',
+    queueMaxTokens: 'Output cap override',
+    queueMaxTokensHint:
+      'Per-request output cap (positive integer tokens) for requests routed to this candidate; leave empty to pass the session value through. Over-limit requests fail at request time — whether the chain moves on depends on the failure code whitelist',
+    queueMaxTokensPlaceholder: 'cap (empty = pass through)',
     catalog: 'Available models',
     catalogLoading: 'Loading model catalog…',
     catalogError: 'Model catalog failed to load',

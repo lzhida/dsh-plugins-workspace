@@ -22,14 +22,14 @@ dsh-llm-fallback 当前是「失败驱动的候选队列回退」插件：
 
 ### 1.2 拦截层能力边界（可行性判据）
 
-| 数据面                        | 插件可见 / 可写                                                               | 对策略选择的意义                    |
-| ----------------------------- | ----------------------------------------------------------------------------- | ----------------------------------- |
-| `agent/request` payload       | `turn` / `step` / `signal`                                                    | 步级定位                            |
-| proposedConfig                | `provider` / `model` 可改写；`reasoningEffort` / `maxTokens` 随对象保留       | 一切「换目标 / 调参数」类策略的入口 |
-| `agent/request-error` payload | `provider` / `failure`（失败码）/ `retryPolicy` / `agent`（session，写轨迹）  | 重试预算与失败分类策略的入口        |
-| `llm/stream`                  | 仅允许在适配器流上**叠加监听**，不可改 options                                | 观测 usage / TTFT 可用，改写不可用  |
-| 模型目录                      | 宿主侧插件不可直接取（设置卡 client 经 `remote.session.modelCatalog()` 获取） | 「目录自动发现」类策略需新增数据面  |
-| 运行状态                      | 纯进程内存                                                                    | 重启即清零；持久化是独立维度        |
+| 数据面                        | 插件可见 / 可写                                                                                                                                                                                                                                                | 对策略选择的意义                                         |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| `agent/request` payload       | `turn` / `step` / `signal`                                                                                                                                                                                                                                     | 步级定位                                                 |
+| proposedConfig                | **`provider` / `model` / `reasoningEffort` 不可改写**（宿主校验输出必须等于 step selection，改写抛错）；`maxTokens` 等 controls 可在 waterfall 调整（0.2.2-rc.1 实测契约修正：调参数类策略只能走 controls 维度，换目标只能走 `agent.model.select()` 切换通道） | 调参数类策略（maxTokens）的入口；换目标类策略改经 select |
+| `agent/request-error` payload | `provider` / `failure`（失败码）/ `retryPolicy` / `agent`（session，写轨迹）                                                                                                                                                                                   | 重试预算与失败分类策略的入口                             |
+| `llm/stream`                  | 仅允许在适配器流上**叠加监听**，不可改 options                                                                                                                                                                                                                 | 观测 usage / TTFT 可用，改写不可用                       |
+| 模型目录                      | 宿主侧插件不可直接取（设置卡 client 经 `remote.session.modelCatalog()` 获取）                                                                                                                                                                                  | 「目录自动发现」类策略需新增数据面                       |
+| 运行状态                      | 纯进程内存                                                                                                                                                                                                                                                     | 重启即清零；持久化是独立维度                             |
 
 ### 1.3 与 LiteLLM Router 的对照
 
@@ -69,9 +69,15 @@ API Key 提供商为 `deepseek-official`（`dsh-llm-deepseek-api-key`）。
       冷却跳过扫描——时间窗即「预填冷却表」，窗口结束惰性过期自动恢复优先级。
       （✅ 0.6.0 时段计划 v2 实装，2026-10-21；v1 ee533db 曾实装后整体 revert
       （d4aef59，时机/流程原因，机制本身无问题），v2 收敛为预填冷却表机制重做）
-- [ ] **参数适配**——切换候选时连带调整 `reasoningEffort` / `maxTokens`
-      （弱模型配高推理档常白烧 token）。先例：无直接对照，dsh 特有机会
-      （proposedConfig 字段可写）。机制依托：链条项加 per-candidate 覆盖字段。
+- [x] **参数适配**——切换候选时连带调整 `reasoningEffort` / `maxTokens`
+      （弱模型配高推理档常白烧 token）。先例：无直接对照，dsh 特有机会。
+      机制依托：链条项加 per-candidate 覆盖字段。
+      （✅ 实装，2026-11-19；通道按宿主 0.2.2-rc.1 契约分流——
+      `reasoningEffort` 随 `agent.model.select()` 切换持久化（selection 不可在
+      waterfall 改写，下一 step 生效），`maxTokens` 经 `agent/request` waterfall
+      controls 按请求路由覆盖（官方认可，未配置零改写；会话指定模型不勾进
+      队列时其请求永不命中，勾进队列则按路由命中该项覆盖）；
+      配置卡队列行内可编辑，见 README「候选级参数覆盖」）
 - [x] **熔断升级**——连续失败时冷却时长指数递增 + 半开试探。先例：LiteLLM
       `cooldown_time` / `allowed_fails_policy`。机制依托：`markCooldown` 的窗口计算参数化。
       （✅ 实装，2026-11-19；连续失败计数 × `2^N` 递增，独立封顶

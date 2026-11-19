@@ -444,4 +444,125 @@ describe('FallbackCard 渲染', () => {
     );
     expect(enabledOp?.value).toBe(false);
   });
+
+  it('候选级参数覆盖:行内编辑力度/上限 → 保存载荷随链项携带,清空则不带键', async () => {
+    const fake = fakeScope({ value: QUEUE_WITH_GHOST });
+    const div = mount(
+      <FallbackCard t={t} scope={fake.scope} session={fakeSession()} />,
+    );
+    await waitFor(() => div.textContent!.includes('prov/m1'));
+    // 行内两个输入(力度/上限),aria-label 与 t() 键对齐
+    const effortInput = div.querySelector(
+      `input[aria-label="${t('queueEffort')}"]`,
+    ) as HTMLInputElement | null;
+    const capInput = div.querySelector(
+      `input[aria-label="${t('queueMaxTokens')}"]`,
+    ) as HTMLInputElement | null;
+    expect(effortInput).not.toBeNull();
+    expect(capInput).not.toBeNull();
+    expect(effortInput!.disabled).toBe(false);
+    // 编辑 m1 行(第一个输入对):填力度与上限 → 脏
+    const setNativeValue = (input: HTMLInputElement, value: string): void => {
+      // React 受控输入:经原生 setter + input 事件触发 onChange
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )?.set;
+      setter?.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    setNativeValue(effortInput!, 'high');
+    setNativeValue(capInput!, '4096');
+    await waitFor(() => div.textContent!.includes(t('dirty')));
+    // 保存 → fallbackChains 载荷携带覆盖字段(失效 ghost 项照常剔除)
+    const saveButton = [...div.querySelectorAll('button')].find(
+      (b) => b.textContent === t('save'),
+    )!;
+    saveButton.click();
+    await waitFor(() => fake.mutations.length > 0);
+    const chains = fake.mutations[0]!.ops.find(
+      (op) => op.path[0] === 'fallbackChains',
+    );
+    expect(chains?.value).toEqual([
+      {
+        provider: 'prov',
+        model: 'm1',
+        reasoningEffort: 'high',
+        maxTokens: 4096,
+      },
+    ]);
+  });
+
+  it('候选级参数覆盖:已配置条目清空输入 → 保存载荷不带覆盖键(= 沿用会话原值)', async () => {
+    const fake = fakeScope({
+      value: {
+        enabled: true,
+        fallbackChains: [
+          {
+            provider: 'prov',
+            model: 'm1',
+            displayName: 'prov/m1',
+            reasoningEffort: 'high',
+            maxTokens: 4096,
+          },
+        ],
+      },
+    });
+    const div = mount(
+      <FallbackCard t={t} scope={fake.scope} session={fakeSession()} />,
+    );
+    await waitFor(() => div.textContent!.includes('prov/m1'));
+    const effortInput = div.querySelector(
+      `input[aria-label="${t('queueEffort')}"]`,
+    ) as HTMLInputElement | null;
+    expect(effortInput?.value).toBe('high');
+    const setNativeValue = (input: HTMLInputElement, value: string): void => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )?.set;
+      setter?.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    setNativeValue(effortInput!, '');
+    await waitFor(() => div.textContent!.includes(t('dirty')));
+    const saveButton = [...div.querySelectorAll('button')].find(
+      (b) => b.textContent === t('save'),
+    )!;
+    saveButton.click();
+    await waitFor(() => fake.mutations.length > 0);
+    const chains = fake.mutations[0]!.ops.find(
+      (op) => op.path[0] === 'fallbackChains',
+    );
+    // 清空后载荷不带 reasoningEffort 键,但 maxTokens 仍保留
+    expect(chains?.value).toEqual([
+      { provider: 'prov', model: 'm1', maxTokens: 4096 },
+    ]);
+  });
+
+  it('候选级参数覆盖:无效数字输入归为未配置(不上屏错误值)', async () => {
+    const fake = fakeScope({ value: QUEUE_WITH_GHOST });
+    const div = mount(
+      <FallbackCard t={t} scope={fake.scope} session={fakeSession()} />,
+    );
+    await waitFor(() => div.textContent!.includes('prov/m1'));
+    const capInput = div.querySelector(
+      `input[aria-label="${t('queueMaxTokens')}"]`,
+    ) as HTMLInputElement | null;
+    expect(capInput).not.toBeNull();
+    const setNativeValue = (input: HTMLInputElement, value: string): void => {
+      const setter = Object.getOwnPropertyDescriptor(
+        HTMLInputElement.prototype,
+        'value',
+      )?.set;
+      setter?.call(input, value);
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    };
+    // -8 / 1.5 等非法值 → patch undefined → 输入框显示空
+    setNativeValue(capInput!, '-8');
+    await waitFor(() => capInput!.value === '');
+    expect(capInput!.value).toBe('');
+    setNativeValue(capInput!, '4096');
+    await waitFor(() => capInput!.value === '4096');
+  });
 });

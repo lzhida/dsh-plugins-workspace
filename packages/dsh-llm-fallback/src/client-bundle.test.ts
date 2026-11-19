@@ -9,9 +9,11 @@ import {
   modelMatches,
 } from '../client/src/lib/catalog.ts';
 import {
+  beginDraft,
   buildMutations,
   isDirty,
   readSavedSettings,
+  resolveView,
 } from '../client/src/lib/settings.ts';
 import { apply } from '../client/src/plugin.tsx';
 
@@ -335,6 +337,115 @@ describe('配置卡设置镜像（熔断三字段）', () => {
       'cooldownBreakerCapMsHint',
       'cooldownStabilizationMs',
       'cooldownStabilizationMsHint',
+    ]) {
+      expect(DICT.zh[key], `zh.${key} 缺失`).toBeTruthy();
+      expect(DICT.en[key], `en.${key} 缺失`).toBeTruthy();
+    }
+  });
+});
+
+describe('配置卡设置镜像（候选级参数覆盖）', () => {
+  it('readSavedSettings 宽容归一覆盖字段(非法/空值不带键)', () => {
+    const saved = readSavedSettings(
+      {
+        fallbackChains: [
+          { provider: 'a', model: 'x' },
+          {
+            provider: 'b',
+            model: 'y',
+            reasoningEffort: 'high',
+            maxTokens: 4096,
+          },
+          { provider: 'c', model: 'z', reasoningEffort: '', maxTokens: 'bad' },
+          { provider: 'd', model: 'w', maxTokens: 1.5 },
+        ],
+      },
+      1,
+    );
+    expect(saved.queue[0]).toEqual({ provider: 'a', model: 'x' });
+    expect(saved.queue[1]).toEqual({
+      provider: 'b',
+      model: 'y',
+      reasoningEffort: 'high',
+      maxTokens: 4096,
+    });
+    // 非法值宽容丢弃 → 未配置(保存闸交宿主 schema)
+    expect(saved.queue[2]).toEqual({ provider: 'c', model: 'z' });
+    // 非整数(1.5)与配置侧 error 口径对齐:归为未配置,不静默 floor 成 1
+    expect(saved.queue[3]).toEqual({ provider: 'd', model: 'w' });
+  });
+
+  it('beginDraft/resolveView 克隆保留覆盖字段', () => {
+    const saved = readSavedSettings(
+      {
+        fallbackChains: [
+          {
+            provider: 'b',
+            model: 'y',
+            reasoningEffort: 'high',
+            maxTokens: 4096,
+          },
+        ],
+      },
+      1,
+    );
+    const draft = beginDraft(saved);
+    expect(draft.queue[0]).toEqual({
+      provider: 'b',
+      model: 'y',
+      reasoningEffort: 'high',
+      maxTokens: 4096,
+    });
+    const view = resolveView(saved, draft);
+    expect(view.queue).toEqual(draft.queue);
+    expect(isDirty(view, saved)).toBe(false);
+  });
+
+  it('buildMutations 保存载荷仅携带已配置覆盖字段;脏检查对其敏感', () => {
+    const saved = readSavedSettings(
+      {
+        fallbackChains: [
+          { provider: 'a', model: 'x' },
+          {
+            provider: 'b',
+            model: 'y',
+            reasoningEffort: 'high',
+            maxTokens: 4096,
+          },
+        ],
+      },
+      1,
+    );
+    const ops = buildMutations(saved);
+    const chainsOp = ops.find((op) => op.path.join('.') === 'fallbackChains');
+    expect(chainsOp).toBeDefined();
+    expect(chainsOp?.value).toEqual([
+      { provider: 'a', model: 'x' },
+      {
+        provider: 'b',
+        model: 'y',
+        reasoningEffort: 'high',
+        maxTokens: 4096,
+      },
+    ]);
+    // 改覆盖字段(路由不变) → 脏检查必须亮(sameQueue 参与比较)
+    const changedView: typeof saved = {
+      ...saved,
+      queue: saved.queue.map((r, i) =>
+        i === 0 ? { ...r, maxTokens: 1024 } : r,
+      ),
+    };
+    expect(isDirty(changedView, saved)).toBe(true);
+  });
+
+  it('候选级覆盖的中英文案齐备(配置卡不留裸键)', () => {
+    for (const key of [
+      'queueEffort',
+      'queueEffortHint',
+      'queueEffortPlaceholder',
+      'queueMaxTokens',
+      'queueMaxTokensHint',
+      'queueMaxTokensPlaceholder',
     ]) {
       expect(DICT.zh[key], `zh.${key} 缺失`).toBeTruthy();
       expect(DICT.en[key], `en.${key} 缺失`).toBeTruthy();

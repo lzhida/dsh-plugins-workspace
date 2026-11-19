@@ -202,6 +202,20 @@ export function readSavedSettings(
     queue: ((v.fallbackChains ?? []) as Array<Partial<Route>>).map((entry) => ({
       provider: String(entry.provider ?? ''),
       model: String(entry.model ?? ''),
+      // 候选级参数覆盖:宽容归一——非法/空值直接不带键(= 未配置),
+      // 不在这里报错,保存闸交宿主 schema。maxTokens 与配置侧口径对齐:
+      // 正整数才收(1.5 等非整数属配置侧 error,UI 归为未配置而非静默
+      // floor 改值)。
+      ...(typeof entry.reasoningEffort === 'string' &&
+      entry.reasoningEffort.length > 0
+        ? { reasoningEffort: entry.reasoningEffort }
+        : {}),
+      ...(typeof entry.maxTokens === 'number' &&
+      Number.isFinite(entry.maxTokens) &&
+      Number.isInteger(entry.maxTokens) &&
+      entry.maxTokens > 0
+        ? { maxTokens: entry.maxTokens }
+        : {}),
     })),
     maxRetries: Number(v.maxRetries ?? 0) || 0,
     retriesBeforeSwitch: Number(v.retriesBeforeSwitch ?? 0) || 0,
@@ -220,7 +234,8 @@ export function readSavedSettings(
 export function beginDraft(saved: SavedSettings): DraftState {
   return {
     enabled: saved.enabled,
-    queue: saved.queue.map((r) => ({ provider: r.provider, model: r.model })),
+    // 展开克隆保留候选级覆盖字段(均为原始类型,浅拷贝安全)
+    queue: saved.queue.map((r) => ({ ...r })),
     maxRetries: saved.maxRetries,
     retriesBeforeSwitch: saved.retriesBeforeSwitch,
     cooldownEnabled: saved.cooldownEnabled,
@@ -288,9 +303,15 @@ export function buildMutations(view: SavedSettings): MutationOp[] {
     {
       op: 'set',
       path: ['fallbackChains'],
+      // 覆盖字段仅在已配置时携带(缺省不带键 = 沿用会话原值,
+      // 避免把空覆盖写进宿主配置)
       value: view.queue.map((r) => ({
         provider: r.provider,
         model: r.model,
+        ...(r.reasoningEffort !== undefined && r.reasoningEffort.length > 0
+          ? { reasoningEffort: r.reasoningEffort }
+          : {}),
+        ...(r.maxTokens !== undefined ? { maxTokens: r.maxTokens } : {}),
       })),
     },
     { op: 'set', path: ['maxRetries'], value: view.maxRetries },

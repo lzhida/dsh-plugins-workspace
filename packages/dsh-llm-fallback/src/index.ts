@@ -160,8 +160,10 @@ function isRetryAction(
 /**
  * 经官方 `agent.model.select()` 持久化一次模型切换(0.6.0 起唯一合法切换
  * 通道):写 durable `model/selection` 事件,宿主自动插 `[model changed: ...]`
- * user message。reasoningEffort 保留切换前的值(换模型不改推理力度,与旧版
- * 改写 proposedConfig 时保留 seed effort 的行为一致)。
+ * user message。推理力度:目标候选配置了 `reasoningEffort` 覆盖时用它
+ * (cast 宿主 branded id,候选不支持时宿主报 UNSUPPORTED_REASONING_EFFORT,
+ * 该次失败照常走回退流程);未配置时保留切换前的值(换模型不改推理力度,
+ * 与旧版改写 proposedConfig 时保留 seed effort 的行为一致)。
  *
  * 失败安全:select 写 durable 会话事件,任何异常被吞掉并只打日志——辅助动作
  * 失败绝不允许炸掉 loop 的恢复链(调用方随后仍返回 retry,行为退化为
@@ -170,11 +172,14 @@ function isRetryAction(
 function persistModelSwitch(
   agent: Agent,
   target: { provider: string; model: string },
+  effortOverride?: string,
 ): void {
   try {
     const current = agent.model.current();
     const reasoningEffort: ReasoningEffortId | undefined =
-      current?.reasoningEffort;
+      effortOverride !== undefined
+        ? (effortOverride as ReasoningEffortId)
+        : current?.reasoningEffort;
     agent.model.select({
       provider: target.provider,
       model: target.model,
@@ -257,9 +262,14 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
   //    - 尚未切换(index<0):经官方 `agent.model.current()` 把会话页面指定
   //      的模型捕获为 pageModel(事实主模型,回退时永不切向它);
   //    - 时间窗预填冷却表(时段计划 v2,纯表操作,无副作用);
-  //    - **绝不改写返回值**:宿主 0.2.2-rc.1 的 prepareRequest 校验 waterfall
-  //      输出必须等于 step 选定 selection,改写即抛错;step 内换模型已不可
-  //      能,切换统一走 error 路径的 model.select(下一 step 生效)。
+  //    - 候选级参数适配(0.7.0):按请求路由匹配链项,配置了 maxTokens 覆盖
+  //      时浅拷贝覆盖该字段——waterfall 允许调整 controls(maxTokens 属
+  //      LlmCallControls),仅 provider/model/effort selection 不可变,本覆盖
+  //      不动 selection,合法;未配置/不命中时仍原样返回 seed(零回归);
+  //    - **不改 selection**:宿主 0.2.2-rc.1 的 prepareRequest 校验 waterfall
+  //      输出的 provider/model/effort 必须等于 step 选定 selection,改写即
+  //      抛错;step 内换模型不可能,切换统一走 error 路径的 model.select
+  //      (下一 step 生效)。
   ctx.effect(() => {
     const dispose = ctx.on('agent/request', async (payload, next) => {
       const seed = await next();
@@ -324,6 +334,22 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
       // 冷却跳过(0.5.0 在此改写 proposedConfig)已随改写通道一并移除:
       // selection 在 preStep 快照,request 里的 select 对本 step 无效;
       // 跳过语义由 error 路径推进链时的冷却感知扫描(nextCandidate)承担。
+      // 候选级参数适配(0.7.0):按当前请求路由匹配链项,配置了 maxTokens
+      // 覆盖时浅拷贝覆盖——waterfall 允许调整 controls(maxTokens 属
+      // LlmCallControls),只不允许改 provider/model/effort selection,本
+      // 覆盖不动 selection,合法。命中判定纯按路由:会话指定模型不勾进
+      // 队列时其请求永不命中(把它也勾进队列时,其自身请求按路由命中该
+      // 项覆盖,属显式按路由配参);未配置/不命中/命中项无覆盖时原样返回
+      // seed(零回归,不多产生拷贝)。
+      const entry = cfg.entries.find(
+        (e) => e.provider === seed.provider && e.model === seed.model,
+      );
+      if (
+        entry?.maxTokens !== undefined &&
+        entry.maxTokens !== seed.maxTokens
+      ) {
+        return { ...seed, maxTokens: entry.maxTokens };
+      }
       return seed;
     });
     return () => dispose();
@@ -559,7 +585,19 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
       // perTurn/透传路径接管),turn 以错误结束,用户重发即从新候选继续。
       // 防御:官方类型 payload.agent 必有,但缺失时静默跳过(select 是
       // 辅助动作,失败不阻断回退本体——retry 照常返回)。
-      if (payload.agent) persistModelSwitch(payload.agent, target);
+      if (payload.agent) {
+        // 候选级 reasoningEffort 覆盖(0.7.0):按目标路由在**当前**配置里
+        // 查条目——不能按 advance.index 取 cfg.entries:state.chain 是
+        // 建态时的快照,advance.index 相对快照推进,而 cfg 是 error 路径
+        // 重新 resolve 的最新配置,会话中途重排/增删链项后两者不再同序,
+        // 用快照下标索引最新配置会取到别的候选的力度。路由匹配与 target
+        // 同源自洽;未配置时 persistModelSwitch 回退现行为(保留切换前
+        // effort)。
+        const targetEntry = cfg.entries.find(
+          (e) => e.provider === target?.provider && e.model === target?.model,
+        );
+        persistModelSwitch(payload.agent, target, targetEntry?.reasoningEffort);
+      }
       // 返回 retry 撑住 turn(不能不返回——那会让 loop 立即抛 LlmError,
       // 连"旧模型再试一次"的机会与轨迹收尾都没有)
       return { kind: 'retry' };

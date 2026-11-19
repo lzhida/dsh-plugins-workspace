@@ -488,6 +488,105 @@ describe('resolveConfig', () => {
     ).toBe(true);
   });
 
+  it('normalizeChainEntry 归一候选级参数覆盖(reasoningEffort/maxTokens)', () => {
+    // object 条目带覆盖字段:合法值原样收下
+    expect(
+      normalizeChainEntry(
+        { provider: 'b', model: 'y', reasoningEffort: 'high', maxTokens: 4096 },
+        0,
+      ),
+    ).toEqual({
+      provider: 'b',
+      model: 'y',
+      displayName: 'b/y',
+      description: '',
+      reasoningEffort: 'high',
+      maxTokens: 4096,
+    });
+    // 空串/null reasoningEffort 与缺键同义(未配置 → 键不存在)
+    expect(
+      normalizeChainEntry(
+        { provider: 'b', model: 'y', reasoningEffort: '', maxTokens: null },
+        0,
+      ),
+    ).toEqual({
+      provider: 'b',
+      model: 'y',
+      displayName: 'b/y',
+      description: '',
+    });
+    // maxTokens 非正整数 → 配置错误(不静默丢弃)
+    expect(
+      'error' in
+        normalizeChainEntry({ provider: 'b', model: 'y', maxTokens: 0 }, 0),
+    ).toBe(true);
+    expect(
+      'error' in
+        normalizeChainEntry({ provider: 'b', model: 'y', maxTokens: 1.5 }, 0),
+    ).toBe(true);
+    expect(
+      'error' in
+        normalizeChainEntry({ provider: 'b', model: 'y', maxTokens: -8 }, 0),
+    ).toBe(true);
+    // reasoningEffort 非空字符串校验
+    expect(
+      'error' in
+        normalizeChainEntry(
+          { provider: 'b', model: 'y', reasoningEffort: 42 },
+          0,
+        ),
+    ).toBe(true);
+  });
+
+  it('string 形态链项(旧配置)不带覆盖字段,零回归', () => {
+    const e = normalizeChainEntry('a/x', 0);
+    if ('error' in e) throw new Error(e.error);
+    expect('reasoningEffort' in e).toBe(false);
+    expect('maxTokens' in e).toBe(false);
+  });
+
+  it('resolveConfig 链项覆盖字段进入 entries 且与 chain 同序', () => {
+    const c = resolveConfig({
+      fallbackChains: [
+        'a/x',
+        { provider: 'b', model: 'y', reasoningEffort: 'low', maxTokens: 2048 },
+        { provider: 'c', model: 'z' },
+      ],
+    });
+    expect(c.chain.map((e) => `${e.provider}/${e.model}`)).toEqual([
+      'a/x',
+      'b/y',
+      'c/z',
+    ]);
+    expect(c.entries[0]).not.toHaveProperty('reasoningEffort');
+    expect(c.entries[0]).not.toHaveProperty('maxTokens');
+    expect(c.entries[1]?.reasoningEffort).toBe('low');
+    expect(c.entries[1]?.maxTokens).toBe(2048);
+    expect(c.entries[2]).not.toHaveProperty('reasoningEffort');
+    expect(c.entries[2]).not.toHaveProperty('maxTokens');
+  });
+
+  it('resolveConfig 链项覆盖字段非法时整体失败', () => {
+    expect(() =>
+      resolveConfig({
+        fallbackChains: [
+          { provider: 'b', model: 'y', maxTokens: 0 } as unknown as string,
+        ],
+      }),
+    ).toThrow(/maxTokens must be a positive integer/);
+    expect(() =>
+      resolveConfig({
+        fallbackChains: [
+          {
+            provider: 'b',
+            model: 'y',
+            reasoningEffort: 42,
+          } as unknown as string,
+        ],
+      }),
+    ).toThrow(/reasoningEffort must be a non-empty string/);
+  });
+
   it('maxRetries=0 时退化为链长', () => {
     const c = resolveConfig({
       fallbackChains: ['a/x', 'b/y', 'c/z'],
@@ -1076,6 +1175,103 @@ describe('agent/request listener', () => {
     );
     expect(result).toEqual(seed);
   });
+
+  it('候选级 maxTokens 覆盖:请求路由命中链项时浅拷贝覆盖 controls', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: [
+        'deepseek/deepseek-chat',
+        { provider: 'openai', model: 'gpt-4o', maxTokens: 4096 },
+      ],
+    });
+    const listener = findListener(listeners, 'agent/request');
+    // 命中 openai/gpt-4o → 返回新对象,maxTokens 覆盖,路由字段原样
+    const result = await callListener(
+      listener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'openai', model: 'gpt-4o', maxTokens: 100 }),
+    );
+    expect(result).toEqual({
+      provider: 'openai',
+      model: 'gpt-4o',
+      maxTokens: 4096,
+    });
+    // 浅拷贝:不污染 next() 返回的 seed 原对象(后续请求重新取值)
+    // ——waterfall 只允许调整 controls,provider/model 必须保持
+  });
+
+  it('候选级 maxTokens 覆盖:会话指定模型(不在链上)原样返回同一 seed 引用', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: [
+        { provider: 'openai', model: 'gpt-4o', maxTokens: 4096 },
+      ],
+    });
+    const listener = findListener(listeners, 'agent/request');
+    const seed = { provider: 'deepseek', model: 'deepseek-chat' };
+    const result = await callListener(
+      listener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => seed,
+    );
+    // 零回归:未命中不改写、不拷贝(引用恒等)
+    expect(result).toBe(seed);
+  });
+
+  it('候选级 maxTokens 覆盖:命中且覆盖值等于 seed 原值时原对象返回(不产生拷贝)', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: [
+        { provider: 'openai', model: 'gpt-4o', maxTokens: 4096 },
+      ],
+    });
+    const listener = findListener(listeners, 'agent/request');
+    const seed = { provider: 'openai', model: 'gpt-4o', maxTokens: 4096 };
+    const result = await callListener(
+      listener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => seed,
+    );
+    expect(result).toBe(seed);
+  });
+
+  it('候选级 maxTokens 覆盖:链项未配置覆盖时命中也原样返回', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, { fallbackChains: ['openai/gpt-4o'] });
+    const listener = findListener(listeners, 'agent/request');
+    const seed = { provider: 'openai', model: 'gpt-4o', maxTokens: 100 };
+    const result = await callListener(
+      listener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => seed,
+    );
+    expect(result).toBe(seed);
+  });
+
+  it('候选级 maxTokens 覆盖:会话指定模型被勾进队列时(index<0)其自身请求按路由命中覆盖', async () => {
+    // 契约钉板:命中判定纯按请求路由,不感知 state.index——会话模型同时
+    // 勾进队列(行为节允许的配置)时,它自己未切换状态下的请求也会应用
+    // 该项的 maxTokens 覆盖(README「候选级参数覆盖」已如实描述)。
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: [
+        { provider: 'deepseek', model: 'deepseek-chat', maxTokens: 8192 },
+        'openai/gpt-4o',
+      ],
+    });
+    const listener = findListener(listeners, 'agent/request');
+    // index<0(该 step 尚无任何切换)且 seed 就是会话指定模型 → 命中链项
+    const result = await callListener(
+      listener,
+      { turn: 1, step: 1, signal: new AbortController().signal },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    expect(result).toEqual({
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+      maxTokens: 8192,
+    });
+  });
 });
 
 describe('agent/request-error listener', () => {
@@ -1121,6 +1317,83 @@ describe('agent/request-error listener', () => {
       provider: 'deepseek',
       model: 'deepseek-chat',
     });
+  });
+
+  it('候选级 reasoningEffort 覆盖:切换到配置了覆盖的候选时 select 随写入力度', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: [
+        { provider: 'openai', model: 'gpt-4o', reasoningEffort: 'high' },
+        'anthropic/claude-sonnet-4',
+      ],
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const reqListener = findListener(listeners, 'agent/request');
+    const errListener = findListener(listeners, 'agent/request-error');
+    const { agent, selections } = stubAgent();
+    await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal, agent },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure: stubFailure('RATE_LIMIT'),
+        signal: new AbortController().signal,
+        agent,
+      },
+      async () => undefined,
+    );
+    // select 携带候选级 effort 覆盖(持久 selection,后续 step 沿用)
+    expect(selections).toEqual([
+      { provider: 'openai', model: 'gpt-4o', reasoningEffort: 'high' },
+    ]);
+  });
+
+  it('候选级 reasoningEffort 覆盖:未配置覆盖的候选沿用切换前力度(现行为零回归)', async () => {
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['openai/gpt-4o', 'anthropic/claude-sonnet-4'],
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const reqListener = findListener(listeners, 'agent/request');
+    const errListener = findListener(listeners, 'agent/request-error');
+    const { agent, selections } = stubAgent({
+      provider: 'deepseek',
+      model: 'deepseek-reasoner',
+      reasoningEffort: 'medium',
+    });
+    // 会话模型自带 effort → 切到未配置覆盖的候选时保留
+    await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal, agent },
+      async () => ({
+        provider: 'deepseek',
+        model: 'deepseek-reasoner',
+        reasoningEffort: 'medium',
+      }),
+    );
+    await callListener(
+      errListener,
+      {
+        turn: 1,
+        step: 1,
+        provider: 'deepseek',
+        failure: stubFailure('RATE_LIMIT'),
+        signal: new AbortController().signal,
+        agent,
+      },
+      async () => undefined,
+    );
+    expect(selections).toEqual([
+      { provider: 'openai', model: 'gpt-4o', reasoningEffort: 'medium' },
+    ]);
   });
 
   it('队列里也勾了会话模型 → 推进时跳过它(兼容旧"首项=主模型"配置)', async () => {
@@ -2569,13 +2842,15 @@ describe('Config schema 国际化(desc i18n 映射)', () => {
     }
   });
 
-  it('fallbackChains 内层 ChainEntry 字段(provider/model/displayName/description)同样携带映射', () => {
+  it('fallbackChains 内层 ChainEntry 字段(provider/model/displayName/description/reasoningEffort/maxTokens)同样携带映射', () => {
     const inner = chainEntryFields();
     for (const fieldName of [
       'provider',
       'model',
       'displayName',
       'description',
+      'reasoningEffort',
+      'maxTokens',
     ]) {
       expect(
         inner[fieldName],

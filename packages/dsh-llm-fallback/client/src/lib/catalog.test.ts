@@ -7,6 +7,7 @@ import {
   isStaleRoute,
   pruneStaleRoutes,
   queueEntryLabel,
+  sameQueue,
   staleRouteKeys,
   type CatalogSnapshotLike,
 } from './catalog.ts';
@@ -134,5 +135,64 @@ describe('pruneStaleRoutes(分支 B:剔除)', () => {
     expect(
       pruneStaleRoutes(CATALOG, [{ provider: 'gone', model: 'x' }]),
     ).toEqual([]);
+  });
+});
+
+describe('sameQueue(候选级参数覆盖参与脏检查)', () => {
+  it('路由相同但覆盖字段不同 → 不一致(isDirty 必须亮保存按钮)', () => {
+    expect(
+      sameQueue(
+        [{ provider: 'a', model: 'x' }],
+        [{ provider: 'a', model: 'x', reasoningEffort: 'high' }],
+      ),
+    ).toBe(false);
+    expect(
+      sameQueue(
+        [{ provider: 'a', model: 'x' }],
+        [{ provider: 'a', model: 'x', maxTokens: 4096 }],
+      ),
+    ).toBe(false);
+    expect(
+      sameQueue(
+        [{ provider: 'a', model: 'x', reasoningEffort: 'high' }],
+        [{ provider: 'a', model: 'x', reasoningEffort: 'low' }],
+      ),
+    ).toBe(false);
+    expect(
+      sameQueue(
+        [{ provider: 'a', model: 'x', maxTokens: 4096 }],
+        [{ provider: 'a', model: 'x', maxTokens: 2048 }],
+      ),
+    ).toBe(false);
+  });
+
+  it('覆盖字段全等(含双方均未配置) → 一致', () => {
+    expect(
+      sameQueue(
+        [{ provider: 'a', model: 'x' }],
+        [{ provider: 'a', model: 'x' }],
+      ),
+    ).toBe(true);
+    expect(
+      sameQueue(
+        [{ provider: 'a', model: 'x', reasoningEffort: 'high', maxTokens: 1 }],
+        [{ provider: 'a', model: 'x', reasoningEffort: 'high', maxTokens: 1 }],
+      ),
+    ).toBe(true);
+  });
+
+  it('顺序敏感:路由与覆盖都同但顺序不同 → 不一致', () => {
+    expect(
+      sameQueue(
+        [
+          { provider: 'a', model: 'x' },
+          { provider: 'b', model: 'y', maxTokens: 8 },
+        ],
+        [
+          { provider: 'b', model: 'y', maxTokens: 8 },
+          { provider: 'a', model: 'x' },
+        ],
+      ),
+    ).toBe(false);
   });
 });

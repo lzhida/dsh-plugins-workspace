@@ -13,6 +13,7 @@ dsh 的模型回退插件：拦截全局 LLM 调用，**会话页面指定的模
 - [配置](#配置)
 - [每候选重试次数（retriesBeforeSwitch）](#每候选重试次数retriesbeforeswitch)
 - [时间窗切换与错峰优先](#时间窗切换与错峰优先)
+- [候选级参数覆盖（reasoningEffort / maxTokens）](#候选级参数覆盖reasoningeffort--maxtokens)
 - [失败码白名单](#失败码白名单)
 - [模型目录与失效候选](#模型目录与失效候选)
 - [行为](#行为)
@@ -32,6 +33,7 @@ dsh 的模型回退插件：拦截全局 LLM 调用，**会话页面指定的模
 - ⏱️ **限流对齐（retry-after）**——上游响应带 `retry-after` 时，冷却到期时间直接对齐服务端要求（不空转本地固定档）；宿主未透传该字段时优雅降级，见[限流对齐](#限流对齐)
 - ⏰ **时间窗切换/错峰优先（时段计划，默认关闭）**——配置的窗口内把候选预填进冷却表（到期 = 窗口结束）影响失败推进的候选选择；错峰窗口（官方半价 00:30–08:30）可反向优先 DeepSeek；窗口结束由既有惰性过期自动恢复优先级，无定时器，见[时间窗切换与错峰优先](#时间窗切换与错峰优先)
 - 🤝 **与官方重试正交可调**——同 provider 重试次数按候选计（`retriesBeforeSwitch`）：默认跟随官方 `dsh-llm-retry` 预算，官方插件缺席时由本插件代执行同候选重试，预算用满再跨 provider 回退
+- 🎚️ **候选级参数覆盖**——链条目可配置 `reasoningEffort` / `maxTokens`：切到该候选时推理力度随官方 `agent.model.select()` 写入 selection（下一轮生效），路由到该候选的请求经 waterfall controls 覆盖单次输出上限；未配置的候选零改写、会话指定模型不勾进队列时其请求永不命中，见[候选级参数覆盖](#候选级参数覆盖reasoningeffort--maxtokens)
 - 🎛️ **可视化配置卡**——内嵌设置面板：勾选候选模型、排序队列、设置每候选重试次数与最大切换候选数，保存即生效，无需重载插件
 - 🌐 **中英双语设置表单**——配置卡文案与 schema 字段描述跟随 dsh 语言设置（设置 → 通用 → 语言）即时切换，无需重载插件
 - 🧩 **失败码路由**——只按宿主稳定失败码（`RATE_LIMIT` / `QUOTA` / `SERVER` / `TIMEOUT` / `TRANSPORT` …）与结构化 `status` 字段（网关 408 请求超时）决策，从不解析错误消息；鉴权类错误直接上抛、不做无谓切换
@@ -39,7 +41,7 @@ dsh 的模型回退插件：拦截全局 LLM 调用，**会话页面指定的模
 
 ## 工作原理
 
-1. 插件监听 dsh agent-loop 的两个 loop 级 waterfall：`agent/request`（发请求前，只读）与 `agent/request-error`（请求失败后）；
+1. 插件监听 dsh agent-loop 的两个 loop 级 waterfall：`agent/request`（发请求前：selection 一律只读，仅按请求路由为命中链项补写候选级 `maxTokens` controls 覆盖，见[候选级参数覆盖](#候选级参数覆盖reasoningeffort--maxtokens)）与 `agent/request-error`（请求失败后）；
 2. 失败时，若失败码在白名单，按"每候选重试预算"（`retriesBeforeSwitch` × provider 重试策略合成）决策：预算内官方 retry 有决策则透传（它执行同候选重试）；预算内官方无决策则本插件代执行同候选重试（指数退避 + 轨迹事件）；预算用满且队列还有候选 → 指数退避后推进到下一候选（会话指定模型失败后切到队列第 1 项，再失败切第 2 项，依此推进；队列中与会话指定模型相同的项会被自动跳过），经官方 `agent.model.select()` 持久化切换（写入 durable model/selection 事件 + 自动插 `[model changed]` user message），返回 `{kind: 'retry'}`；
 3. 切换在**下一 step 生效**——selection 在 step 准备时快照，`select` 后 loop 会用旧模型重发一次请求（该次失败后本 step 不再推进，turn 以错误结束，重发消息即从新候选继续）；切换若发生在 turn 首个 step 前（如冷却期跨 step 保留的失败冷却），同样由 `select` 在下一 step 无缝生效；
 4. 失败码不在白名单或队列耗尽 → 透传上游（官方 retry / loop 默认行为），错误正常上抛；
@@ -90,28 +92,28 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 
 启用插件后，在 设置 → 插件 → `@zhidal/dsh-llm-fallback` 详情页的「模型回退」配置卡中配置：
 
-| 字段                      | 类型                                                   | 默认                            | 说明                                                                                                                                                               |
-| ------------------------- | ------------------------------------------------------ | ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `enabled`                 | `boolean`                                              | `true`                          | 总开关，关闭后不再拦截模型失败                                                                                                                                     |
-| `fallbackChains`          | `Array<{provider, model, displayName?, description?}>` | `[]`                            | 纯回退候选队列（不含会话指定的主模型），失败后按序切换；旧 `string[]` 形态自动归一                                                                                 |
-| `retriesBeforeSwitch`     | `number`                                               | `0`                             | 每候选切换前允许的同 provider 重试次数，见[每候选重试次数](#每候选重试次数retriesbeforeswitch)                                                                     |
-| `maxRetries`              | `number`                                               | `0`（= 链长）                   | 单次请求最多**切换候选**次数，不含同候选重试                                                                                                                       |
-| `baseDelayMs`             | `number`                                               | `500`                           | 指数退避初值；`0` = 禁用退避（失败后立即重试/切换）                                                                                                                |
-| `maxDelayMs`              | `number`                                               | `30000`                         | 指数退避上限                                                                                                                                                       |
-| `cooldownEnabled`         | `boolean`                                              | `true`                          | 失败候选冷却跳过总开关，关闭后行为与旧版一致（每 step 都从会话模型重新开始）                                                                                       |
-| `cooldownMs`              | `number`                                               | `300000`（5 分钟）              | 失败模型的冷却窗口时长（毫秒），窗口过后自动重新验证并恢复其优先级；`0` = 立即过期（等效禁用）                                                                     |
-| `quotaCooldownEnabled`    | `boolean`                                              | `true`                          | 配额感知自适应冷却总开关，关闭后配额型失败不走配额档；仍可按 `retry-after` 或连续失败熔断递增，见[配额感知自适应冷却](#配额感知自适应冷却)                         |
-| `quotaCooldownMs`         | `number`                                               | `18000000`（5 小时）            | 配额型失败在报错无重置时间时的冷却档（毫秒）；`0` = 关闭配额延长（之后仍可命中 retry-after / 熔断档）                                                              |
-| `cooldownCapMs`           | `number`                                               | `604800000`（7 天）             | 自适应冷却时长硬上限（毫秒）：重置时间解析到极远未来时截断到这里，上限到期后重新验证、仍未恢复则再次冷却                                                           |
-| `cooldownBreakerEnabled`  | `boolean`                                              | `true`                          | 连续失败熔断升级总开关：开启后同候选连续失败时冷却窗指数递增，关闭后退回固定档，见[连续失败熔断升级](#连续失败熔断升级)                                            |
-| `cooldownBreakerCapMs`    | `number`                                               | `1800000`（30 分钟）            | 熔断递增冷却的独立上限（毫秒）：与配额档的 `cooldownCapMs`（7 天）分离；若固定档 `cooldownMs` 更长，有效上限不低于固定档                                           |
-| `cooldownStabilizationMs` | `number`                                               | `600000`（10 分钟）             | 熔断递增的稳定观察期（毫秒）：冷却期满后该候选进入观察期，其他未冷却候选优先接流量；没有其它可用候选时仍会半开试探；`0` = 无额外观察期，冷却窗内直接重试仍可能递增 |
-| `retryableCodes`          | `string[]`                                             | 见[失败码白名单](#失败码白名单) | 可触发重试/切换的失败码白名单                                                                                                                                      |
-| `perTurn`                 | `boolean`                                              | `true`                          | 同一 `turn:step` 内至多切换一次候选（单次切换档）；默认 `true` = step 内允许多次切换，见[行为](#行为)                                                              |
-| `timeWindowEnabled`       | `boolean`                                              | `false`                         | 时间窗切换/错峰优先总开关，默认关闭（开启前零行为变化），见[时间窗切换与错峰优先](#时间窗切换与错峰优先)                                                           |
-| `timeWindowRules`         | `Array<{match, action, windows}>`                      | 官方错峰预置（见下文）          | 规则 = provider 匹配模式（`deepseek-account` / `deepseek-*` / `*`）+ 动作（`block` / `prefer`）+ `HH:mm` 半开区间窗口列表                                          |
+| 字段                      | 类型                                                                                 | 默认                            | 说明                                                                                                                                                                              |
+| ------------------------- | ------------------------------------------------------------------------------------ | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                 | `boolean`                                                                            | `true`                          | 总开关，关闭后不再拦截模型失败                                                                                                                                                    |
+| `fallbackChains`          | `Array<{provider, model, displayName?, description?, reasoningEffort?, maxTokens?}>` | `[]`                            | 纯回退候选队列（不含会话指定的主模型），失败后按序切换；旧 `string[]` 形态自动归一；后两个可选字段为候选级参数覆盖，见[候选级参数覆盖](#候选级参数覆盖reasoningeffort--maxtokens) |
+| `retriesBeforeSwitch`     | `number`                                                                             | `0`                             | 每候选切换前允许的同 provider 重试次数，见[每候选重试次数](#每候选重试次数retriesbeforeswitch)                                                                                    |
+| `maxRetries`              | `number`                                                                             | `0`（= 链长）                   | 单次请求最多**切换候选**次数，不含同候选重试                                                                                                                                      |
+| `baseDelayMs`             | `number`                                                                             | `500`                           | 指数退避初值；`0` = 禁用退避（失败后立即重试/切换）                                                                                                                               |
+| `maxDelayMs`              | `number`                                                                             | `30000`                         | 指数退避上限                                                                                                                                                                      |
+| `cooldownEnabled`         | `boolean`                                                                            | `true`                          | 失败候选冷却跳过总开关，关闭后行为与旧版一致（每 step 都从会话模型重新开始）                                                                                                      |
+| `cooldownMs`              | `number`                                                                             | `300000`（5 分钟）              | 失败模型的冷却窗口时长（毫秒），窗口过后自动重新验证并恢复其优先级；`0` = 立即过期（等效禁用）                                                                                    |
+| `quotaCooldownEnabled`    | `boolean`                                                                            | `true`                          | 配额感知自适应冷却总开关，关闭后配额型失败不走配额档；仍可按 `retry-after` 或连续失败熔断递增，见[配额感知自适应冷却](#配额感知自适应冷却)                                        |
+| `quotaCooldownMs`         | `number`                                                                             | `18000000`（5 小时）            | 配额型失败在报错无重置时间时的冷却档（毫秒）；`0` = 关闭配额延长（之后仍可命中 retry-after / 熔断档）                                                                             |
+| `cooldownCapMs`           | `number`                                                                             | `604800000`（7 天）             | 自适应冷却时长硬上限（毫秒）：重置时间解析到极远未来时截断到这里，上限到期后重新验证、仍未恢复则再次冷却                                                                          |
+| `cooldownBreakerEnabled`  | `boolean`                                                                            | `true`                          | 连续失败熔断升级总开关：开启后同候选连续失败时冷却窗指数递增，关闭后退回固定档，见[连续失败熔断升级](#连续失败熔断升级)                                                           |
+| `cooldownBreakerCapMs`    | `number`                                                                             | `1800000`（30 分钟）            | 熔断递增冷却的独立上限（毫秒）：与配额档的 `cooldownCapMs`（7 天）分离；若固定档 `cooldownMs` 更长，有效上限不低于固定档                                                          |
+| `cooldownStabilizationMs` | `number`                                                                             | `600000`（10 分钟）             | 熔断递增的稳定观察期（毫秒）：冷却期满后该候选进入观察期，其他未冷却候选优先接流量；没有其它可用候选时仍会半开试探；`0` = 无额外观察期，冷却窗内直接重试仍可能递增                |
+| `retryableCodes`          | `string[]`                                                                           | 见[失败码白名单](#失败码白名单) | 可触发重试/切换的失败码白名单                                                                                                                                                     |
+| `perTurn`                 | `boolean`                                                                            | `true`                          | 同一 `turn:step` 内至多切换一次候选（单次切换档）；默认 `true` = step 内允许多次切换，见[行为](#行为)                                                                             |
+| `timeWindowEnabled`       | `boolean`                                                                            | `false`                         | 时间窗切换/错峰优先总开关，默认关闭（开启前零行为变化），见[时间窗切换与错峰优先](#时间窗切换与错峰优先)                                                                          |
+| `timeWindowRules`         | `Array<{match, action, windows}>`                                                    | 官方错峰预置（见下文）          | 规则 = provider 匹配模式（`deepseek-account` / `deepseek-*` / `*`）+ 动作（`block` / `prefer`）+ `HH:mm` 半开区间窗口列表                                                         |
 
-配置卡功能：启用开关；从宿主模型目录（按 provider 分组）勾选回退候选，列表限高滚动并支持按 provider 分组名 / 模型 id / 显示名搜索过滤（大小写不敏感，无命中给空态）；上移 / 下移 / 移除调整回退优先级（顺序即回退顺序，会话指定的模型不在此队列中）；设置每候选重试次数与最大切换候选数；失败候选冷却跳过开关与冷却窗口时长（毫秒）；连续失败熔断升级开关、递增上限与稳定观察期时长（毫秒）；时间窗开关与规则编辑（provider 匹配 + 时段窗口，非法规则阻止保存，开启时自动填入官方错峰预置）；保存 / 放弃，带 revision 冲突检测。所有改动保存后即时生效，无需重载插件。配色接入 dsh web 主题变量（`--dsw-alias-*`），明暗模式均保持文字可读。
+配置卡功能：启用开关；从宿主模型目录（按 provider 分组）勾选回退候选，列表限高滚动并支持按 provider 分组名 / 模型 id / 显示名搜索过滤（大小写不敏感，无命中给空态）；上移 / 下移 / 移除调整回退优先级（顺序即回退顺序，会话指定的模型不在此队列中）；候选行内参数覆盖（推理力度与输出上限两个可清空输入，见[候选级参数覆盖](#候选级参数覆盖reasoningeffort--maxtokens)）；设置每候选重试次数与最大切换候选数；失败候选冷却跳过开关与冷却窗口时长（毫秒）；连续失败熔断升级开关、递增上限与稳定观察期时长（毫秒）；时间窗开关与规则编辑（provider 匹配 + 时段窗口，非法规则阻止保存，开启时自动填入官方错峰预置）；保存 / 放弃，带 revision 冲突检测。所有改动保存后即时生效，无需重载插件。配色接入 dsh web 主题变量（`--dsw-alias-*`），明暗模式均保持文字可读。
 
 ### 配置存储与持久化
 
@@ -164,7 +166,7 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 设置表单全程跟随 dsh 的语言配置（设置 → 通用 → 语言，偏好持久化在设置命名空间 `locale` 的 `preference` 字段，缺省依次回退浏览器语言、English）：
 
 - **配置卡文案**：中英字典经 `ctx.locale` 注册为 `llm-fallback` 命名空间，卡片订阅 locale 快照——切换语言后已打开的配置页**立即重渲染**，无需刷新或重载插件；
-- **schema 字段描述**：全部字段（含 `fallbackChains` 链项的 `provider` / `model` / `displayName` / `description`）的描述均为 schemastery i18n 映射 `{ '': 英文默认, zh, en }`，随宿主 `settings.describe()` 原样下发、由前端按当前语言解析；`''` 键保证不识别映射的旧渲染端原样显示英文，行为零回归；
+- **schema 字段描述**：全部字段（含 `fallbackChains` 链项的 `provider` / `model` / `displayName` / `description` / `reasoningEffort` / `maxTokens`）的描述均为 schemastery i18n 映射 `{ '': 英文默认, zh, en }`，随宿主 `settings.describe()` 原样下发、由前端按当前语言解析；`''` 键保证不识别映射的旧渲染端原样显示英文，行为零回归；
 - **降级**：宿主组合未含 locale 服务时配置卡回退英文文案，功能不受影响。
 
 ## 每候选重试次数（retriesBeforeSwitch）
@@ -265,6 +267,28 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 - **优雅降级**：宿主未透传该字段时（当前 pi-ai 路由不产出该字段）自动落回配额档 / 熔断档 / 固定档，行为与旧版一致，绝不因为缺字段而失败；
 - **同样不解析 message**：只读结构化字段 `providerRetryAfterMs`，不猜报文里的 `Retry-After:` 文本。
 
+## 候选级参数覆盖（reasoningEffort / maxTokens）
+
+回退队列里的每个候选可以带两个可选覆盖字段，按候选定制调用参数——不同模型对推理力度 / 输出预算的合适数值不同，统一跟随会话原值往往顾此失彼：
+
+```yaml
+fallbackChains:
+  - provider: deepseek
+    model: deepseek-reasoner
+    reasoningEffort: high # 切到该候选时随 selection 写入(可选)
+  - provider: other
+    model: cheap-model
+    maxTokens: 4096 # 路由到该候选的请求覆盖输出上限(可选)
+```
+
+两个字段的生效通道**由宿主事件契约决定，各走各的官方认可路径**：
+
+- **`reasoningEffort`（模型选择维度）**：effort 是 `agent.model.select()` 的 selection 一部分（宿主禁止在 `agent/request` waterfall 里改写 selection），所以它随[切换持久化](#工作原理)生效——插件推进到该候选时，`persistModelSwitch` 把条目配置的力度（非空字符串，adapter 自有力度 id，如 `medium` / `high`）作为 `reasoningEffort` 一并传给 `agent.model.select()`，写入 durable model/selection 事件，**下一 step 生效**（与模型切换同一时机）。未配置该字段时保持旧行为：沿用切换前 selection 的 effort；
+- **`maxTokens`（请求 controls 维度）**：输出上限属于 `LlmCallControls`，宿主明确允许在 `agent/request` waterfall 里调整 controls（只不允许改 provider / model / effort selection）。插件按当前请求的路由（`seed.provider` / `seed.model`）匹配链条目，命中且配置了正整数 `maxTokens` 时浅拷贝覆盖返回；**每个请求独立取候选条目的绝对值**，不基于上次写入做增量，无累积污染。会话指定模型不勾进队列时其请求永不命中——若用户把会话指定模型也勾进队列（行为节允许的配置），该模型自身的请求同样按路由命中该项的 `maxTokens` 覆盖（属显式按路由配参，语义一致）；
+- **零回归**：两个字段都未配置时——切到的候选 `select` 原样沿用会话 effort、请求原样返回 `seed` 同一对象（不多产生拷贝）；旧 `string[]` 链配置归一后天然不带这两个字段；
+- **合法性**：`reasoningEffort` 是 adapter 自有的不透明字符串 id（dsh-llm 类型层无全局枚举），候选不支持该力度时请求期抛 `UNSUPPORTED_REASONING_EFFORT`——该码已在默认[失败码白名单](#失败码白名单)内，自动切下一候选，无需预校验；`maxTokens` 为正整数（配置非法直接报配置错误），超出 provider 侧限制时以普通失败暴露（可能不在白名单 → 透传不切换）；
+- **配置卡**：队列行内两个可清空输入（力度自由文本 / 上限正整数），清空 = 未配置；保存时未配置的候选不带这两个键（详见配置卡功能段）。
+
 ## 失败码白名单
 
 插件按 `LlmFailure.code` 白名单与唯一一个结构化 `status` 判定（`status === 408` 网关请求超时）路由（宿主约定：route on code, never parse message——**重试/切换路由**同样绝不解析 message；唯一例外是记冷却时的[配额感知自适应冷却](#配额感知自适应冷却)，message 解析只影响冷却时长、不影响路由）。默认白名单是宿主官方重试码（`EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT`）的超集——多出配额与上下文类，切模型正是这些失败的本职出路；另含两类**确定性失败**，同模型重试必复现，切下一候选是唯一有意义的恢复路径：`UNSUPPORTED_REASONING_EFFORT`（模型不支持所请求的 reasoning effort）与 `UNKNOWN_MODEL`（候选模型已从 provider 配置中删除或 id 变更——回退队列的[失效候选兜底](#模型目录与失效候选)）。
@@ -349,6 +373,7 @@ dsh 侧的模型身份是**字面 `provider/model` 路由键**：deepseek 与 pi
 - 时间窗按**宿主机本地时区**判定：预置官方窗口以北京时间为锚（高峰 08:30–00:30 / 半价 00:30–08:30），宿主机时区非 UTC+8 时需自行换算窗口值；窗口结束的恢复依赖下次请求的惰性过期判定，无请求间隙不会主动切换
 - 每 step 的回退状态以 `<会话id>:<turn>:<step>` 为 key 存内存（会话标识取自 `agent/request(-error)` payload 的 `agent.session.id`，缺失时降级为无会话段的 `turn:step` 共享键位）：新 turn 首次请求时清理**同会话**其他 turn 的旧状态，跨会话互不清理、同号 turn 互不串扰；每会话在其最末 turn 后遗留少量状态（上界 ≈ 会话数 × 单 turn step 数，每项小对象，宿主重启即清零，量级可忽略）
 - `LlmFailure.status` 仅由 deepseek 路由的 provider 错误路径填充；pi-ai 路由对错误纯文本分类、不产出该字段——「网关 408 结构化判定」只在 deepseek 路由生效，pi-ai 路由的网关 408 退化为无 `status` 的 `INVALID_REQUEST`（白名单外、不切换）。修复点在宿主上游（408 归类为超时类失败、或在失败事件中透传 status），见[故障排查](#故障排查)
+- **候选级 `reasoningEffort` 是 adapter 自有的不透明 id**：dsh-llm 类型层无全局力度枚举，合法值由各 provider/model 的模型信息决定（用户需查所选模型的文档）；未配置候选级力度时**继承切换前 selection 的 effort**（零回归语义）；仅当切换前 selection 本身不含力度（如适配器未上报）时，宿主才回落适配器默认而不继承——力度不会凭空跨候选延续；`maxTokens` 覆盖无宿主层边界校验——超出 provider 侧上限时以普通失败暴露（可能不在白名单 → 透传不切换），请按候选模型的实际上限填写
 - 不实现 provider/* 通配条目、role/specificity 多链分派、同一 step 链耗尽后切回会话指定模型（新 step 天然从会话指定模型重新开始）
 
 ## 故障排查

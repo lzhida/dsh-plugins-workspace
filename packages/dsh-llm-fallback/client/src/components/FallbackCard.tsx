@@ -27,6 +27,7 @@ import {
   pruneStaleRoutes,
   staleRouteKeys,
   type CatalogSnapshotLike,
+  type Route,
 } from '../lib/catalog.ts';
 import {
   beginDraft,
@@ -162,6 +163,16 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
     patchDraft(() => ({ queue: base }));
   }
 
+  /** 行内编辑候选级参数覆盖（0.7.0）：patch 合并进该条草稿路由。 */
+  function patchQueueEntry(index: number, patch: Partial<Route>): void {
+    if (!writable || busy) return;
+    const base = ensureDraft().queue.slice();
+    const target = base[index];
+    if (!target) return;
+    base[index] = { ...target, ...patch };
+    patchDraft(() => ({ queue: base }));
+  }
+
   /** 一键清理失效条目：显式草稿动作（仍需保存生效）。无可清理项时 no-op。 */
   function clearStale(): void {
     if (!writable || busy) return;
@@ -286,6 +297,7 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
         onMove={move}
         onRemove={removeAt}
         onClearStale={clearStale}
+        onPatch={patchQueueEntry}
       />
 
       <CatalogPicker
