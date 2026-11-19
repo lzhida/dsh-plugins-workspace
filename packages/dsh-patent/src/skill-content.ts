@@ -50,6 +50,22 @@ export const SKILL_CONTENT = `\
 - 附图说明："图1是……的流程示意图；"（逐图一段，末图句号）
 - 「所述」纪律：术语几乎必加「所述」回指；但首次出现绝不能带。
 
+## 背景技术检索（patent_search）
+
+- 背景技术引证必须先核「先后」：只有对比文件的**申请日**早于本申请申请日，才可能作
+  有效对比文件；仅公开日早、申请日不早的**需另判**，均晚于的不可作对比文件。
+- 检索本身走通用 web_search/web_fetch；拿到任一专利库（EPO OPS / USPTO
+  PatentsView / Google Patents / WIPO PATENTSCOPE / CNIPA 页面）的原文或 JSON 后，
+  交 patent_search 归一：公布号、名称、申请人、申请日、公开日、优先权日、IPC/CPC、
+  摘要、权利要求首项，并给出日期档位（prior-art / needs-review / later / unknown）。
+- 插件不内置专利库凭据（CNIPA 无公开 API，OPS 与 PatentsView 需用户自带 key）；拿
+  不到原文时 patent_search 会输出检索指引与期望字段清单，照指引取回再贴回即可。
+- 引证句式仍按上文「申请公布号为CN…A的中国专利，公开了……」，但只引日期档位成立
+  （申请日早于本申请）的对比文件；档位不成立的不得当有效对比文件引用。
+- 实测有「字面同词、语义无关」的命中（如 FPGA 物理层波形匹配这类含「白名单/交集」
+  的文献），须人工或模型复核后再引；工具只给字面提示，不断言语义无关。
+- 日期档位是纯日期比较的机械判定，不构成法律判断。
+
 ## 交付路径
 
 - **builtin-docx**（默认）：disclosure_template_fill 返回内置模板路径 → 用捆绑

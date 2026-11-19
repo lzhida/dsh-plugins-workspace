@@ -1,13 +1,15 @@
 /**
  * 模型工具包装:disclosure_template_fill / disclosure_check /
  * patent_claims_check / claims_evidence_check / draft_review_check /
- * claims_code_map。
+ * claims_code_map / patent_search。
  *
  * 全部业务逻辑在纯函数层(disclosure.ts / disclosure-check.ts / claims.ts /
- * claims-evidence.ts / draft-review.ts / claims-code-map.ts),这里只做参数归一、
- * 公司默认值合并与输出渲染。无网络;唯一的文件读是 draft_review_check 与
- * claims_code_map 读初稿/权项 docx 或文本的正文(最小 zip 解析),docx 落盘仍由
- * 模型按交付指引经 office skill / python 完成。
+ * claims-evidence.ts / draft-review.ts / claims-code-map.ts / patent-search.ts),
+ * 这里只做参数归一、公司默认值合并与输出渲染。唯一的文件读是
+ * draft_review_check 与 claims_code_map 读初稿/权项 docx 或文本的正文(最小
+ * zip 解析),docx 落盘仍由模型按交付指引经 office skill / python 完成。
+ * 唯一的网络调用是 patent_search 的可选零凭据 Google Patents XHR 兜底(默认
+ * 关闭,失败只降级为诊断),其余全部离线。
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
@@ -27,6 +29,10 @@ import {
 } from './disclosure.ts';
 import { checkDisclosure } from './disclosure-check.ts';
 import { checkDraftReview, type ReviewFace } from './draft-review.ts';
+import {
+  buildPatentSearchReport,
+  fetchGooglePatents,
+} from './patent-search.ts';
 
 /** 从自由对象里取非空字符串。 */
 function str(value: unknown): string {
@@ -498,6 +504,126 @@ export function buildPatentTools(getDefaults: () => DisclosureDefaults) {
           sourceRoot: str(input.sourceRoot) || undefined,
           document: str(input.document) || undefined,
         });
+      },
+    }),
+    defineTool({
+      name: 'patent_search',
+      description:
+        'Structure patent-database search results for 背景技术 citations and prior-art ledgers: normalize provider output (CNIPA / EPO OPS / USPTO PatentsView / Google Patents) into structured records (公布号 / 名称 / 申请人 / 申请日 / 公开日 / 优先权日 / IPC-CPC / 摘要 / 权利要求首项) and compute the DATE TIER each record needs: prior-art (对比文件申请日早于本申请申请日 = 可作有效对比文件) / needs-review (仅公开日早于但申请日不早于 = 需另判) / later (均晚于 = 不可作对比文件) / unknown. The tier is a mechanical date comparison, NOT a legal opinion. The plugin does NOT embed any credentialed patent-database client: paste the provider output (raw text or JSON) and the tool normalizes it; an optional zero-credential Google Patents XHR fallback is available but is unofficial and may break or be rate-limited — failures degrade to diagnostics, never throw. Also flags likely semantic-interference records (no literal overlap with your query, or too little metadata) for manual/model review — it never asserts semantic irrelevance.',
+      parameters: {
+        query: {
+          type: 'string',
+          description:
+            'Optional: the search term you used — used for literal-overlap hints and for the retrieval guidance output.',
+        },
+        publicationNumber: {
+          type: 'string',
+          description:
+            'Optional: an exact publication number (e.g. CN122824595A). When no raw/records are supplied the tool returns a placeholder record plus retrieval guidance.',
+        },
+        raw: {
+          type: 'string',
+          description:
+            'Optional: pasted provider output — plain text blocks separated by blank lines, or a JSON array of provider records.',
+        },
+        records: {
+          type: 'array',
+          items: { type: 'object', additionalProperties: true },
+          description:
+            'Optional: structured provider records. Recognized keys: publication_number / publicationNumber, title, applicant / assignee, filing_date / application_date, publication_date, priority_date, ipc / cpc, abstract, first_claim / claim1.',
+        },
+        applicantFilingDate: {
+          type: 'string',
+          description:
+            'Optional: the filing date of YOUR application (YYYY-MM-DD) — required for the date tier.',
+        },
+        allowOnline: {
+          type: 'boolean',
+          description:
+            'Optional: set true to additionally try the zero-credential Google Patents XHR fallback for query. Unofficial endpoint; failures are reported as diagnostics.',
+        },
+        source: {
+          type: 'string',
+          description:
+            'Optional: provider label recorded on the records (e.g. patentsview, epo-ops, patent-scope, google-patents).',
+        },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value) => {
+          const report = value as {
+            ok: boolean;
+            markdown: string;
+            stats: {
+              records: number;
+              priorArt: number;
+              needsReview: number;
+              later: number;
+              unknown: number;
+              semanticFlags: number;
+            };
+            issues: { code: string; severity: string; message: string }[];
+          };
+          const issues =
+            report.issues.length > 0
+              ? `Issues (${report.issues.length}):\n${report.issues
+                  .map((i) => `- [${i.severity}] ${i.code}: ${i.message}`)
+                  .join('\n')}\n\n`
+              : '';
+          const stats = `stats: records=${report.stats.records} priorArt=${report.stats.priorArt} needsReview=${report.stats.needsReview} later=${report.stats.later} unknown=${report.stats.unknown} semanticFlags=${report.stats.semanticFlags} ok=${report.ok}\n\n`;
+          return [
+            { type: 'text', text: `${stats}${issues}${report.markdown}` },
+          ];
+        },
+      },
+      isConcurrencySafe: () => true,
+      async execute(args) {
+        const input = (args ?? {}) as {
+          query?: unknown;
+          publicationNumber?: unknown;
+          raw?: unknown;
+          records?: unknown;
+          applicantFilingDate?: unknown;
+          allowOnline?: unknown;
+          source?: unknown;
+        };
+        const extraIssues: {
+          code: string;
+          severity: 'error' | 'warning';
+          message: string;
+        }[] = [];
+        const records = Array.isArray(input.records) ? [...input.records] : [];
+        const query = str(input.query);
+        if (input.allowOnline === true && query) {
+          const online = await fetchGooglePatents(query);
+          if (online.ok) {
+            records.push(...online.records);
+          } else {
+            extraIssues.push({
+              code: 'ONLINE_SEARCH_FAILED',
+              severity: 'warning',
+              message: `Google Patents XHR 兜底查询失败（${online.error ?? '未知原因'}），非官方端点可能变更或限流；已仅按你提供的内容继续归一。`,
+            });
+          }
+        } else if (input.allowOnline === true && !query) {
+          extraIssues.push({
+            code: 'ONLINE_SEARCH_SKIPPED',
+            severity: 'warning',
+            message:
+              'allowOnline=true 但未提供 query，未执行 Google Patents 兜底查询。',
+          });
+        }
+        return buildPatentSearchReport(
+          {
+            query: query || undefined,
+            publicationNumber: str(input.publicationNumber) || undefined,
+            raw: str(input.raw) || undefined,
+            records,
+            applicantFilingDate: str(input.applicantFilingDate) || undefined,
+            source: str(input.source) || undefined,
+          },
+          extraIssues,
+        );
       },
     }),
   ];

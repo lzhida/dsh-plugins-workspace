@@ -117,6 +117,18 @@ export { checkClaims } from './claims.ts';
 export { checkClaimsEvidence } from './claims-evidence.ts';
 export { checkClaimsCodeMap } from './claims-code-map.ts';
 export { checkDraftReview } from './draft-review.ts';
+export {
+  buildPatentSearchReport,
+  computeDateTier,
+  normalizePatentRecord,
+  normalizePublicationNumber,
+} from './patent-search.ts';
+export type {
+  DateTier,
+  DateTierResult,
+  PatentRecord,
+  PatentSearchReport,
+} from './patent-search.ts';
 export { buildSections } from './sections.ts';
 export { buildPatentTools, mergeHeader } from './tools.ts';
 export {

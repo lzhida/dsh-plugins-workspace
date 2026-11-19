@@ -7,7 +7,7 @@
 
 | 行              | 入口                            | 内容                                                                         |
 | --------------- | ------------------------------- | ---------------------------------------------------------------------------- |
-| `dsh-patent`    | `./src/index.ts`                | 六个模型工具 + 三个结构化 prompt section + 内嵌方法论 skill（撰写/审查两份） |
+| `dsh-patent`    | `./src/index.ts`                | 七个模型工具 + 三个结构化 prompt section + 内嵌方法论 skill（撰写/审查两份） |
 | `preset-patent` | `@deepseek-ai/dsh-agent-preset` | 「专利交底」预设：发明人助手 persona + 检索/文件/office skill 链 + 压缩组    |
 
 ## 模型工具
@@ -70,6 +70,24 @@
   维权取证用法：先用 `claims_evidence_check`（或 `draft_review_check`）读码取到
   逐特征证据记录，再把同一批记录交给 `claims_code_map` 出台账——四态判定不重算，
   同一份证据在「审查问题清单」与「维权取证底稿」两种视角下各出一张表。
+
+- **`patent_search`（专利库检索结构化）**：把任一专利库（EPO OPS / USPTO
+  PatentsView / Google Patents / WIPO PATENTSCOPE / CNIPA 页面）取回的原文或 JSON
+  归一成结构化记录——公布号、名称、申请人、**申请日**、**公开日**、优先权日、
+  IPC/CPC、摘要、权利要求首项——并给出每条对比文件的**日期档位**：
+  `prior-art`（申请日早于本申请申请日 = 可作有效对比文件）、`needs-review`
+  （仅公开日早、申请日不早 = 需另判）、`later`（均晚于 = 不可作对比文件）、
+  `unknown`（缺日期）。档位结果带出判定所需三段输入（对比文件申请日 / 公开日 /
+  本申请申请日）与判定依据，便于直接落进答辩锚点台账。
+
+  插件**不内置专利库凭据**：CNIPA 无公开 API，EPO OPS 与 PatentsView 需用户自带
+  key（调研结论见 `docs/patent-reference-notes.md`）。拿不到原文时本工具输出
+  检索指引与期望字段清单；provider 原生 JSON 若字段名不在识别键表内，须先拍平/
+  重命名再贴入（OPS biblio 是嵌套结构）。另提供零凭据的 Google Patents XHR 兜底
+  （可选，非官方端点，可能变更或限流，失败只降级为诊断不抛错）。对与检索词无
+  字面交集、或缺名称与分类的记录标提示交人工/模型复核——字面命中也可能语义
+  无关，仍须复核——工具不断言语义无关。**日期档位是纯日期比较的机械判定，
+  不构成法律判断。**
 
 ## 内嵌方法论 skill
 
