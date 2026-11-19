@@ -6,11 +6,13 @@
  * 决策域按「决策点」切插件行，每个决策点一个入口文件，命名 `<决策点>-gate`：
  *
  * - `src/entries/ask-gate.ts` = 插件行 **ask-gate**：接管模型侧提问工具
- *   `ask_user_question`（决策门控系列 1/4：空壳直通，门控判定留给 2/4）。
- * - `src/core/` = 与具体决策点无关的共用件：配置面（`config.ts`）与宿主
+ *   `ask_user_question`（总开关关闭＝直通原版提问；开启＝先问决策模型，
+ *   置信度达标自动作答并落账 meta，否则 fail-open 放行真实提问）。
+ * - `src/core/` = 与具体决策点无关的共用件：配置面（`config.ts`）、
+ *   决策 core（`decision.ts`：调用封装 / 响应解析 / 阈值判定）与宿主
  *   `userQuestions` 的本地最小类型面（`user-questions.ts`）。
- * - `src/services/` = 决策点的执行层（ask-gate 的直通提问在
- *   `services/ask-gate.ts`；门控判定将在此之前插入）。
+ * - `src/services/` = 决策点的执行层（ask-gate 的直通提问与门控决策辅助
+ *   在 `services/ask-gate.ts`）。
  *
  * ## 插件契约导出
  *

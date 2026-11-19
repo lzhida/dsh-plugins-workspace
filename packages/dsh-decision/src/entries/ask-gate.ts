@@ -1,5 +1,5 @@
 /**
- * ask-gate 插件行（决策门控系列 1/4）。
+ * ask-gate 插件行（决策门控系列 1/4 骨架 + 3/4 门控接线）。
  *
  * ## 它在包里的角色
  *
@@ -8,13 +8,18 @@
  *
  * - 本文件 = **插件行 ask-gate**：接管模型侧的提问工具 `ask_user_question`。
  *
- * ## 1/4 阶段做什么、不做什么
+ * ## 执行路径
  *
- * 做：注册一个与**出厂 legacy 模式 schema 兼容**的同名工具
- * `ask_user_question`，执行路径直通宿主 `ctx.userQuestions.ask()`，
- * 因此提问照常发给用户、答案照常回传，行为与出厂完全一致。
- *
- * 不做（留给 2/4、3/4）：门控判定逻辑、决策模型调用、tool-gate/route-gate。
+ * - 总开关关闭（默认）：与**出厂 legacy 模式 schema 兼容**的同名工具
+ *   直通宿主 `ctx.userQuestions.ask()`，行为与出厂完全一致。
+ * - 总开关开启：先让决策模型（2/4 决策 core）评估提问的置信度——
+ *   **≥ 阈值自动作答**（答案带 `[decision auto-answer]` 前缀标注来源，
+ *   并落账 `presentationMeta` {confidence, decision, rationale}）；
+ *   **< 阈值或任何降级**（llm 服务缺失 / provider+model 未配置 /
+ *   调用失败 / 超时 / 被中止 / 解析失败 / 建议答案未覆盖全部问题）
+ *   一律放行真实提问（fail-open），同样落账 meta 并打降级日志。
+ * - 决策模型调用是**纯旁路**：不写会话、不注册 MessageSourceMap、
+ *   不经宿主 agent 状态机（见 core/decision.ts 头注释）。
  *
  * ## 为什么必须让位出厂行
  *
@@ -28,16 +33,24 @@
  * 宿主服务在提问前会校验并抛错：signal 已中止 → `ASK_ABORTED`；问题为空 →
  * `EMPTY_QUESTIONS`；传入 agent 但不是活体 → `CALLER_NOT_LIVE`；agent 不在
  * `agents.roots()` 内（被别的活体 agent 持有的子代理）→ `DELEGATED_CALLER`。
- * 本行**原样透传**，不吞不改、不改写文案。
+ * 本行**原样透传**，不吞不改、不改写文案。决策评估阶段的错误绝不抛穿：
+ * 全部归入放行路径（见 core/decision.ts 六分支）。
  */
 
 import type { Context } from '@deepseek-ai/cordis';
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
 import { resolveConfig, type ResolvedConfig } from '../core/config.ts';
+import { decide, type DecisionLlmLike } from '../core/decision.ts';
 import {
   askThroughUserQuestions,
+  buildAutoAnswers,
+  buildAutoMeta,
+  buildDecisionPrompt,
+  buildDegradedMeta,
+  DECISION_SYSTEM_PROMPT,
   type AskGateQuestion,
+  type PresentationMeta,
 } from '../services/ask-gate.ts';
 
 /** Cordis 插件名（loader 依赖）；与包内决策点成员名一致。 */
@@ -110,11 +123,15 @@ export const ASK_USER_QUESTION_PARAMETERS = {
   },
 };
 
-/** 工具出参 schema：与出厂 legacy 模式逐字兼容。 */
+/**
+ * 工具出参 schema：answers 部分与出厂 legacy 模式逐字兼容；顶层放宽为
+ * `additionalProperties: true` 以容纳门控落账扩展 `presentationMeta`
+ * （置信度/决策/理由，宿主严格校验下扩展字段的合法通道）。
+ */
 export const ASK_USER_QUESTION_OUTPUT = {
   schema: {
     type: 'object' as const,
-    additionalProperties: false as const,
+    additionalProperties: true as const,
     properties: {
       answers: {
         type: 'array' as const,
@@ -169,8 +186,8 @@ export function apply(ctx: Context, configInput?: unknown): void {
   };
 
   // 3. 注册接管后的提问工具。
-  //    总开关默认关闭＝不介入＝直通原版提问；1/4 阶段即使开启也仍然直通
-  //    （门控判定留给 2/4），因此这里两条分支行为一致。
+  //    总开关默认关闭＝不介入＝直通原版提问；开启后进入门控路径
+  //    （决策模型评估 → 置信度阈值 → 自动作答或放行，降级一律放行）。
   ctx.tools.register(
     defineTool({
       name: ASK_USER_QUESTION_TOOL,
@@ -187,11 +204,95 @@ export function apply(ctx: Context, configInput?: unknown): void {
         const config = readConfig();
         const questions = (args.questions ?? []) as AskGateQuestion[];
         if (!config.enabled) {
-          // 默认路径：完全直通，行为与出厂一致。
+          // 默认路径：完全直通，行为与出厂一致，不落账 meta。
           return askThroughUserQuestions(userQuestions, questions, exec);
         }
-        // 2/4 起在此插入门控判定（放行 / 改写 / 转决策模型）；1/4 仍直通。
-        return askThroughUserQuestions(userQuestions, questions, exec);
+
+        // 空问题清单：与出厂行为保持一致（宿主抛 EMPTY_QUESTIONS），
+        // 不浪费一次决策模型调用，也不让同一输入在开关两侧语义漂移。
+        if (questions.length === 0) {
+          return askThroughUserQuestions(userQuestions, questions, exec);
+        }
+
+        // 门控路径（总开关开启）：先问决策模型，再按置信度阈值决定
+        // 自动作答或放行真实提问。任何降级（模型缺失/配置缺/调用失败/
+        // 超时/低置信/答案覆盖不全）都放行真实提问（fail-open），
+        // 并在日志与 presentationMeta 里留痕。
+        // llm 服务软取：不进 inject（部分宿主形态可能缺 llm 服务，
+        // 硬注入会阻塞插件装载、提问能力直接消失）；取不到时决策 core
+        // 按 llm-unavailable 降级放行。
+        const llm = (ctx as { get?: (key: string) => unknown }).get?.('llm') as
+          DecisionLlmLike | undefined;
+        const routeReady =
+          config.decisionProvider !== '' && config.decisionModel !== '';
+        if (!routeReady) {
+          console.warn(
+            `[${name}] decision model not configured (provider/model empty); passing question through`,
+          );
+          const result = await askThroughUserQuestions(
+            userQuestions,
+            questions,
+            exec,
+          );
+          return {
+            ...result,
+            presentationMeta: buildDegradedMeta('route-not-configured'),
+          };
+        }
+
+        const report = await decide(
+          llm,
+          {
+            prompt: buildDecisionPrompt(questions),
+            system: DECISION_SYSTEM_PROMPT,
+            signal: exec.signal,
+          },
+          {
+            provider: config.decisionProvider,
+            model: config.decisionModel,
+            timeoutMs: config.decisionTimeoutMs,
+          },
+          config.confidenceThreshold,
+        );
+
+        let meta: PresentationMeta;
+        if (report.threshold.verdict === 'auto-answered' && report.parse.ok) {
+          const auto = buildAutoAnswers(questions, report.parse);
+          if (auto !== undefined) {
+            meta = buildAutoMeta(report.parse, 'auto-answered');
+            console.log(
+              `[${name}] decision auto-answered (confidence=${report.parse.confidence.toFixed(2)}, threshold=${config.confidenceThreshold})`,
+            );
+            return { ...auto, presentationMeta: meta };
+          }
+          // 模型建议没覆盖全部问题 → 不完整自动作答比多问一次更糟，放行。
+          console.warn(
+            `[${name}] decision answers incomplete for some questions; passing through`,
+          );
+          const incompleteMeta = buildAutoMeta(report.parse, 'passed-through');
+          meta = {
+            ...incompleteMeta,
+            rationale: `answers-incomplete: ${incompleteMeta.rationale}`,
+          };
+        } else {
+          // 解析失败时用 parseError 描述真实原因，别把 call.kind='ok'
+          // 当成降级理由落进 meta 与日志（语义正好相反）。
+          const reason = report.parse.parseError ?? report.call.kind;
+          console.warn(
+            `[${name}] decision degraded (${reason}, confidence=${report.parse.confidence.toFixed(2)}); passing through`,
+          );
+          meta =
+            report.parse.ok && report.parse.confidence > 0
+              ? buildAutoMeta(report.parse, 'passed-through')
+              : buildDegradedMeta(reason);
+        }
+
+        const result = await askThroughUserQuestions(
+          userQuestions,
+          questions,
+          exec,
+        );
+        return { ...result, presentationMeta: meta };
       },
     }),
   );

@@ -1,6 +1,6 @@
 {
   "name": "@zhidal/dsh-decision",
-  "description": "dsh-decision 决策域组合包（骨架阶段）：把「需要人拍板的决策点」做成可插拔的门控插件，按 <决策点>-gate 命名。本阶段只落 ask-gate 空壳——注册与出厂 legacy 模式 schema 兼容的同名 ask_user_question 工具，执行直通宿主 userQuestions 通道（总开关默认关闭＝行为与出厂完全一致），门控逻辑与决策模型调用留给后续卡。",
+  "description": "dsh-decision 决策域组合包：把「需要人拍板的决策点」做成可插拔的门控插件，按 <决策点>-gate 命名。ask-gate 插件行注册与出厂 legacy 模式 schema 兼容的同名 ask_user_question 工具——总开关关闭时直通宿主 userQuestions 通道（行为与出厂完全一致），开启时先由决策模型评估置信度：达标则自动作答并落账 presentationMeta（置信度/判定/理由），不达标或任何降级（模型缺失/配置缺/调用失败/超时/解析失败）一律 fail-open 放行真实提问。",
   "version": "0.1.0",
   "private": true,
   "license": "MIT",

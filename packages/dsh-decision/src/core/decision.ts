@@ -95,6 +95,16 @@ export interface DecisionLlmLike {
   }>;
 }
 
+/** 决策模型建议的单条答案（3/4 ask-gate 按问题 id 消费）。 */
+export interface DecisionParseAnswer {
+  /** 对应问题的稳定 id。 */
+  id: string;
+  /** 选中选项的 label 列表（选择题）；空数组＝非选择题或未选。 */
+  selected: string[];
+  /** 建议的自由文本答案（开放题/备注）。 */
+  custom?: string;
+}
+
 /** 决策输出的结构化解析结果。 */
 export interface DecisionParseResult {
   /** true＝成功解析出置信度；false＝按低置信处理。 */
@@ -105,6 +115,12 @@ export interface DecisionParseResult {
   suggestedAnswer?: string;
   /** 模型给的理由（可选字段，非字符串则不收）。 */
   reason?: string;
+  /**
+   * 决策模型按问题给出的结构化答案（可选）。宽松清洗：只保留
+   * `id` 为非空字符串且 `selected` 为字符串数组的条目；清洗后为空
+   * 则不收。3/4 消费方须自行校验「按 id 全覆盖」才可自动作答。
+   */
+  answers?: DecisionParseAnswer[];
   /** 原始置信度越界被钳制到 [0,1] 时为 true。 */
   clamped?: boolean;
   /** 解析失败原因（测试锚定与日志用）。 */
@@ -429,7 +445,46 @@ export function parseDecisionResponse(text: string): DecisionParseResult {
   if (reason !== undefined) {
     result.reason = reason;
   }
+  const answers = extractParseAnswers(record.answers);
+  if (answers.length > 0) {
+    result.answers = answers;
+  }
   return result;
+}
+
+/**
+ * 宽松清洗决策模型的 `answers` 数组：只保留「id 为非空字符串、
+ * selected 为字符串数组」的条目；selected 内非字符串元素剔除、
+ * custom 非字符串则丢弃。清洗后全部无效则返回空数组（调用方据此
+ * 不收该字段）。
+ */
+function extractParseAnswers(raw: unknown): DecisionParseAnswer[] {
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const answers: DecisionParseAnswer[] = [];
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null || Array.isArray(item)) {
+      continue;
+    }
+    const record = item as Record<string, unknown>;
+    const id = record.id;
+    if (typeof id !== 'string' || id.trim() === '') {
+      continue;
+    }
+    const selected = Array.isArray(record.selected)
+      ? record.selected.filter(
+          (label): label is string => typeof label === 'string',
+        )
+      : [];
+    const custom = record.custom;
+    answers.push({
+      id,
+      selected,
+      ...(typeof custom === 'string' && custom.trim() !== '' ? { custom } : {}),
+    });
+  }
+  return answers;
 }
 
 /**
