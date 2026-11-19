@@ -193,5 +193,61 @@ describe('dsh-patent', () => {
       expect(medium?.isDependent).toBe(false);
       expect(report.ok).toBe(true);
     });
+
+    it('设备权「实现根据权利要求N至M中任一项所述的方法」官方变体不误判从属', () => {
+      // 公布文本真实变体（docs/patent-reference-notes.md §引用句式）：
+      // 动词后带「根据」的设备权引用——修复前会被 REFERENCE 误判成从属
+      // 权利要求，连锁触发 CLAIM_SUBJECT_MISMATCH（设备主题 vs 方法主题）。
+      const report = checkClaims(
+        [
+          '1.一种数据传输方法，其特征在于：接收数据帧。',
+          '2.根据权利要求1所述的数据传输方法，其特征在于：所述校验为CRC校验。',
+          '3.一种电子设备，其特征在于，包括存储器与处理器，所述处理器实现根据权利要求1至2中任一项所述的方法。',
+        ].join('\n'),
+      );
+      const device = report.claims.find((c) => c.number === 3);
+      expect(device?.isDependent).toBe(false);
+      expect(device?.references).toEqual([]);
+      expect(report.issues.some((i) => i.code === 'CLAIM_REF_FORMAT')).toBe(
+        false,
+      );
+      expect(
+        report.issues.some((i) => i.code === 'CLAIM_SUBJECT_MISMATCH'),
+      ).toBe(false);
+      expect(report.ok).toBe(true);
+    });
+
+    it('介质权「实现权利要求N所述方法」缺「的」变体不报 CLAIM_REF_FORMAT', () => {
+      const report = checkClaims(
+        [
+          '1.一种数据传输方法，其特征在于：接收数据帧。',
+          '2.一种计算机可读存储介质，其上存储有计算机程序，所述计算机程序被处理器执行时实现权利要求1所述方法的步骤。',
+        ].join('\n'),
+      );
+      expect(report.issues.some((i) => i.code === 'CLAIM_REF_FORMAT')).toBe(
+        false,
+      );
+      const medium = report.claims.find((c) => c.number === 2);
+      expect(medium?.isDependent).toBe(false);
+    });
+
+    it('真从属设备权正文里的方法引用不进从属引用列表', () => {
+      // 「根据权利要求2所述的系统」是从属引用；正文「执行权利要求1所述的
+      // 方法」是类型引用，掩蔽后不应出现在 references 里。
+      const report = checkClaims(
+        [
+          '1.一种数据传输方法，其特征在于：接收数据帧。',
+          '2.一种数据传输系统，其特征在于：包括接收模块。',
+          '3.根据权利要求2所述的数据传输系统，其特征在于：所述接收模块执行权利要求1所述的方法。',
+        ].join('\n'),
+      );
+      const dependent = report.claims.find((c) => c.number === 3);
+      expect(dependent?.isDependent).toBe(true);
+      expect(dependent?.references).toEqual([2]);
+      expect(dependent?.subjectName).toBe('数据传输系统');
+      expect(
+        report.issues.some((i) => i.code === 'CLAIM_SUBJECT_MISMATCH'),
+      ).toBe(false);
+    });
   });
 });

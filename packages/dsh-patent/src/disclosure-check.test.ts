@@ -128,5 +128,115 @@ describe('dsh-patent', () => {
         true,
       );
     });
+
+    it('第三部分全占位骨架（0 字）也报 SOLUTION_SHALLOW 并写明骨架形态', () => {
+      // 修复前 0 字不报（solutionChars > 0 条件漏掉骨架形态）
+      const doc = buildDisclosure({
+        header: { applicant: '某公司', inventors: '李四' },
+        sections: {},
+      }).markdown;
+      const report = checkDisclosure(doc);
+      const shallow = report.issues.find((i) => i.code === 'SOLUTION_SHALLOW');
+      expect(shallow).toBeDefined();
+      expect(shallow?.message).toContain('没有有效正文');
+    });
+
+    it('全文任意两段公共后缀 ≥100 字报 DUPLICATE_TEXT（正例）', () => {
+      // 初稿真实形态：同一段 170 字文本在摘要/说明书多处逐字复制
+      const shared =
+        '升级完成后系统自动校验分区一致性并写入版本号，随后重启主控进入运行区执行新固件，整个流程无需人工到场确认。'.repeat(
+          2,
+        );
+      const doc = buildDisclosure({
+        header: { applicant: '某公司', inventors: '李四' },
+        sections: {
+          background: [`现场升级的历史流程描述。${shared}`],
+          solution: [`本方案改为远程静默升级。${shared}`],
+        },
+      }).markdown;
+      const report = checkDisclosure(doc);
+      const dup = report.issues.filter((i) => i.code === 'DUPLICATE_TEXT');
+      expect(dup.length).toBeGreaterThanOrEqual(1);
+      expect(dup[0]?.message).toMatch(/逐字相同的公共后缀/);
+    });
+
+    it('无大段复用的正常文档不报 DUPLICATE_TEXT（反例）', () => {
+      const report = checkDisclosure(FULL_DOC);
+      expect(report.issues.some((i) => i.code === 'DUPLICATE_TEXT')).toBe(
+        false,
+      );
+    });
+
+    it('第三与第五部分成对复用段落报 SECTION_DUPLICATE（正例）', () => {
+      // 初稿真实形态：发明内容「本方案…」与实施方式「在本实施例中…」
+      // 开头不同、后半段逐字相同（公共后缀 ≥40 但 <100，只触发部分间检测）
+      const shared =
+        '校验签名通过后原子切换分区指针，失败自动回滚到运行区镜像并记录升级日志，保证升级过程断电安全可靠，不丢失历史配置。';
+      const doc = buildDisclosure({
+        header: { applicant: '某公司', inventors: '李四' },
+        sections: {
+          solution: [`本方案在升级区完成差分包校验。${shared}`],
+          effects: [`在本实施例中，升级区完成差分包校验的流程如下。${shared}`],
+        },
+      }).markdown;
+      const report = checkDisclosure(doc);
+      const pair = report.issues.filter((i) => i.code === 'SECTION_DUPLICATE');
+      expect(pair.length).toBeGreaterThanOrEqual(1);
+      expect(pair[0]?.message).toContain('第三部分与第五部分');
+      // 后缀 60 字 < 100：全文级检测不应重复报
+      expect(report.issues.some((i) => i.code === 'DUPLICATE_TEXT')).toBe(
+        false,
+      );
+    });
+
+    it('第三与第五部分无对应复用不报 SECTION_DUPLICATE（反例）', () => {
+      const report = checkDisclosure(FULL_DOC);
+      expect(report.issues.some((i) => i.code === 'SECTION_DUPLICATE')).toBe(
+        false,
+      );
+    });
+
+    it('「所述X」术语互为包含报 TERM_VARIANT_PAIR（正例）', () => {
+      // 初稿真实形态：互逆转义表/转义表三名称并存、协议描述文件/描述文件
+      // 多种指称——交底阶段应统一术语
+      const doc = buildDisclosure({
+        header: { applicant: '某公司', inventors: '李四' },
+        sections: {
+          solution: [
+            '本方案维护所述互逆转义表，升级时加载所述转义表并比对所述协议描述文件与所述描述文件的版本号，加载所述读存转义表前需校验所述读存表与所述参数树一致后再切换分区，所述互逆映射表仅在初始化阶段构建。'.repeat(
+              6,
+            ),
+          ],
+        },
+      }).markdown;
+      const report = checkDisclosure(doc);
+      const variants = report.issues.filter(
+        (i) => i.code === 'TERM_VARIANT_PAIR',
+      );
+      // 初稿真实样例入库：互逆转义表/转义表/互逆映射表三名称并存、读存
+      // 转义表/读存表（前缀变体）、协议描述文件/描述文件多种指称（读存表
+      // 与互逆映射表属前缀变体，不在「互为包含」可检范围；入库为回归样例）
+      expect(variants.length).toBeGreaterThanOrEqual(2);
+      expect(
+        variants.some(
+          (i) =>
+            i.message.includes('转义表') && i.message.includes('互逆转义表'),
+        ),
+      ).toBe(true);
+      expect(
+        variants.some(
+          (i) =>
+            i.message.includes('描述文件') &&
+            i.message.includes('协议描述文件'),
+        ),
+      ).toBe(true);
+    });
+
+    it('术语规范统一的文档不报 TERM_VARIANT_PAIR（反例）', () => {
+      const report = checkDisclosure(FULL_DOC);
+      expect(report.issues.some((i) => i.code === 'TERM_VARIANT_PAIR')).toBe(
+        false,
+      );
+    });
   });
 });

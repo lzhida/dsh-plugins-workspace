@@ -58,6 +58,16 @@ const CLAIM_HEAD = /^\s*(\d{1,3})\s*[.、．]\s*/;
 const REFERENCE =
   /(?:根据|依照|按照)\s*权利要求\s*([\d至到~、,，\s或]+?)(?:中任一项|中的任一项|任一项|任一|之一)?\s*所述的/g;
 
+/**
+ * 设备/介质权引用方法权利要求的固有句式（类型引用，非从属引用）：
+ * 动词（执行/实现/适配/运行/调用）+ 可选「如/为」+ 可选「根据」+
+ * 权利要求N（可选范围与任一项变体）+ 所述（可无「的」）+ 后接方法类名词。
+ * 公布文本真实变体见 docs/patent-reference-notes.md §权利要求引用句式。
+ */
+const APPARATUS_REF =
+  /(?:执行|实现|适配|运行|调用)(?:如|为)?\s*(?:根据)?\s*权利要求\s*\d+(?:\s*[至到~－-]\s*\d+)?(?:中任一项|中的任一项|任一项|任一|之一)?\s*所述(?:的)?(?=[^，。；]{0,10}?(?:方法|步骤|程序|流程|操作))/;
+const APPARATUS_REF_GLOBAL = new RegExp(APPARATUS_REF.source, 'g');
+
 /** 从权利要求文本中解析全部条目（编号乱序也容忍，按升序返回）。 */
 export function parseClaims(input: string): Claim[] {
   const lines = input.split(/\r?\n/);
@@ -78,13 +88,19 @@ export function parseClaims(input: string): Claim[] {
   return found
     .map(({ number, body }) => {
       const text = body.join('\n').trim();
-      const references = extractReferences(text);
+      // 设备/介质权引用方法权利要求是类型引用而非从属引用：先掩蔽此类
+      // 片段再提取引用，避免带「根据」的官方变体（「实现根据权利要求X至Y
+      // 中任一项所述的方法」）被误判成从属权利要求。
+      const dependencyText = text.replace(APPARATUS_REF_GLOBAL, (m) =>
+        '　'.repeat(m.length),
+      );
+      const references = extractReferences(dependencyText);
       return {
         number,
         text,
         isDependent: references.length > 0,
         references,
-        subjectName: extractSubjectName(text, references.length > 0),
+        subjectName: extractSubjectName(dependencyText, references.length > 0),
         hasCharacterizingPart: text.includes('其特征在于'),
       };
     })
@@ -265,18 +281,15 @@ export function checkClaims(input: string): ClaimsReport {
 
     // 悬空引用提示：文本含「权利要求N」但未被识别为规范引用句式
     //（不用 \b：中文字符在 JS 正则里不是 \w，\b 语义在此失效）
-    // 豁免：装置/介质类权利要求引用方法权利要求的固有写法
-    //「（执行|实现|适配|运行）权利要求N…所述的…方法」——无「根据」引导，
-    // 不参与从属判定，但属 CNIPA 公布文本中的真实句式（见
-    // docs/patent-reference-notes.md §引用句式），不应报 warning。
-    const apparatusClaimRef =
-      /(?:执行|实现|适配|运行)[^，。；]{0,16}权利要求\s*\d+(?:\s*[至到~－-]\s*\d+)?(?:中任一项|任一|之一)?(?:所述的)/.test(
-        claim.text,
-      );
+    // 豁免：装置/介质类权利要求引用方法权利要求的固有写法——动词引导、
+    // 无「根据」从属语义（或虽带「根据」但为「实现根据权利要求N所述的
+    // 方法」设备权变体），已由 APPARATUS_REF 统一识别，不参与从属判定，
+    // 属 CNIPA 公布文本中的真实句式（见 docs/patent-reference-notes.md
+    // §引用句式），不应报 warning。
     if (
       !claim.isDependent &&
       /权利要求\s*\d/.test(claim.text) &&
-      !apparatusClaimRef
+      !APPARATUS_REF.test(claim.text)
     ) {
       issues.push({
         claim: claim.number,
