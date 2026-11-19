@@ -12,10 +12,16 @@ import {
   REVIEW_SKILL_DESCRIPTION,
   REVIEW_SKILL_NAME,
 } from './review-skill-content.ts';
+import {
+  APPLICATION_SKILL_CONTENT,
+  APPLICATION_SKILL_DESCRIPTION,
+  APPLICATION_SKILL_NAME,
+} from './application-skill-content.ts';
 
 /**
- * 内嵌 skill 注册契约：两个方法论 skill（撰写侧 + 审查侧）在 apply 时注册、
- * 卸载时注销；审查侧内容包含 24 视角拓扑、定权规则、收敛/纠错/裁剪纪律。
+ * 内嵌 skill 注册契约：三个方法论 skill（撰写侧 + 审查侧 + 申请文件生成侧）
+ * 在 apply 时注册、卸载时注销；审查侧内容包含 24 视角拓扑、定权规则、
+ * 收敛/纠错/裁剪纪律；申请文件侧包含五书形态与撰写纪律。
  */
 
 interface RegisteredSkill {
@@ -61,15 +67,17 @@ function stubCtx(): {
 
 describe('dsh-patent', () => {
   describe('内嵌 skill 注册', () => {
-    it('注册撰写侧与审查侧两个 skill,名称与描述可从 registry 读到', () => {
+    it('注册撰写侧、审查侧与申请文件侧三个 skill,名称与描述可从 registry 读到', () => {
       const { ctx, registered } = stubCtx();
       apply(ctx);
 
-      expect(registered.length).toBe(2);
+      expect(registered.length).toBe(3);
       expect(registered[0]?.name).toBe(SKILL_NAME);
       expect(registered[0]?.description).toBe(SKILL_DESCRIPTION);
       expect(registered[1]?.name).toBe(REVIEW_SKILL_NAME);
       expect(registered[1]?.description).toBe(REVIEW_SKILL_DESCRIPTION);
+      expect(registered[2]?.name).toBe(APPLICATION_SKILL_NAME);
+      expect(registered[2]?.description).toBe(APPLICATION_SKILL_DESCRIPTION);
       // 描述写明触发场景与不适用场景（清单[2]）
       expect(REVIEW_SKILL_DESCRIPTION).toContain(
         'reviewing an attorney patent draft',
@@ -77,15 +85,37 @@ describe('dsh-patent', () => {
       expect(REVIEW_SKILL_DESCRIPTION).toContain(
         'not for drafting disclosures',
       );
+      // 申请文件侧描述同样写明触发与不适用场景
+      expect(APPLICATION_SKILL_DESCRIPTION).toContain(
+        'China patent application file drafting methodology',
+      );
+      expect(APPLICATION_SKILL_DESCRIPTION).toContain(
+        'not for drafting the 交底书 itself',
+      );
     });
 
-    it('插件卸载时两个 skill 一并注销', () => {
+    it('申请文件侧 skill 内容:五书形态、段号与权项纪律成节', () => {
+      expect(APPLICATION_SKILL_CONTENT).toContain('## 五书的真实形态');
+      expect(APPLICATION_SKILL_CONTENT).toContain('没有独立的「说明书摘要」页');
+      expect(APPLICATION_SKILL_CONTENT).toContain('[0001]');
+      expect(APPLICATION_SKILL_CONTENT).toContain('## 权利要求书纪律');
+      expect(APPLICATION_SKILL_CONTENT).toContain('多项从属权禁令');
+      expect(APPLICATION_SKILL_CONTENT).toContain('类型引用句式');
+      expect(APPLICATION_SKILL_CONTENT).toContain('## 说明书纪律');
+      expect(APPLICATION_SKILL_CONTENT).toContain('公开充分');
+      expect(APPLICATION_SKILL_CONTENT).toContain('## 工作纪律');
+      expect(APPLICATION_SKILL_CONTENT).toContain(
+        '工具只出骨架，不代拟实质内容',
+      );
+    });
+
+    it('插件卸载时三个 skill 一并注销', () => {
       const { ctx, disposeSpies } = stubCtx();
       apply(ctx);
       for (const dispose of disposeSpies) {
         expect(dispose).not.toHaveBeenCalled();
       }
-      // cordis 在插件卸载时调用 effect 清理函数 → 两个 dispose 都被触发
+      // cordis 在插件卸载时调用 effect 清理函数 → 三个 dispose 都被触发
       for (const dispose of disposeSpies) dispose();
       for (const dispose of disposeSpies) {
         expect(dispose).toHaveBeenCalledTimes(1);

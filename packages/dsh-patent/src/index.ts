@@ -1,10 +1,12 @@
 /**
  * dsh-patent 插件入口（bundle 唯一插件行）。
  *
- * 「专利交底」预设的工具行：交底书六个工具（撰写三件套 + 审查侧源码对账
+ * 「专利交底」预设的工具行：八个工具（撰写三件套 + 审查侧源码对账
  * claims_evidence_check + 初稿审查主工具 draft_review_check + 维权取证
- * 台账 claims_code_map）+ 结构化 prompt
- * 段落 + 内嵌方法论 skill（patent-disclosure / patent-draft-review）。预设声明
+ * 台账 claims_code_map + 专利库检索 patent_search + 申请文件五书
+ * application_scaffold）+ 结构化 prompt
+ * 段落 + 内嵌方法论 skill（patent-disclosure / patent-draft-review /
+ * patent-application）。预设声明
  * 见包内 cordis.patch.yml 的 preset-patent 行。
  *
  * 依赖注入：tools（工具注册）+ systemPrompt（section 注册）+ skills（内嵌
@@ -26,6 +28,11 @@ import {
   REVIEW_SKILL_DESCRIPTION,
   REVIEW_SKILL_NAME,
 } from './review-skill-content.ts';
+import {
+  APPLICATION_SKILL_CONTENT,
+  APPLICATION_SKILL_DESCRIPTION,
+  APPLICATION_SKILL_NAME,
+} from './application-skill-content.ts';
 import { buildSections } from './sections.ts';
 import { buildPatentTools } from './tools.ts';
 
@@ -72,7 +79,8 @@ export function apply(ctx: Context, configInput?: unknown): void {
   }
 
   // 4. 内嵌方法论 skill（runtime 注册，模型可按需加载；卸载即注销）。
-  //    两份：patent-disclosure（撰写侧）+ patent-draft-review（审查侧，0.2.0）。
+  //    三份：patent-disclosure（撰写侧）+ patent-draft-review（审查侧，0.2.0）+
+  //    patent-application（申请文件生成侧）。
   ctx.effect(() => {
     const disposers = [
       {
@@ -89,6 +97,13 @@ export function apply(ctx: Context, configInput?: unknown): void {
         content: REVIEW_SKILL_CONTENT,
         invocation: { modelInvocable: true, userInvocable: true },
       },
+      {
+        name: APPLICATION_SKILL_NAME,
+        description: APPLICATION_SKILL_DESCRIPTION,
+        source: 'bundled' as const,
+        content: APPLICATION_SKILL_CONTENT,
+        invocation: { modelInvocable: true, userInvocable: true },
+      },
     ].map((skill) => ctx.skills.register(skill));
     return () => {
       for (const dispose of disposers) dispose();
@@ -103,7 +118,7 @@ export function apply(ctx: Context, configInput?: unknown): void {
     ctx.tools.register(tool);
   }
   console.log(
-    `[${name}] registered ${tools.length} patent tools + skills ${SKILL_NAME}, ${REVIEW_SKILL_NAME}`,
+    `[${name}] registered ${tools.length} patent tools + skills ${SKILL_NAME}, ${REVIEW_SKILL_NAME}, ${APPLICATION_SKILL_NAME}`,
   );
 }
 
@@ -129,6 +144,14 @@ export type {
   PatentRecord,
   PatentSearchReport,
 } from './patent-search.ts';
+export { buildApplicationScaffold } from './application-scaffold.ts';
+export type {
+  ApplicationPart,
+  ScaffoldClaimsCheck,
+  ScaffoldIssue,
+  ScaffoldPart,
+  ScaffoldReport,
+} from './application-scaffold.ts';
 export { buildSections } from './sections.ts';
 export { buildPatentTools, mergeHeader } from './tools.ts';
 export {
@@ -141,3 +164,8 @@ export {
   REVIEW_SKILL_DESCRIPTION,
   REVIEW_SKILL_CONTENT,
 } from './review-skill-content.ts';
+export {
+  APPLICATION_SKILL_NAME,
+  APPLICATION_SKILL_DESCRIPTION,
+  APPLICATION_SKILL_CONTENT,
+} from './application-skill-content.ts';

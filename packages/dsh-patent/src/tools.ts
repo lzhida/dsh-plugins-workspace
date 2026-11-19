@@ -1,10 +1,11 @@
 /**
  * 模型工具包装:disclosure_template_fill / disclosure_check /
  * patent_claims_check / claims_evidence_check / draft_review_check /
- * claims_code_map / patent_search。
+ * claims_code_map / patent_search / application_scaffold。
  *
  * 全部业务逻辑在纯函数层(disclosure.ts / disclosure-check.ts / claims.ts /
- * claims-evidence.ts / draft-review.ts / claims-code-map.ts / patent-search.ts),
+ * claims-evidence.ts / draft-review.ts / claims-code-map.ts / patent-search.ts /
+ * application-scaffold.ts),
  * 这里只做参数归一、公司默认值合并与输出渲染。唯一的文件读是
  * draft_review_check 与 claims_code_map 读初稿/权项 docx 或文本的正文(最小
  * zip 解析),docx 落盘仍由模型按交付指引经 office skill / python 完成。
@@ -33,6 +34,7 @@ import {
   buildPatentSearchReport,
   fetchGooglePatents,
 } from './patent-search.ts';
+import { buildApplicationScaffold } from './application-scaffold.ts';
 
 /** 从自由对象里取非空字符串。 */
 function str(value: unknown): string {
@@ -624,6 +626,119 @@ export function buildPatentTools(getDefaults: () => DisclosureDefaults) {
           },
           extraIssues,
         );
+      },
+    }),
+    defineTool({
+      name: 'application_scaffold',
+      description:
+        "Generate the 中国专利申请文件「五书」skeleton (扉页含摘要与摘要附图 / 权利要求书 / 说明书 / 附图) from a 交底书 (disclosure) or from attorney-written fragments. Produces: (1) 权利要求书 with the `1.` numbering and the SAME validation as patent_claims_check (reuses checkClaims — same codes, same severities, warnings included); (2) 说明书 with continuous `[0001]`-style paragraph numbers across sections (step lines do not start a new paragraph number); (3) 摘要 as a single unnumbered paragraph with a 230-320 字 length check; (4) 扉页 with 发明名称 / 申请人 / 专利代理师 / 摘要 / 摘要附图; (5) dual page numbering — header `公布号 | 部分名 | N/M 页` (N/M is the page number WITHIN the part) and a full-text footer, where the front page is 1 and prints no footer, and the claims start at 2. The tool NEVER invents claim or description text: missing sources stay as 〔待补〕 placeholders and produce diagnostics. It also emits the structural fact that Chinese published documents have NO separate 说明书摘要 page (the abstract only appears in the (57) column of the front page). The output is a drafting scaffold — formal wording, figures and drawings remain the attorney's work.",
+      parameters: {
+        disclosure: {
+          type: 'string',
+          description:
+            'Optional: the 交底书 markdown (seven-part draft). Used as the source for the claims excerpt, the 说明书 chapters, the 摘要 and the figure list.',
+        },
+        claims: {
+          type: 'string',
+          description:
+            'Optional: the attorney-written 权利要求书 text (numbered `1.`, `2.` ...). When supplied it is validated with the same checks as patent_claims_check.',
+        },
+        description: {
+          type: 'string',
+          description:
+            'Optional: the 说明书 body text. When absent the skeleton assembles 技术领域 / 背景技术 / 发明内容 / 附图说明 / 具体实施方式 from the disclosure and numbers every paragraph.',
+        },
+        abstract: {
+          type: 'string',
+          description:
+            'Optional: the 摘要 text (one paragraph, no paragraph number, about 230-320 字).',
+        },
+        figures: {
+          type: 'string',
+          description:
+            'Optional: the 附图说明 text (one paragraph per figure: 图N是……的示意图).',
+        },
+        options: {
+          type: 'object',
+          additionalProperties: true,
+          description:
+            'Optional: { publicationNumber, caseName, applicant, attorney, abstractFigure } — 公布号 goes to the header left, the rest to the front page.',
+        },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value) => {
+          const report = value as {
+            ok: boolean;
+            markdown: string;
+            parts: {
+              part: string;
+              title: string;
+              pageFrom: number;
+              pageTo: number;
+              pageCount: number;
+            }[];
+            numbering: {
+              count: number;
+              first: string | null;
+              last: string | null;
+            };
+            claimsCheck: {
+              ok: boolean;
+              total: number;
+              independent: number;
+              dependent: number;
+              issues?: {
+                code: string;
+                severity: string;
+                message: string;
+                claim?: number;
+              }[];
+            } | null;
+            issues: { code: string; severity: string; message: string }[];
+          };
+          const issues =
+            report.issues.length > 0
+              ? `Issues (${report.issues.length}):\n${report.issues
+                  .map((i) => `- [${i.severity}] ${i.code}: ${i.message}`)
+                  .join('\n')}\n\n`
+              : '';
+          const parts = report.parts
+            .map(
+              (p) =>
+                `- ${p.title}: pages ${p.pageFrom}-${p.pageTo} (${p.pageCount} page(s))`,
+            )
+            .join('\n');
+          const claims = report.claimsCheck
+            ? `claims: total=${report.claimsCheck.total} independent=${report.claimsCheck.independent} dependent=${report.claimsCheck.dependent} ok=${report.claimsCheck.ok}\n`
+            : 'claims: not validated (claims not finalized)\n';
+          const numbering = `paragraph numbers: ${report.numbering.count} (${report.numbering.first ?? '-'} … ${report.numbering.last ?? '-'})\n`;
+          return [
+            {
+              type: 'text',
+              text: `${claims}${numbering}${parts}\n\n${issues}${report.markdown}`,
+            },
+          ];
+        },
+      },
+      isConcurrencySafe: () => true,
+      async execute(args) {
+        const input = (args ?? {}) as Record<string, unknown>;
+        const options = (input.options ?? {}) as Record<string, unknown>;
+        return buildApplicationScaffold({
+          disclosure: str(input.disclosure) || undefined,
+          claims: str(input.claims) || undefined,
+          description: str(input.description) || undefined,
+          abstract: str(input.abstract) || undefined,
+          figures: str(input.figures) || undefined,
+          options: {
+            publicationNumber: str(options.publicationNumber) || undefined,
+            caseName: str(options.caseName) || undefined,
+            applicant: str(options.applicant) || undefined,
+            attorney: str(options.attorney) || undefined,
+            abstractFigure: str(options.abstractFigure) || undefined,
+          },
+        });
       },
     }),
   ];

@@ -1,7 +1,7 @@
 /**
  * 结构化 system-prompt 段落（纯函数）。
  *
- * 三个具名 section，order 取 PLUGIN 档（2950-2960，与宿主各 section 同档；
+ * 四个具名 section，order 取 PLUGIN 档（2950-2965，与宿主各 section 同档；
  * 同档内按 name 排序）。停用时仍注册并告知 agent「功能停用」，避免模型
  * 面对用户请求凭空造工具。
  */
@@ -12,11 +12,13 @@ import type { PromptSection } from '@deepseek-ai/dsh-system-prompt';
 export const SECTION_WORKFLOW = 'dsh-patent:workflow';
 export const SECTION_SECTIONS_GUIDE = 'dsh-patent:sections-guide';
 export const SECTION_TOOLS = 'dsh-patent:tools';
+export const SECTION_APPLICATION = 'dsh-patent:application';
 
-/** order：交底书工作流 / 七部分要点 / 工具指引（PLUGIN 档内错开）。 */
+/** order：交底书工作流 / 七部分要点 / 工具指引 / 申请文件模式（PLUGIN 档内错开）。 */
 export const ORDER_WORKFLOW = 2950;
 export const ORDER_SECTIONS_GUIDE = 2955;
 export const ORDER_TOOLS = 2960;
+export const ORDER_APPLICATION = 2965;
 
 /** ① 交底书工作流。 */
 export function workflowSection(enabled: boolean): PromptSection {
@@ -70,11 +72,29 @@ Template path for docx filling comes from the tool result (bundled template live
   };
 }
 
+/** ④ 申请文件生成模式（代理师视角的第二工作面）。 */
+export function applicationSection(enabled: boolean): PromptSection {
+  return {
+    name: SECTION_APPLICATION,
+    order: ORDER_APPLICATION,
+    text: enabled
+      ? `Patent application file mode (申请文件「五书」生成, 代理师视角) — the second working surface of this plugin, next to the disclosure surface.
+
+- The Chinese application file has FIVE parts in a fixed order: 扉页（carries the (57) 摘要 and the 摘要附图）→ 权利要求书 → 说明书 → 说明书附图. There is NO separate 说明书摘要 page — the abstract only appears in the front page (57) column.
+- application_scaffold builds that skeleton from a 交底书 or from attorney-written fragments: it numbers 权利要求书 (1. style), numbers 说明书 paragraphs continuously as [0001]… across sections (step lines do not start a new number), drafts the 扉页 fields, and lays out the dual page numbering (header 公布号 | 部分名 | N/M 页 where N/M is the page number WITHIN the part; full-text footer; front page = 1 and prints no footer, claims start at 2).
+- The tool NEVER invents claim or description text: missing sources stay as 〔待补〕 placeholders with diagnostics. Substantive wording, figures and drawings remain the attorney's work; the scaffold is a form check, not a draft.
+- When the claims text is final, it is validated with the SAME checks as patent_claims_check (same codes, same severities; both error and warning level are reported) — reuse patent_claims_check for a standalone re-check.
+- Load the patent-application skill for the drafting discipline (独权承载必要技术特征 / 从属层层收窄 / 多项从属禁令 / 设备介质权类型引用句式 / 公开充分与可实施 / 摘要 230-320 字).`
+      : `The dsh-patent plugin is installed but disabled (enabled=false in Settings → Plugins → 专利交底). No patent tools or skills are available in this session; the application-file guidance below still applies.`,
+  };
+}
+
 /** 组装全部 section（纯函数，测试直连）。 */
 export function buildSections(enabled: boolean): PromptSection[] {
   return [
     workflowSection(enabled),
     sectionsGuideSection(),
     toolsSection(enabled),
+    applicationSection(enabled),
   ];
 }
