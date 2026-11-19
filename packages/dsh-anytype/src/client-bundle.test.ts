@@ -402,14 +402,28 @@ function fakeLocale(initial: 'zh' | 'en' = 'zh'): {
 function stubClientCtx(locale: ReturnType<typeof fakeLocale> | null): {
   ctx: Parameters<typeof apply>[0];
   slotRegistrations: Array<{
-    options: { name: string; key?: string; locale?: string };
+    options: {
+      name: string;
+      key?: string;
+      id?: string;
+      order?: number;
+      label?: () => string;
+      locale?: string;
+    };
     component: unknown;
   }>;
   whileServedCalls: string[][];
   cleanups: Array<() => void>;
 } {
   const slotRegistrations: Array<{
-    options: { name: string; key?: string; locale?: string };
+    options: {
+      name: string;
+      key?: string;
+      id?: string;
+      order?: number;
+      label?: () => string;
+      locale?: string;
+    };
     component: unknown;
   }> = [];
   const whileServedCalls: string[][] = [];
@@ -460,7 +474,14 @@ function stubClientCtx(locale: ReturnType<typeof fakeLocale> | null): {
         return () => undefined;
       },
       register: (
-        options: { name: string; key?: string; locale?: string },
+        options: {
+          name: string;
+          key?: string;
+          id?: string;
+          order?: number;
+          label?: () => string;
+          locale?: string;
+        },
         component: unknown,
       ) => {
         slotRegistrations.push({ options, component });
@@ -507,5 +528,34 @@ describe('配置卡插槽注册（apply 行为）', () => {
       slotRegistrations.find((r) => r.options.name === CONFIG_SLOT),
     ).toBeDefined();
     expect(cleanups.length).toBeGreaterThan(0);
+  });
+});
+
+describe('左侧栏状态面板注册（apply 行为）', () => {
+  it('注册 main 面板插槽（key = 面板 id）与 sidebar.panellist 图标（同 id）', () => {
+    const { ctx, slotRegistrations } = stubClientCtx(fakeLocale('zh'));
+    expect(() => apply(ctx)).not.toThrow();
+
+    const panel = slotRegistrations.find((r) => r.options.name === 'main');
+    expect(panel).toBeDefined();
+    expect(panel?.options.key).toBe('anytype-panel');
+
+    const icon = slotRegistrations.find(
+      (r) => r.options.name === 'sidebar.panellist',
+    );
+    expect(icon).toBeDefined();
+    expect(icon?.options.id).toBe('anytype-panel');
+    expect(icon?.options.locale).toBe(DICT_NS);
+    expect(icon?.options.label?.()).toBe('Anytype');
+  });
+});
+
+describe('客户端产物含状态面板（产物契约）', () => {
+  it('bundle 含面板端点、侧栏插槽与面板 id', () => {
+    const client = readPackageFile('../client/index.js');
+    expect(client).toContain('/dsh-anytype/panel/status');
+    expect(client).toContain('/dsh-anytype/panel/queue');
+    expect(client).toContain('sidebar.panellist');
+    expect(client).toContain('anytype-panel');
   });
 });

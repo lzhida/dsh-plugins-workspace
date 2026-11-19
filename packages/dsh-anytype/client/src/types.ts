@@ -127,19 +127,46 @@ export interface ConfigFormsFace {
 
 // ── slots（dsh-client-ui-slots 的插槽注册面）────────────────────────
 
-/** 插槽注册 options（keyed 插槽：key = 包名）。 */
+/**
+ * 插槽注册 options。
+ *
+ * - keyed 插槽（plugins.bundle.config）：name + key（key = 包名）+ locale；
+ * - 面板插槽：main 用 key = 面板 id，sidebar.panellist 用 id + order + label。
+ *
+ * inject 返回值是**渲染时传给组件 props 的服务包**（配置卡只注入 t；
+ * 面板注入 t 与 layout，供图标/面板开关用）。
+ */
 export interface SlotOptions {
+  /** 插槽名（main / plugins.bundle.config / sidebar.panellist …）。 */
   name: string;
-  key: string;
-  locale: string;
-  /** 插槽注入物（渲染时传给组件 props，本卡只注入 t）。 */
-  inject(): { t: TFn };
+  /** keyed 插槽的 key（配置卡 = 包名；main 面板 = 面板 id）。 */
+  key?: string;
+  /** 侧栏图标插槽的 id（= 面板 id）。 */
+  id?: string;
+  /** 侧栏图标排序（小到大；宿主据此排布）。 */
+  order?: number;
+  /** 侧栏图标标签（返回本地化文案）。 */
+  label?: () => string;
+  /** 字典命名空间（宿主据此选语言）。 */
+  locale?: string;
+  /** 插槽注入物（渲染时传给组件 props）。 */
+  inject(): Record<string, unknown>;
 }
 
 /** slots 服务面：占位注册 + 条件注册（inject 返回注销器）。 */
 export interface SlotsFace {
   inject(slot: string, registrar: () => unknown): () => void;
   register(options: SlotOptions, component: unknown): () => void;
+}
+
+/**
+ * layout 服务面（可选）：面板开关。
+ *
+ * selectPanel(面板 id) 打开面板；selectPanel(null) 关闭当前面板。
+ * 宿主未提供该服务时为 undefined——面板仍可注册，只是没有快捷开关。
+ */
+export interface LayoutFace {
+  selectPanel(id: string | null): void;
 }
 
 // ── 客户端上下文与插件导出面 ─────────────────────────────────────────
@@ -150,6 +177,15 @@ export interface ClientContext {
   locale?: LocaleFace;
   configForms: ConfigFormsFace;
   slots: SlotsFace;
+  /**
+   * 软取服务（宿主 client runtime 的 get 面）。
+   *
+   * layout 服务用软取而非硬 inject：宿主把它挂在 ctx 上的前提是插件在
+   * inject 里声明该服务，而插槽回调的上下文（sidebar.panellist）没有
+   * layout——直接读 ctx.layout 会抛 "cannot get property 'layout' without
+   * inject"，导致整个插槽注册崩溃。软取拿不到时降级为无面板开关。
+   */
+  get?(name: string): unknown;
 }
 
 /** 客户端插件导出面（loader 只读 name/inject/apply）。 */

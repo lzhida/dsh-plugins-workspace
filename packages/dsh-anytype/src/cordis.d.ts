@@ -1,6 +1,6 @@
 /**
  * Ambient declaration：扩展 `@deepseek-ai/cordis` 的 Context，
- * 增加本包提供的具名服务 `anytype`。
+ * 增加本包提供的具名服务 `anytype`，以及宿主可选的 `webServer` 服务面。
  *
  * ## 为什么是独立 .d.ts 文件而不是 inline `declare module`
  *
@@ -15,9 +15,17 @@
  *   dsh: warning: ... failed to import 错误。
  *
  * （做法与仓库内 `@zhidal/dsh-llm-fallback` 的 `src/cordis.d.ts` 一致。）
+ *
+ * ## `webServer` 为什么是可选属性
+ *
+ * 面板只读路由要挂在宿主 `webServer` 服务上。该服务的类型在本仓里用
+ * **最小结构面**声明（`WebServerLike`，见 panel/routes.ts），不引第三方包
+ * ——引依赖会改动 lock 文件，本仓约定禁止。宿主没提供 webServer（如
+ * 非 web 组合）时属性为 undefined，面板路由不注册，其余能力不受影响。
  */
 
 import type { AnytypeService } from './services/anytype.ts';
+import type { WebServerLike } from './panel/routes.ts';
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -28,6 +36,12 @@ declare module '@deepseek-ai/cordis' {
      * 再用 `ctx.anytype.client` 复用同一个客户端——**连接配置只填一次**。
      */
     anytype: AnytypeService;
+    /**
+     * 宿主 webServer 服务（可选）：面板只读路由挂在它上面。
+     *
+     * 宿主未提供时为 undefined——插件行据此跳过路由注册，不抛错。
+     */
+    webServer?: WebServerLike;
   }
 }
 

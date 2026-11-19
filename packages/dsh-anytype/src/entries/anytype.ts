@@ -31,6 +31,8 @@ import {
   provideAnytypeService,
   type AnytypeConnection,
 } from '../services/anytype.ts';
+import { registerPanelRoutes, type PanelDeps } from '../panel/routes.ts';
+import { WikiStore } from '../wiki/store.ts';
 
 /** Cordis 插件名（loader 依赖）；与包名 kebab 段一致。 */
 export const name = 'dsh-anytype';
@@ -123,6 +125,30 @@ export function apply(ctx: Context, configInput?: unknown): void {
   if (!resolved.enabled) {
     console.log(`[${name}] disabled by config; no tools registered`);
     return;
+  }
+
+  // 5. 面板只读路由（宿主提供 webServer 时才注册）：/dsh-anytype/panel/status
+  // 与 /dsh-anytype/panel/queue。v1 只读——不含 approve/reject 之类的写入，
+  // apiKey 只报「是否已配置」，永不过线。宿主未提供 webServer 时静默跳过。
+  // 插件行被配置禁用时不注册：端点不暴露。
+  const panelDeps: PanelDeps = {
+    client: service.client,
+    store: new WikiStore(service.client),
+    baseUrl: () => readConnection().baseUrl,
+    apiKeyConfigured: () => readConnection().apiKey.length > 0,
+  };
+  const injectService = (
+    ctx as {
+      inject?: (names: string[], callback: (webCtx: Context) => void) => void;
+    }
+  ).inject;
+  if (typeof injectService === 'function') {
+    injectService.call(ctx, ['webServer'], (webCtx) => {
+      const webServer = webCtx.webServer;
+      if (!webServer) return;
+      const dispose = registerPanelRoutes(webServer, panelDeps);
+      webCtx.effect(() => dispose, 'dsh-anytype: panel routes');
+    });
   }
 
   // 5. 按组注册工具（disposer 自动附着插件，卸载即注销）。

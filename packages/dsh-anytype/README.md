@@ -336,6 +336,21 @@ Index 层；agent 持久记忆由 hindsight/mnemon 承担，wiki 的读取只发
 （`tag` 复用内置）。已知限制：bundle 配置卡尚未为 wiki 行加分区，wiki 语义
 配置可经 profile 侧 `- id: dsh-anytype-wiki + config` 覆盖。
 
+## 左侧栏状态面板（只读）
+
+宿主左侧栏提供一个 **Anytype 状态面板**（参考 dsh-mnemon 面板模式）：`main` 插槽渲染面板本体，`sidebar.panellist` 插槽注册同名图标（点击图标即打开面板）。
+
+| 节       | 内容                                                                                   |
+| -------- | -------------------------------------------------------------------------------------- |
+| 连接状态 | apiKey 是否配置（**只报布尔、永不回显密钥值**）、桌面端可达性/授权、API 地址、探测延迟 |
+| 待审记忆 | wiki 里状态为 `draft` 的笔记（按更新时间倒序）——**只读**，不含 approve/reject 按钮     |
+| 空间     | 可用空间清单（名称 + id）                                                              |
+| 最近笔记 | 最近更新的若干笔记                                                                     |
+
+数据通道是宿主 webServer 上的两个只读 GET 端点（`/dsh-anytype/panel/status` 与 `/dsh-anytype/panel/queue`），客户端同源 fetch + **30s 轮询** + 手动刷新；v1 不做 SSE，也不做写操作（审批仍走 `wiki_review` 工具）。样式用 Tailwind 语义类（shadcn token，theme.css 映射宿主 `--dsw-alias-*`），不触碰宿主 DOM。
+
+面板端点独立查询 AnytypeService 与 WikiStore，**不 import wiki 工具层**（面板只读，与工具层松耦合）；宿主未提供 webServer 服务时，路由自动跳过注册（面板显示不可用），不影响既有工具能力。
+
 ## 文档
 
 | 文档                                                         | 内容                                                                                                                                     |

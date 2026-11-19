@@ -38,9 +38,11 @@ import {
 } from './constants.ts';
 import { DICT } from './dict.ts';
 import { AnytypeCard } from './components/AnytypeCard.tsx';
+import { AnytypePanel, PANEL_ID } from './components/AnytypePanel.tsx';
+import { SidebarIcon } from './components/SidebarIcon.tsx';
 // 样式挂载副作用：factory materialize 即同步注入 <style>（theme.ts 模块体）。
 import './theme.ts';
-import type { CardProps, ClientContext, TFn } from './types.ts';
+import type { CardProps, ClientContext, LayoutFace, TFn } from './types.ts';
 
 /** 客户端插件名。 */
 export const name = PLUGIN_NAME;
@@ -99,5 +101,51 @@ export function apply(ctx: ClientContext): void {
         ),
       ),
     'anytype: package config section',
+  );
+
+  // layout 服务软取（不硬 inject）：插槽回调的上下文没有 layout 服务，
+  // 直接读 ctx.layout 会抛 "cannot get property 'layout' without inject"
+  // 并让整个插槽注册崩溃。拿不到时降级为无面板开关。
+  const layout = ctx.get?.('layout') as LayoutFace | undefined;
+
+  /** 左侧栏面板渲染位（只读状态视图；t/onClose 由本闭包供给）。 */
+  function PanelSlot(): React.ReactElement {
+    return <AnytypePanel t={t} onClose={() => layout?.selectPanel(null)} />;
+  }
+
+  // 左侧栏状态面板：main 插槽渲染面板，sidebar.panellist 注册同 id 的图标。
+  // 图标只渲染 glyph——宿主侧栏行自带按钮，点击行即 selectPanel 打开面板，
+  // 无需插件自包按钮（嵌套 button 是无效 HTML）。两处注册随外层 inject 注销。
+  ctx.effect(
+    () =>
+      ctx.slots.inject('main', () =>
+        ctx.slots.inject('sidebar.panellist', () => {
+          const disposePanel = ctx.slots.register(
+            {
+              name: 'main',
+              key: PANEL_ID,
+              locale: DICT_NS,
+              inject: () => ({ t }),
+            },
+            PanelSlot,
+          );
+          const disposeIcon = ctx.slots.register(
+            {
+              name: 'sidebar.panellist',
+              id: PANEL_ID,
+              order: 20,
+              label: () => t('panel.tabLabel'),
+              locale: DICT_NS,
+              inject: () => ({ t }),
+            },
+            SidebarIcon,
+          );
+          return () => {
+            disposePanel();
+            disposeIcon();
+          };
+        }),
+      ),
+    'anytype: sidebar status panel',
   );
 }
