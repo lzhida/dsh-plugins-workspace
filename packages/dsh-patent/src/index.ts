@@ -1,9 +1,10 @@
 /**
  * dsh-patent 插件入口（bundle 唯一插件行）。
  *
- * 「专利交底」预设的工具行：交底书三工具 + 结构化 prompt 段落 + 内嵌方法论
- * skill（patent-disclosure）。预设声明见包内 cordis.patch.yml 的
- * preset-patent 行。
+ * 「专利交底」预设的工具行：交底书四工具（撰写三件套 + 审查侧源码对账
+ * claims_evidence_check）+ 结构化 prompt 段落 + 内嵌方法论 skill
+ * （patent-disclosure / patent-draft-review）。预设声明见包内
+ * cordis.patch.yml 的 preset-patent 行。
  *
  * 依赖注入：tools（工具注册）+ systemPrompt（section 注册）+ skills（内嵌
  * skill 注册）。由 dsh web/base bundle 与预设组合提供；缺失时停在 PENDING。
@@ -112,6 +113,7 @@ export type { ResolvedConfig, DisclosureDefaults } from './config.ts';
 export { buildDisclosure, resolveBuiltinTemplatePath } from './disclosure.ts';
 export { checkDisclosure } from './disclosure-check.ts';
 export { checkClaims } from './claims.ts';
+export { checkClaimsEvidence } from './claims-evidence.ts';
 export { buildSections } from './sections.ts';
 export { buildPatentTools, mergeHeader } from './tools.ts';
 export {

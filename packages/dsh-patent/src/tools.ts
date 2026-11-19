@@ -1,14 +1,16 @@
 /**
- * 模型工具包装：disclosure_template_fill / disclosure_check / patent_claims_check。
+ * 模型工具包装:disclosure_template_fill / disclosure_check /
+ * patent_claims_check / claims_evidence_check。
  *
- * 全部业务逻辑在纯函数层（disclosure.ts / disclosure-check.ts / claims.ts），
- * 这里只做参数归一、公司默认值合并与输出渲染。无网络、无文件 IO——docx
- * 落盘由模型按交付指引经 office skill / python 完成。
+ * 全部业务逻辑在纯函数层(disclosure.ts / disclosure-check.ts / claims.ts /
+ * claims-evidence.ts),这里只做参数归一、公司默认值合并与输出渲染。无网络、
+ * 无文件 IO——docx 落盘由模型按交付指引经 office skill / python 完成。
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
 
 import { checkClaims } from './claims.ts';
+import { checkClaimsEvidence } from './claims-evidence.ts';
 import type { DisclosureDefaults } from './config.ts';
 import {
   buildDisclosure,
@@ -210,6 +212,73 @@ export function buildPatentTools(getDefaults: () => DisclosureDefaults) {
       async execute(args) {
         const input = (args ?? {}) as { claims?: unknown };
         return checkClaims(str(input.claims));
+      },
+    }),
+    defineTool({
+      name: 'claims_evidence_check',
+      description:
+        'Reconcile patent claims against the disclosure text and the product source code (权项-说明书-源码三方对账). You read the code first: the report starts with a 待核对清单 (six dimensions — 常量 / 路径 / 枚举 / 函数名 / 层级序 / 分支数) extracted from the claim text, which tells you WHAT to look up; the tool never reads the source and never asserts a verdict for you. Then submit one evidence record per claim feature (claimNo / feature / docRef / sourceAnchors "file:line" / verdict / severity / carriers / suggestion); the tool enforces the evidence rule (a verdict without a file:line anchor is rejected), checks per-claim coverage, flags carrier-attribution conflicts between claims and the description, evaluates fallback-chain risks, and renders a claim-by-claim reconciliation matrix with 未覆盖 (uncovered) assets. Verdicts: supported / needs-rewrite / unsupported / uncovered. Use when auditing an attorney draft against the real implementation.',
+      parameters: {
+        claims: {
+          type: 'string',
+          required: true,
+          description:
+            'The claim set text; each claim starts with a "N." numbered line (same format as patent_claims_check).',
+        },
+        entries: {
+          type: 'array',
+          required: true,
+          items: { type: 'object', additionalProperties: true },
+          description:
+            'Evidence records, one per claim feature: { claimNo (number|null), feature (string, required), docRef?, sourceAnchors (string[] like ["command.ts:1010-1020"], REQUIRED), verdict ("supported"|"needs-rewrite"|"unsupported"|"uncovered"), severity ("critical"|"high"|"medium"|"low"|"suggestion"), claimCarrier?, docCarrier?, suggestion? }.',
+        },
+        document: {
+          type: 'string',
+          description:
+            'Optional: the disclosure markdown (or text extracted from a docx) so the tool can sanity-check the seven-part structure.',
+        },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value) => {
+          const report = value as {
+            ok: boolean;
+            markdown: string;
+            stats: { claims: number; entries: number; rejected: number };
+            issues: {
+              code: string;
+              severity: string;
+              claimNo: number | null;
+              message: string;
+            }[];
+          };
+          const issues =
+            report.issues.length > 0
+              ? `Issues (${report.issues.length}):\n${report.issues
+                  .map(
+                    (i) =>
+                      `- [${i.severity}] ${i.claimNo === null ? '全局' : `权${i.claimNo}`} ${i.code}: ${i.message}`,
+                  )
+                  .join('\n')}\n\n`
+              : '';
+          const stats = `stats: claims=${report.stats.claims} entries=${report.stats.entries} rejected=${report.stats.rejected} ok=${report.ok}\n\n`;
+          return [
+            { type: 'text', text: `${stats}${issues}${report.markdown}` },
+          ];
+        },
+      },
+      isConcurrencySafe: () => true,
+      async execute(args) {
+        const input = (args ?? {}) as {
+          claims?: unknown;
+          entries?: unknown;
+          document?: unknown;
+        };
+        return checkClaimsEvidence({
+          claims: str(input.claims),
+          entries: input.entries,
+          document: str(input.document) || undefined,
+        });
       },
     }),
   ];
