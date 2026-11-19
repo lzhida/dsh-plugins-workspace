@@ -59,6 +59,19 @@ export type EvidenceEntryInput = {
   claimCarrier?: unknown;
   docCarrier?: unknown;
   suggestion?: unknown;
+  /**
+   * 我方自有实现是否覆盖该特征(可选事实标注,供维权台账做「我方是否实施
+   * 该权项」自检):true=已覆盖,false=未覆盖(潜在无效宣告/反制暴露面),
+   * 缺失或非布尔=未标注。不参与四态判定。
+   */
+  implementedByUs?: unknown;
+  /** 该特征是否属于组合特征(多要素组合,供答辩锚点评估位);非布尔=未标注。 */
+  combination?: unknown;
+  /**
+   * 组合特征的检索风险评估(供答辩锚点提示位):low|medium|high,缺失或
+   * 非法=未评估。不参与四态判定。
+   */
+  searchRisk?: unknown;
 };
 
 /** 通过校验的证据记录。 */
@@ -79,6 +92,12 @@ export type EvidenceEntry = {
   docCarrier: string | null;
   /** 改写/补权建议;缺失为 null。 */
   suggestion: string | null;
+  /** 我方自有实现是否覆盖该特征;未标注为 null。 */
+  implementedByUs: boolean | null;
+  /** 是否属于组合特征(多要素组合);未标注为 false。 */
+  combination: boolean;
+  /** 组合特征的检索风险评估;未评估为 null。 */
+  searchRisk: 'low' | 'medium' | 'high' | null;
 };
 
 /** 对账诊断(结构与证据问题)。 */
@@ -171,7 +190,7 @@ export type ClaimsEvidenceReport = {
 const ANCHOR_RE = /:\d+(?:[-–]\d+)?$/;
 
 /** 判定四态的中文标签与图标(对齐审查对照表口径)。 */
-const VERDICT_LABEL: Record<EvidenceVerdict, string> = {
+export const VERDICT_LABEL: Record<EvidenceVerdict, string> = {
   supported: '✅ 可主张',
   'needs-rewrite': '⚠️ 需改写',
   unsupported: '❌ 不可主张',
@@ -424,6 +443,16 @@ function normalizeEntry(
     typeof raw.suggestion === 'string' && raw.suggestion.trim().length > 0
       ? raw.suggestion.trim()
       : null;
+  // 事实标注(不参与四态判定):我方实施自检 / 组合特征 / 检索风险。
+  const implementedByUs =
+    typeof raw.implementedByUs === 'boolean' ? raw.implementedByUs : null;
+  const combination = raw.combination === true;
+  const searchRisk =
+    raw.searchRisk === 'low' ||
+    raw.searchRisk === 'medium' ||
+    raw.searchRisk === 'high'
+      ? raw.searchRisk
+      : null;
   return [
     {
       claimNo,
@@ -435,6 +464,9 @@ function normalizeEntry(
       claimCarrier,
       docCarrier,
       suggestion,
+      implementedByUs,
+      combination,
+      searchRisk,
     },
     null,
   ];

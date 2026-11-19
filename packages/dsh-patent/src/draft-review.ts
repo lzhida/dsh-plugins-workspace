@@ -50,7 +50,7 @@ const SOURCE_SKIP_DIRS = new Set([
 ]);
 
 /** 读取纯文本文件（.md/.txt 等；docx 走既有解析器）。 */
-function readTextFile(path: string): string {
+export function readTextFile(path: string): string {
   if (looksLikeDocxPath(path)) {
     return extractDocxText(path);
   }

@@ -1,11 +1,13 @@
 /**
  * 模型工具包装:disclosure_template_fill / disclosure_check /
- * patent_claims_check / claims_evidence_check / draft_review_check。
+ * patent_claims_check / claims_evidence_check / draft_review_check /
+ * claims_code_map。
  *
  * 全部业务逻辑在纯函数层(disclosure.ts / disclosure-check.ts / claims.ts /
- * claims-evidence.ts / draft-review.ts),这里只做参数归一、公司默认值合并与
- * 输出渲染。无网络;唯一的文件读是 draft_review_check 读初稿 docx 的正文
- * (最小 zip 解析),docx 落盘仍由模型按交付指引经 office skill / python 完成。
+ * claims-evidence.ts / draft-review.ts / claims-code-map.ts),这里只做参数归一、
+ * 公司默认值合并与输出渲染。无网络;唯一的文件读是 draft_review_check 与
+ * claims_code_map 读初稿/权项 docx 或文本的正文(最小 zip 解析),docx 落盘仍由
+ * 模型按交付指引经 office skill / python 完成。
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools';
@@ -15,6 +17,7 @@ import {
   checkClaimsEvidence,
   type EvidenceEntryInput,
 } from './claims-evidence.ts';
+import { checkClaimsCodeMap } from './claims-code-map.ts';
 import type { DisclosureDefaults } from './config.ts';
 import {
   buildDisclosure,
@@ -67,7 +70,7 @@ function pickDelivery(value: unknown): DisclosureDelivery {
   return value === 'user-docx' || value === 'markdown' ? value : 'builtin-docx';
 }
 
-/** 构建五个专利工具（getDefaults 每次执行现读，volatile 热生效）。 */
+/** 构建六个专利工具（getDefaults 每次执行现读，volatile 热生效）。 */
 export function buildPatentTools(getDefaults: () => DisclosureDefaults) {
   return [
     defineTool({
@@ -406,6 +409,94 @@ export function buildPatentTools(getDefaults: () => DisclosureDefaults) {
             ? (input.entries as EvidenceEntryInput[])
             : undefined,
           focus: face,
+        });
+      },
+    }),
+    defineTool({
+      name: 'claims_code_map',
+      description:
+        'Map patent claim features to source-code anchors as a litigation evidence ledger (出海维权取证底稿): 「权项特征 ↔ 源码落点 ↔ 四态判定」. The four-state verdict (可主张 / 需改写 / 不可主张 / 未覆盖) is the SAME judgment core as claims_evidence_check — this tool only reorganizes it, it never re-judges. You read the code first and submit one evidence record per claim feature; the tool enforces the evidence rule (a verdict without a file:line anchor is rejected). Output: four-state sections, two risk chapters (不可主张 = 主张即自曝的反制点; 未覆盖 = 源码有实现但权项未记载的保护缺口), a 答辩锚点 section (combination features with a 检索风险 evaluation slot), a code-side asset ledger, dual-carrier warnings, and a 我方是否实施 self-check (technical fact check, NOT a legal opinion). Anchor generation time is stamped — source anchors drift as code evolves, so re-verify before filing. Does NOT do FTO / infringement analysis, prior-art search, or claim drafting.',
+      parameters: {
+        claims: {
+          type: 'string',
+          description:
+            'Optional: the claim set text; each claim starts with a "N." numbered line. Use claimsPath instead when the claims live in a file.',
+        },
+        claimsPath: {
+          type: 'string',
+          description:
+            'Optional: path to the claim set file (.md/.txt/.docx) — the claims text is extracted from it.',
+        },
+        entries: {
+          type: 'array',
+          required: true,
+          items: { type: 'object', additionalProperties: true },
+          description:
+            'Evidence records, one per claim feature (same shape as claims_evidence_check): { claimNo (number|null), feature (string, required), docRef?, sourceAnchors (string[] like ["command.ts:1010-1020"], REQUIRED), verdict ("supported"|"needs-rewrite"|"unsupported"|"uncovered"), severity ("critical"|"high"|"medium"|"low"|"suggestion"), claimCarrier?, docCarrier?, suggestion?, implementedByUs? (boolean — whether your own implementation covers the feature), combination? (boolean — multi-element combination feature), searchRisk? ("low"|"medium"|"high" — prior-art search risk for the combination) }.',
+        },
+        sourceRoot: {
+          type: 'string',
+          description:
+            'Optional: source-code root directory. The tool only lists the files under it; it never reads the code and never asserts a verdict.',
+        },
+        document: {
+          type: 'string',
+          description:
+            'Optional: the disclosure markdown (or text extracted from a docx) so the tool can sanity-check the seven-part structure.',
+        },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value) => {
+          const report = value as {
+            ok: boolean;
+            markdown: string;
+            stats: {
+              claims: number;
+              rows: number;
+              rejected: number;
+              supported: number;
+              needsRewrite: number;
+              unsupported: number;
+              uncovered: number;
+            };
+            issues: {
+              code: string;
+              severity: string;
+              claimNo: number | null;
+              message: string;
+            }[];
+          };
+          const issues =
+            report.issues.length > 0
+              ? `Issues (${report.issues.length}):\n${report.issues
+                  .map(
+                    (i) =>
+                      `- [${i.severity}] ${i.claimNo === null ? '全局' : `权${i.claimNo}`} ${i.code}: ${i.message}`,
+                  )
+                  .join('\n')}\n\n`
+              : '';
+          const stats = `stats: claims=${report.stats.claims} rows=${report.stats.rows} supported=${report.stats.supported} needsRewrite=${report.stats.needsRewrite} unsupported=${report.stats.unsupported} uncovered=${report.stats.uncovered} rejected=${report.stats.rejected} ok=${report.ok}\n\n`;
+          return [
+            { type: 'text', text: `${stats}${issues}${report.markdown}` },
+          ];
+        },
+      },
+      isConcurrencySafe: () => true,
+      async execute(args) {
+        const input = (args ?? {}) as {
+          claims?: unknown;
+          claimsPath?: unknown;
+          entries?: unknown;
+          sourceRoot?: unknown;
+          document?: unknown;
+        };
+        return checkClaimsCodeMap({
+          claims: str(input.claims) || undefined,
+          claimsPath: str(input.claimsPath) || undefined,
+          entries: input.entries,
+          sourceRoot: str(input.sourceRoot) || undefined,
+          document: str(input.document) || undefined,
         });
       },
     }),
