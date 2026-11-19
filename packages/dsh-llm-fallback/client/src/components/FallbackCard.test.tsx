@@ -197,8 +197,9 @@ describe('FallbackCard 渲染', () => {
     await waitFor(() => fake.mutations.length > 0);
     const mutation = fake.mutations[0];
     expect(mutation.revision).toBe(1);
-    // 保存载荷与配置字段同步:6 个基础字段 + 时间窗两字段 + 熔断三字段 = 11 op
-    expect(mutation.ops).toHaveLength(11);
+    // 保存载荷与配置字段同步:5 个基础字段 + 时间窗两字段 + 熔断三字段 = 10 op
+    // (0.6.0:每候选重试次数 op 已随字段移除)
+    expect(mutation.ops).toHaveLength(10);
     const chains = mutation.ops.find((op) => op.path[0] === 'fallbackChains');
     expect(chains?.value).toEqual([{ provider: 'prov', model: 'm1' }]);
     const twEnabled = mutation.ops.find(
@@ -257,13 +258,14 @@ describe('FallbackCard 渲染', () => {
     ) as HTMLInputElement;
     expect(matchInput.value).toBe('deepseek-*');
     expect(div.textContent).toContain(t('dirty'));
-    // 保存 → 11 op(6 基础 + 时间窗两字段 + 熔断三字段),timeWindowEnabled=true + 预置规则原样写出
+    // 保存 → 10 op(5 基础 + 时间窗两字段 + 熔断三字段;0.6.0 移除每候选重试次数),
+    // timeWindowEnabled=true + 预置规则原样写出
     const saveButton = [...div.querySelectorAll('button')].find(
       (b) => b.textContent === t('save'),
     )!;
     saveButton.click();
     await waitFor(() => fake.mutations.length > 0);
-    expect(fake.mutations[0]!.ops).toHaveLength(11);
+    expect(fake.mutations[0]!.ops).toHaveLength(10);
     const enabledOp = fake.mutations[0]!.ops.find(
       (op) => op.path[0] === 'timeWindowEnabled',
     );

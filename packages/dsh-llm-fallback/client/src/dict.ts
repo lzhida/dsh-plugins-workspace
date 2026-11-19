@@ -53,10 +53,7 @@ export const DICT: Dict = {
     catalogNoMatch: '没有匹配的模型',
     maxRetries: '最多切换候选数',
     maxRetriesHint:
-      '0 = 按队列长度(切完所有候选才报错);只限切换次数,同候选重试由下方次数控制',
-    retriesBeforeSwitch: '每候选重试次数',
-    retriesHint:
-      '0 = 跟随官方重试预算(provider 重试策略,默认 5);N = 以插件配置为准,当前候选重试 N 次后才切换(超出官方预算的部分由插件代执行)',
+      '0 = 按队列长度(切完所有候选才报错);只限切换次数,同候选重试固定跟随官方重试预算(provider 重试策略,默认 5)',
     cooldownEnabled: '失败候选冷却跳过',
     cooldownEnabledHint:
       '候选重试预算耗尽切换后,短时间内后续请求不再从它开始,直接用下一个可用候选;窗口期满自动恢复优先级并重新验证',
@@ -142,10 +139,7 @@ export const DICT: Dict = {
     catalogNoMatch: 'No matching models',
     maxRetries: 'Max switches',
     maxRetriesHint:
-      '0 = queue length (try every candidate before failing); bounds candidate switches, not same-candidate retries',
-    retriesBeforeSwitch: 'Retries before switch',
-    retriesHint:
-      '0 = follow the official retry budget (provider retry policy, default 5); N = authoritative — retry the current candidate N times before switching (the plugin performs retries beyond the official budget itself)',
+      '0 = queue length (try every candidate before failing); bounds candidate switches, not same-candidate retries — the retry budget always follows the official one (provider retry policy, default 5)',
     cooldownEnabled: 'Cooldown skip for failed models',
     cooldownEnabledHint:
       'After a candidate exhausts its retry budget and the chain switches away, subsequent requests skip it for a short window and start from the next healthy candidate; it is re-verified when the window expires',

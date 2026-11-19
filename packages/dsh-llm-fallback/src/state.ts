@@ -47,9 +47,10 @@ export interface FallbackState {
   /**
    * 本 step 是否已发生过一次切换(one-shot 标志,perTurn=false 单次切换档消费)。
    * 只在切换动作真正生效处置位(index.ts agent/request-error 切换提交点)——
-   * 官方 `dsh-llm-retry` 透传与预算内代执行重试不消耗名额;agent/request 的
-   * 冷却起点改写(无候选失败,纯效率优化)同样不算切换。perTurn=false 时本
-   * 标志置位后同 step 不再切换;新 step 由 stateFor 重建状态天然重置。
+   * 官方 `dsh-llm-retry` 透传(同候选重试由官方执行,0.6.0 起无插件代执行)
+   * 不消耗名额;agent/request 的冷却起点改写(无候选失败,纯效率优化)
+   * 同样不算切换。perTurn=false 时本标志置位后同 step 不再切换;新 step
+   * 由 stateFor 重建状态天然重置。
    */
   switched: boolean;
   /**
@@ -65,7 +66,7 @@ export interface FallbackState {
    * 同一 (turn, step, provider, policyKey) 内 `retry` 必须从 1 起严格连续,
    * `retryId` 链内恒定,且 `(retryId, retry)` 对全局唯一)——因此轨迹事件
    * 不能共用"每 step 一个 retryId + 切换序号"的旧编号(旧编号在跨 provider
-   * 的多跳切换与代执行/切换交错时会写出非法序列,导致会话日志恢复被拒)。
+   * 的多跳切换与官方重试事件交错时会写出非法序列,导致会话日志恢复被拒)。
    * key = 失败 provider;value = 该 provider 链的 retryId 与已写事件数。
    * retryId 惰性生成(index.ts 注入 randomUUID),state.ts 保持可单测。
    */
@@ -142,7 +143,7 @@ export function isFailureRetryable(
   return retryableCodes.has(failure.code);
 }
 
-// ── 每候选重试预算(retriesBeforeSwitch × provider retryPolicy 合成) ──
+// ── 每候选重试预算(provider retryPolicy,固定跟随官方) ──
 
 /**
  * 官方 `agent/request-error` payload 中 `retryPolicy` 的最小结构面。
@@ -155,51 +156,40 @@ export interface RetryPolicyLike {
   maxRetries?: unknown;
 }
 
-/** 每候选重试计划:切换前允许的同候选重试上限 + 预算内无官方决策时是否代执行。 */
+/**
+ * 每候选重试计划:切换前允许的同候选重试上限。
+ * 预算固定跟随官方——同候选重试一律由官方 `dsh-llm-retry` 执行,本插件
+ * 不再代执行(0.6.0 起移除每候选重试次数配置与代执行分支)。
+ */
 export interface CandidateRetryPlan {
   /**
    * 当前候选切换前允许的同候选重试次数(首次失败不计);
-   * `Infinity` = 无上限(自动档遇 always 策略:整体跟随官方无限重试)。
+   * `Infinity` = 无上限(always 策略:整体跟随官方无限重试)。
    */
   maxRetries: number;
-  /**
-   * 预算内上游无决策(未装官方 retry 插件 / provider 无策略)时,
-   * 本插件是否代执行同候选重试(自带退避 + 轨迹事件)。
-   */
-  selfRetry: boolean;
 }
 
 /**
- * 合成"每候选重试预算"。
+ * 合成"每候选重试预算"——只读 provider retryPolicy,插件不再提供自定义档。
  *
- * 语义(0.5.0 起,取代旧 fallbackWhen 两档):
- * - 自定义 `configured > 0`:**以插件配置为准**——预算 = N,不再被 provider
- *   重试策略封顶。N 大于官方预算时,预算内由官方 `dsh-llm-retry` 执行重试
- *   (本插件透传其决策),超出的部分由本插件代执行(selfRetry,自带退避与
- *   轨迹事件),直到 N 用满才切下一候选。
- * - 自动档 `configured === 0`:跟随 provider retryPolicy——
- *   - normal 策略 → 预算 = `policyMax`(官方默认 5)——与旧 afterRetry 等价;
- *   - policy 缺失 → 预算 0(首失败即切)——与旧 afterRetry 未装官方插件时等价;
- *   - always 策略(无限重试)→ 预算 Infinity 且不代执行(整体透传官方决策,
- *     永不提前切);官方缺席时上游无决策 → 由调用方直接走切换。
+ * 语义(0.6.0 起,移除每候选重试次数配置):
+ * - normal 策略 → 预算 = `policyMax`(官方默认 5)——预算内官方
+ *   `dsh-llm-retry` 执行重试(本插件透传其决策),耗尽后切换;
+ * - policy 缺失 → 预算 0(首失败即切)——未装官方 retry 执行器时没有
+ *   可依赖的同候选重试,直接推进下一候选;normal 策略下 `maxRetries`
+ *   非有限非负数同样视同缺失落 0;
+ * - always 策略(无限重试)→ 预算 Infinity 且永不提前切;官方缺席时上游
+ *   无决策 → 由调用方直接走切换。
  *
- * 防御:policy 形态异常(非 normal/always、maxRetries 非有限非负数)视同缺失;
- * configured 非法(负数/NaN/非有限)视同 0。
+ * 防御:非 normal 的未知 mode 一律整体跟随官方(Infinity,与 always 同路,
+ * 不与官方决策打架);normal 分支下 maxRetries 非法才视同缺失落 0。
  */
 export function resolveCandidateRetryPlan(
-  configured: number,
   policy: RetryPolicyLike | undefined,
 ): CandidateRetryPlan {
-  const custom =
-    Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : 0;
-  if (custom > 0) {
-    // 自定义档:插件配置说了算;provider 预算只决定"谁执行"——预算内官方
-    // 重试(透传),超出部分由本插件代执行,直到 N 用满。
-    return { maxRetries: custom, selfRetry: true };
-  }
   if (policy !== undefined && policy.mode !== 'normal') {
     // always(或形态异常的非 normal 策略):无重试次数可比,整体跟随官方。
-    return { maxRetries: Number.POSITIVE_INFINITY, selfRetry: false };
+    return { maxRetries: Number.POSITIVE_INFINITY };
   }
   const policyMax =
     policy !== undefined &&
@@ -208,7 +198,7 @@ export function resolveCandidateRetryPlan(
     policy.maxRetries >= 0
       ? Math.floor(policy.maxRetries)
       : undefined;
-  return { maxRetries: policyMax ?? 0, selfRetry: true };
+  return { maxRetries: policyMax ?? 0 };
 }
 
 /**

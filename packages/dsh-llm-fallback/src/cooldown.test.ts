@@ -650,22 +650,26 @@ describe('失败冷却(apply 集成)', () => {
     ).toEqual({ ...seed });
   });
 
-  it('预算内的同候选重试不切换(无 select),预算耗尽才切换并持久化', async () => {
+  it('冷却只标记已真正切换过的候选:预算内透传不切换也不记冷却,耗尽才切换并持久化', async () => {
     const { req, err } = setup({
       fallbackChains: ['openai/a'],
-      retriesBeforeSwitch: 1,
     });
     const seed = { provider: 'deepseek', model: 'x' };
     const { agent, selections } = stubAgent();
-    // 同一 step 内:首失败 → 代重试(预算内,不切换不记冷却)
+    // 同一 step 内:首失败 → 官方预算内透传(不切换不记冷却)。
+    // 预算来自 payload 携带的 provider retryPolicy(normal(5))
     await callListener(req, { ...stepReq(1, 1), agent }, async () => ({
       ...seed,
     }));
     expect(
       await callListener(
         err,
-        { ...stepErr(1, 1, 'deepseek'), agent },
-        async () => undefined,
+        {
+          ...stepErr(1, 1, 'deepseek'),
+          agent,
+          retryPolicy: { mode: 'normal', maxRetries: 5 },
+        },
+        async () => ({ kind: 'retry' }),
       ),
     ).toEqual({ kind: 'retry' });
     expect(selections).toEqual([]);
@@ -675,7 +679,7 @@ describe('失败冷却(apply 集成)', () => {
         ...seed,
       })),
     ).toEqual({ ...seed });
-    // 回到原 step 继续失败:预算耗尽 → 切换(经 model.select 持久化并记冷却)
+    // 回到原 step 继续失败:官方无决策(undefined,预算已尽)→ 切换(经 model.select 持久化并记冷却)
     expect(
       await callListener(
         err,

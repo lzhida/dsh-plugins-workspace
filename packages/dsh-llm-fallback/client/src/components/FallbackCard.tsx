@@ -5,7 +5,7 @@
  *   hook 之前提前返回，符合 hooks 规则）。
  * - 其余（`view === 'page'`）：插件详情页「配置」区块的完整表单——
  *   启用开关、回退队列、模型目录（搜索+勾选）、最大切换候选数、
- *   每候选重试次数、失败候选冷却、保存/放弃操作区。
+ *   失败候选冷却、保存/放弃操作区。
  *
  * 状态模型（对齐旧版手写实现）：
  * - configForms 快照订阅（scope.getSnapshot/subscribe 契约）；
@@ -310,14 +310,6 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
         busy={busy}
         search={search}
         onSearch={setSearch}
-      />
-
-      <NumberRow
-        label={t('retriesBeforeSwitch')}
-        hint={t('retriesHint')}
-        value={view.retriesBeforeSwitch}
-        disabled={!writable || busy}
-        onChange={(n) => patchDraft(() => ({ retriesBeforeSwitch: n }))}
       />
 
       <NumberRow

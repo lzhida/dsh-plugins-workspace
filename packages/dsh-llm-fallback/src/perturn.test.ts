@@ -14,7 +14,8 @@
  *   - 同 turn:step 至多切换一次:首次预算耗尽切换后,同 step 再次预算耗尽
  *     不再切换、透传上游;
  *   - 官方 retry 透传(预算内)不消耗名额:透传后预算耗尽仍能完成该次切换;
- *     切换后同候选代执行重试照常,预算再耗尽也不得二次切换;
+ *     切换后同候选重试由官方继续(0.6.0 起无插件代执行),预算再耗尽
+ *     也不得二次切换;
  *   - 新 step 天然重置:同 turn 下一 step 恢复完整切换名额;
  *   - 新 turn 天然重置 + 冷却表跨 turn 语义不受状态清理影响:新 turn 首个
  *     失败仍能完成一次切换,前 turn 记下的候选冷却仍生效;
@@ -427,24 +428,28 @@ describe('perTurn=false 单次切换档(apply 集成)', () => {
     expect(agent.selections).toEqual([{ provider: 'openai', model: 'a' }]);
   });
 
-  it('官方 retry 透传(预算内)不消耗名额;切换后同候选代执行照常,预算再耗尽也不得二次切换', async () => {
-    const { req, err } = setup({ perTurn: false, retriesBeforeSwitch: 1 });
+  it('官方 retry 透传(预算内)不消耗名额;切换后二次失败不再切换(one-shot 闸门)', async () => {
+    const { req, err } = setup({ perTurn: false });
     const seed = { provider: 'deepseek', model: 'x' };
     const agent = makeAgent('sess-1');
     await callListener(req, stepReqAs(agent.agent, 1, 1), async () => ({
       ...seed,
     }));
-    // 预算内官方 retry 决策 → 原样透传,不消耗 one-shot 名额(无 select)
+    // 预算内官方 retry 决策(payload 携带 provider retryPolicy normal(5))→
+    // 原样透传,不消耗 one-shot 名额(无 select)
     const official = { kind: 'retry' } as const;
     expect(
       await callListener(
         err,
-        stepErrAs(agent.agent, 1, 1, 'deepseek'),
+        {
+          ...stepErrAs(agent.agent, 1, 1, 'deepseek'),
+          retryPolicy: { mode: 'normal', maxRetries: 5 },
+        },
         async () => official,
       ),
     ).toBe(official);
     expect(agent.selections).toEqual([]);
-    // 二次失败预算耗尽 → 仍能完成本 step 的那次切换
+    // 二次失败无预算信息(policy 缺失 → 预算 0)→ 仍能完成本 step 的那次切换
     expect(
       await callListener(
         err,
@@ -453,16 +458,7 @@ describe('perTurn=false 单次切换档(apply 集成)', () => {
       ),
     ).toEqual({ kind: 'retry' });
     expect(agent.selections).toEqual([{ provider: 'openai', model: 'a' }]);
-    // 切换后 openai 预算内代执行重试照常(不经过 one-shot 闸门,无 select)
-    expect(
-      await callListener(
-        err,
-        stepErrAs(agent.agent, 1, 1, 'openai'),
-        async () => undefined,
-      ),
-    ).toEqual({ kind: 'retry' });
-    expect(agent.selections).toEqual([{ provider: 'openai', model: 'a' }]);
-    // openai 预算再耗尽:名额已消耗 → 不二次切换,透传上游
+    // 切换后二次失败:名额已消耗 → 不二次切换,透传上游
     expect(
       await callListener(
         err,

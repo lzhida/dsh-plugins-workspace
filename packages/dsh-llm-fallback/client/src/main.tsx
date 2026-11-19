@@ -13,8 +13,8 @@
  * - loader 只读 name/inject/apply 三个符号。
  *
  * 功能面：设置 → 插件 → dsh-llm-fallback 的配置卡片——启用开关、模型
- * 勾选回退队列（排序/搜索/限高滚动）、最大回退次数、每候选重试次数、
- * 失败候选冷却；文案 zh/en 经 locale 服务注册、语言切换即时
+ * 勾选回退队列（排序/搜索/限高滚动）、最大回退次数、失败候选冷却；
+ * 文案 zh/en 经 locale 服务注册、语言切换即时
  * 生效；配色全部引用 dsh web 主题 token（明/暗双模式）。
  *
  * @module dsh-llm-fallback/client

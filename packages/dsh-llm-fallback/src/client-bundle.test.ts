@@ -320,7 +320,7 @@ describe('配置卡设置镜像（熔断三字段）', () => {
     expect(paths).toContain('cooldownBreakerEnabled');
     expect(paths).toContain('cooldownBreakerCapMs');
     expect(paths).toContain('cooldownStabilizationMs');
-    expect(ops.length).toBe(11);
+    expect(ops.length).toBe(10); // 0.6.0:retriesBeforeSwitch op 已随字段移除
     const changed = readSavedSettings(
       { ...saved, cooldownStabilizationMs: 0 },
       1,

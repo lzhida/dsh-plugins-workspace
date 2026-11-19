@@ -41,8 +41,8 @@ export const FALLBACK_RETRY_POLICY_KEY = 'llm-fallback';
 /** 官方 `llm/retry` 事件的 payload(normal 形态,对齐 dsh-llm-retry 类型)。 */
 export interface LlmRetryEventData {
   /**
-   * 轨迹链标识:同一 (turn, step, provider) 的本插件事件(代执行重试 + 切换)
-   * 复用同一 id——format v4 读侧要求同 (turn, step, provider, policyKey) 链内
+   * 轨迹链标识:同一 (turn, step, provider) 的本插件切换事件复用同一
+   * id——format v4 读侧要求同 (turn, step, provider, policyKey) 链内
    * retryId 恒定,且 (retryId, retry) 对全局唯一,故按 provider 建链。
    */
   retryId: string;
@@ -54,8 +54,8 @@ export interface LlmRetryEventData {
   policyKey: string;
   /**
    * provider 链内尝试序号(1 起严格连续)——format v4 读侧校验:同一
-   * (turn, step, provider, policyKey) 内必须 1,2,3… 连续。代执行重试与
-   * 切换事件共链接续,不再是"step 内切换序号"。
+   * (turn, step, provider, policyKey) 内必须 1,2,3… 连续。本插件的切换
+   * 事件按失败 provider 共链接续,不再是"step 内切换序号"。
    */
   retry: number;
   /** 自重试事件=有效预算;切换事件=min(链长, maxRetries) 展示上限。 */
@@ -72,7 +72,7 @@ export interface LlmRetryEventData {
    * 本次切换同时记下的失败方冷却到期毫秒时间戳(本插件追加字段,官方
    * payload 无;读侧透传安全)。配额感知自适应冷却的轨迹观察点:配额型
    * 失败(GLM 1308/1310 / MiniMax 2056 等)的冷却被延长时,轨迹里直接
-   * 可见冷却到何时。仅切换分支的事件携带;代执行重试事件无(未记冷却)。
+   * 可见冷却到何时。仅切换分支的事件携带。
    */
   cooldownUntilMs?: number;
   /**

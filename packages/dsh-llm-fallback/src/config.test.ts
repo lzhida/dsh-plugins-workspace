@@ -3,7 +3,7 @@
  *
  * 覆盖:
  * - 插件契约(name / inject / 装载日志);
- * - resolveConfig:默认值 / 链项解析 / retriesBeforeSwitch / 错误码识别(含宿主失败码
+ * - resolveConfig:默认值 / 链项解析 / 错误码识别(含宿主失败码
  *   对齐与旧码别名)/ maxRetries=0(链长上限);
  * - resolveCandidateRetryPlan:每候选重试预算合成(自定义档以插件为准不封顶 /
  *   自动档跟随官方预算 / always 与缺失策略的降级);
@@ -13,13 +13,12 @@
  *   - disabled / 空链 → 不挂监听器;
  *   - agent/request 只读:原样返回 seed(0.6.0 起,不再改写候选;切换改经
  *     官方 agent.model.select 持久化);
- *   - agent/request-error 按每候选重试预算三分支:
+ *   - agent/request-error 两分支(0.6.0:每候选重试预算固定跟随官方):
  *     - 预算内 + 官方 retry 决策 → 透传不切换;
- *     - 预算内 + 官方无决策 → 本插件代执行同候选重试(不推进 index);
- *     - 预算耗尽 → 切换(即使上游仍想重试也覆盖)并经 agent.model.select
+ *     - 预算耗尽(或预算内官方无决策)→ 切换并经 agent.model.select
  *       持久化;切换后候选预算清零;
  *   - 链耗尽 / 失败码不在白名单 → 透传 upstream;
- *   - 轨迹记录:切换/代重试时依次写官方 llm/retry + llm/retry-started(字段完整、
+ *   - 轨迹记录:切换时依次写官方 llm/retry + llm/retry-started(字段完整、
  *     retryId 同链复用);agent 缺失不崩;append 抛错不阻断回退;abort 只写
  *     scheduled;不切换时不写;
  *   - effect 卸载时 dispose 被收集。
@@ -35,7 +34,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apply, inject, name } from './index.ts';
 import {
   resolveConfig,
-  resolveRetriesBeforeSwitch,
   normalizeChainEntry,
   isVolatileLike,
   unwrapVolatile,
@@ -222,16 +220,17 @@ describe('dsh-llm-fallback plugin contract', () => {
 // ── 2. resolveConfig ────────────────────────────────────────────────
 
 describe('resolveConfig', () => {
-  it('默认值:enabled=true / chain=[] / retriesBeforeSwitch=0(自动跟随官方预算) / maxRetries=1 / 默认失败码', () => {
+  it('默认值:enabled=true / chain=[] / maxRetries=1 / 默认失败码(重试预算固定跟随官方,无插件侧配置)', () => {
     const c = resolveConfig({});
     expect(c.enabled).toBe(true);
     expect(c.chain).toEqual([]);
-    expect(c.retriesBeforeSwitch).toBe(0);
     expect(c.maxRetries).toBe(1); // 链空时 maxRetries 强制 ≥1
     expect(c.retryableCodes).toEqual(new Set(DEFAULT_RETRYABLE_CODES));
     expect(c.baseDelayMs).toBe(500);
     expect(c.maxDelayMs).toBe(30000);
     expect(c.perTurn).toBe(true);
+    // 0.6.0:retriesBeforeSwitch 已移除——ResolvedConfig 不再携带该字段
+    expect('retriesBeforeSwitch' in c).toBe(false);
   });
 
   it('perTurn=false 解析为单次切换档;仅字面 false 生效,其余形态宽容为 true(默认)', () => {
@@ -253,7 +252,6 @@ describe('resolveConfig', () => {
     expect(cNull).toEqual(cEmpty);
     expect(cUndef.enabled).toBe(true);
     expect(cUndef.chain).toEqual([]);
-    expect(cUndef.retriesBeforeSwitch).toBe(0);
     expect(cUndef.maxRetries).toBe(1);
   });
 
@@ -280,39 +278,14 @@ describe('resolveConfig', () => {
     );
   });
 
-  it('retriesBeforeSwitch:正整数生效;0/负数/非有限数/字符串数字回落 0(自动档)', () => {
-    expect(resolveConfig({ retriesBeforeSwitch: 2 }).retriesBeforeSwitch).toBe(
-      2,
-    );
-    expect(resolveConfig({ retriesBeforeSwitch: 0 }).retriesBeforeSwitch).toBe(
-      0,
-    );
-    expect(resolveConfig({ retriesBeforeSwitch: -1 }).retriesBeforeSwitch).toBe(
-      0,
-    );
-    expect(
-      resolveConfig({ retriesBeforeSwitch: Number.NaN }).retriesBeforeSwitch,
-    ).toBe(0);
-    expect(
-      resolveConfig({ retriesBeforeSwitch: Number.POSITIVE_INFINITY })
-        .retriesBeforeSwitch,
-    ).toBe(0);
-    expect(
-      resolveConfig({ retriesBeforeSwitch: 2.9 }).retriesBeforeSwitch,
-    ).toBe(2); // 向下取整
-    expect(
-      resolveConfig({ retriesBeforeSwitch: '3' }).retriesBeforeSwitch,
-    ).toBe(3); // Number('3') = 3:宽容数字字符串
-    expect(
-      resolveConfig({ retriesBeforeSwitch: 'bogus' }).retriesBeforeSwitch,
-    ).toBe(0); // Number('bogus') = NaN → 回落
-  });
-
-  it('resolveRetriesBeforeSwitch 独立导出行为一致(undefined 视为 0)', () => {
-    expect(resolveRetriesBeforeSwitch(undefined)).toBe(0);
-    expect(resolveRetriesBeforeSwitch(null)).toBe(0);
-    expect(resolveRetriesBeforeSwitch(5)).toBe(5);
-    expect(resolveRetriesBeforeSwitch(-2)).toBe(0);
+  it('0.6.0:retriesBeforeSwitch 残留配置被宽松忽略(schema/resolve 均不再识别该键)', () => {
+    // 旧配置残留值:resolveConfig 不抛错、不产生任何效果,直接忽略。
+    const c = resolveConfig({ retriesBeforeSwitch: 3 } as Record<
+      string,
+      unknown
+    >);
+    expect('retriesBeforeSwitch' in c).toBe(false);
+    expect(c.maxRetries).toBe(1); // 不受残留值影响
   });
 
   it('冷却配置:cooldownEnabled 默认 true;cooldownMs 默认 300000,负数/非有限回落默认,0 合法(立即过期)', () => {
@@ -668,81 +641,34 @@ describe('resolveCandidateRetryPlan', () => {
   });
   const always: RetryPolicyLike = { mode: 'always' };
 
-  it('自动档(0)+ normal 策略 → 预算 = policy.maxRetries(与旧 afterRetry 等价)', () => {
-    expect(resolveCandidateRetryPlan(0, normal(5))).toEqual({
-      maxRetries: 5,
-      selfRetry: true,
-    });
-    expect(resolveCandidateRetryPlan(0, normal(0))).toEqual({
-      maxRetries: 0,
-      selfRetry: true,
-    });
+  it('normal 策略 → 预算 = policy.maxRetries(官方 dsh-llm-retry 执行同候选重试)', () => {
+    expect(resolveCandidateRetryPlan(normal(5))).toEqual({ maxRetries: 5 });
+    expect(resolveCandidateRetryPlan(normal(0))).toEqual({ maxRetries: 0 });
   });
 
-  it('自动档(0)+ policy 缺失 → 预算 0(首失败即切,等价旧 afterRetry 未装官方插件)', () => {
-    expect(resolveCandidateRetryPlan(0, undefined)).toEqual({
-      maxRetries: 0,
-      selfRetry: true,
-    });
+  it('policy 缺失 → 预算 0(首失败即切,未装官方 retry 执行器的等价语义)', () => {
+    expect(resolveCandidateRetryPlan(undefined)).toEqual({ maxRetries: 0 });
   });
 
-  it('自动档(0)+ always 策略 → 无上限且不代执行(整体透传官方无限重试)', () => {
-    expect(resolveCandidateRetryPlan(0, always)).toEqual({
+  it('always 策略 → 无上限(整体透传官方无限重试,永不提前切)', () => {
+    expect(resolveCandidateRetryPlan(always)).toEqual({
       maxRetries: Number.POSITIVE_INFINITY,
-      selfRetry: false,
-    });
-  });
-
-  it('自定义档:N 为准,超过官方预算也不封顶(超出部分由插件代执行)', () => {
-    // 核心需求(验收反馈):插件的重试次数非 0 时以插件配置为准;=0 才跟随 provider。
-    expect(resolveCandidateRetryPlan(2, normal(5))).toEqual({
-      maxRetries: 2,
-      selfRetry: true,
-    });
-    expect(resolveCandidateRetryPlan(8, normal(5))).toEqual({
-      maxRetries: 8,
-      selfRetry: true,
-    });
-    expect(resolveCandidateRetryPlan(5, normal(5))).toEqual({
-      maxRetries: 5,
-      selfRetry: true,
-    });
-  });
-
-  it('自定义档 + policy 缺失/always(无预算可比)→ 按自定义值执行', () => {
-    expect(resolveCandidateRetryPlan(3, undefined)).toEqual({
-      maxRetries: 3,
-      selfRetry: true,
-    });
-    expect(resolveCandidateRetryPlan(3, always)).toEqual({
-      maxRetries: 3,
-      selfRetry: true,
     });
   });
 
   it('防御:policy 形态异常(mode 未知 / maxRetries 非法)视同缺失或降级', () => {
-    expect(
-      resolveCandidateRetryPlan(0, { mode: 'bogus', maxRetries: 5 }),
-    ).toEqual(resolveCandidateRetryPlan(0, always));
-    expect(
-      resolveCandidateRetryPlan(2, { mode: 'normal', maxRetries: 'bogus' }),
-    ).toEqual({ maxRetries: 2, selfRetry: true });
-    expect(
-      resolveCandidateRetryPlan(0, { mode: 'normal', maxRetries: -1 }),
-    ).toEqual({ maxRetries: 0, selfRetry: true });
-    expect(
-      resolveCandidateRetryPlan(2, { mode: 'normal', maxRetries: 2.9 }),
-    ).toEqual({ maxRetries: 2, selfRetry: true });
-  });
-
-  it('configured 非法(负数/NaN/非有限)视同 0 → 自动档', () => {
-    expect(resolveCandidateRetryPlan(-1, normal(5))).toEqual(
-      resolveCandidateRetryPlan(0, normal(5)),
+    expect(resolveCandidateRetryPlan({ mode: 'bogus', maxRetries: 5 })).toEqual(
+      resolveCandidateRetryPlan(always),
     );
-    expect(resolveCandidateRetryPlan(Number.NaN, undefined)).toEqual({
-      maxRetries: 0,
-      selfRetry: true,
-    });
+    expect(
+      resolveCandidateRetryPlan({ mode: 'normal', maxRetries: 'bogus' }),
+    ).toEqual({ maxRetries: 0 });
+    expect(
+      resolveCandidateRetryPlan({ mode: 'normal', maxRetries: -1 }),
+    ).toEqual({ maxRetries: 0 });
+    expect(
+      resolveCandidateRetryPlan({ mode: 'normal', maxRetries: 2.9 }),
+    ).toEqual({ maxRetries: 2 });
   });
 });
 
@@ -1076,11 +1002,12 @@ describe('modelFallbackSection', () => {
     expect(s.text).toContain('UNSUPPORTED_REASONING_EFFORT');
   });
 
-  it('文本说明每候选重试次数语义(默认跟随官方 dsh-llm-retry 预算)', () => {
+  it('文本说明每候选重试预算语义(固定跟随官方 dsh-llm-retry 预算,不再有插件侧自定义次数)', () => {
     const s = modelFallbackSection();
     expect(s.text).toContain('dsh-llm-retry');
-    expect(s.text).toContain('retriesBeforeSwitch');
     expect(s.text).toContain('budget');
+    // 0.6.0:协议文本不再提及已移除的 retriesBeforeSwitch 配置
+    expect(s.text).not.toContain('retriesBeforeSwitch');
   });
 });
 
@@ -1551,13 +1478,12 @@ describe('agent/request-error listener', () => {
     });
   });
 
-  it('自定义 retriesBeforeSwitch 小于官方预算 → 重试 N 次后覆盖官方决策提前切换', async () => {
-    // 核心需求:自定义次数 N=2,官方预算 5——前 2 次失败透传官方 retry,
-    // 第 3 次失败时 N 已用满,即使官方仍在预算内也切下一候选。
+  it('官方预算 5(retryPolicy normal(5))→ 同候选重试 5 次后自动切换下一候选', async () => {
+    // 行为契约:同候选重试一律由官方 dsh-llm-retry 执行(预算内透传其决策);
+    // 预算耗尽(第 6 次失败)→ 本插件切下一候选并持久化。
     const { ctx, listeners } = stubCtx();
     apply(ctx, {
       fallbackChains: ['openai/gpt-4o', 'anthropic/claude-sonnet-4'],
-      retriesBeforeSwitch: 2,
       baseDelayMs: 0,
       maxDelayMs: 0,
     });
@@ -1579,136 +1505,100 @@ describe('agent/request-error listener', () => {
       signal: new AbortController().signal,
       agent,
     };
-    // 前 2 次失败:预算内 → 透传官方 retry
-    expect(
-      await callListener(errListener, payload, async () => upstreamRetry),
-    ).toBe(upstreamRetry);
-    expect(
-      await callListener(errListener, payload, async () => upstreamRetry),
-    ).toBe(upstreamRetry);
-    // 第 3 次失败:candidateRetries=2 >= N=2 → 覆盖官方决策,切换并持久化
-    expect(
-      await callListener(errListener, payload, async () => upstreamRetry),
-    ).toEqual({ kind: 'retry' });
-    expect(selections).toEqual([{ provider: 'openai', model: 'gpt-4o' }]);
-    const nextSeed = await callListener(
-      reqListener,
-      { turn: 1, step: 1, signal: new AbortController().signal, agent },
-      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
-    );
-    expect(nextSeed).toEqual({
-      provider: 'deepseek',
-      model: 'deepseek-chat',
-    });
-  });
-
-  it('自定义 retriesBeforeSwitch 大于官方预算 → 预算内透传官方,耗尽后插件代执行剩余,直到 N 用满才切', async () => {
-    // N=3、provider 策略 maxRetries=1:第 1 次失败透传官方 retry(预算内);
-    // 第 2、3 次失败官方已耗尽 → 插件代执行;第 4 次失败 N 用满 → 切换。
-    const { ctx, listeners } = stubCtx();
-    apply(ctx, {
-      fallbackChains: ['openai/gpt-4o'],
-      retriesBeforeSwitch: 3,
-      baseDelayMs: 0,
-      maxDelayMs: 0,
-    });
-    const reqListener = findListener(listeners, 'agent/request');
-    const errListener = findListener(listeners, 'agent/request-error');
-    const { agent, selections } = stubAgent();
-    await callListener(
-      reqListener,
-      { turn: 1, step: 1, signal: new AbortController().signal, agent },
-      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
-    );
-    const upstreamRetry = { kind: 'retry' as const };
-    const payload = {
-      turn: 1,
-      step: 1,
-      provider: 'deepseek',
-      failure: stubFailure('RATE_LIMIT'),
-      retryPolicy: { mode: 'normal', maxRetries: 1 },
-      signal: new AbortController().signal,
-      agent,
-    };
-    // 第 1 次失败:官方预算内 → 透传官方 retry
-    expect(
-      await callListener(errListener, payload, async () => upstreamRetry),
-    ).toBe(upstreamRetry);
-    // 第 2、3 次失败:官方预算耗尽(upstream=undefined)→ 插件代执行,N 未满不切换
-    expect(
-      await callListener(errListener, payload, async () => undefined),
-    ).toEqual({ kind: 'retry' });
-    expect(
-      await callListener(errListener, payload, async () => undefined),
-    ).toEqual({ kind: 'retry' });
-    const seedStillPage = await callListener(
-      reqListener,
-      { turn: 1, step: 1, signal: new AbortController().signal, agent },
-      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
-    );
-    expect(seedStillPage).toEqual({
-      provider: 'deepseek',
-      model: 'deepseek-chat',
-    });
-    // 第 4 次失败:candidateRetries=3 >= N=3 → 切换并持久化
-    expect(
-      await callListener(errListener, payload, async () => undefined),
-    ).toEqual({ kind: 'retry' });
-    expect(selections).toEqual([{ provider: 'openai', model: 'gpt-4o' }]);
-    const nextSeed = await callListener(
-      reqListener,
-      { turn: 1, step: 1, signal: new AbortController().signal, agent },
-      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
-    );
-    expect(nextSeed).toEqual({
-      provider: 'deepseek',
-      model: 'deepseek-chat',
-    });
-  });
-
-  it('预算内 + 官方无决策(未装官方插件)→ 本插件代执行同候选重试,不推进 index', async () => {
-    // provider retryPolicy normal(5)但官方 retry 插件未装载:upstream 恒为
-    // undefined。自动档预算 = 5 → 本插件代执行同候选重试 5 次(带退避),
-    // 第 6 次失败才切换。
-    const { ctx, listeners } = stubCtx();
-    apply(ctx, {
-      fallbackChains: ['openai/gpt-4o'],
-      baseDelayMs: 0,
-      maxDelayMs: 0,
-    });
-    const reqListener = findListener(listeners, 'agent/request');
-    const errListener = findListener(listeners, 'agent/request-error');
-    const { agent, selections } = stubAgent();
-    await callListener(
-      reqListener,
-      { turn: 1, step: 1, signal: new AbortController().signal, agent },
-      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
-    );
-    const payload = {
-      turn: 1,
-      step: 1,
-      provider: 'deepseek',
-      failure: stubFailure('RATE_LIMIT'),
-      retryPolicy: { mode: 'normal', maxRetries: 5 },
-      signal: new AbortController().signal,
-      agent,
-    };
-    const selfRetry = { kind: 'retry' as const };
-    // 前 5 次失败:代执行同候选重试
+    // 前 5 次失败:官方预算内 → 透传官方 retry,不切换
     for (let i = 0; i < 5; i++) {
       expect(
-        await callListener(errListener, payload, async () => undefined),
-      ).toEqual(selfRetry);
-      // 同候选重试不切换(index 仍 -1):seed 原样放行、无 model.select
-      const seed = await callListener(
-        reqListener,
-        { turn: 1, step: 1, signal: new AbortController().signal, agent },
-        async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
-      );
-      expect(seed).toEqual({ provider: 'deepseek', model: 'deepseek-chat' });
+        await callListener(errListener, payload, async () => upstreamRetry),
+      ).toBe(upstreamRetry);
+      expect(selections).toEqual([]);
     }
-    expect(selections).toEqual([]);
-    // 第 6 次失败:预算耗尽 → 切到队列第 1 项并持久化
+    // 第 6 次失败:预算耗尽 → 切下一候选并持久化
+    expect(
+      await callListener(errListener, payload, async () => upstreamRetry),
+    ).toEqual({ kind: 'retry' });
+    expect(selections).toEqual([{ provider: 'openai', model: 'gpt-4o' }]);
+    const nextSeed = await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal, agent },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    expect(nextSeed).toEqual({
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+    });
+  });
+
+  it('官方预算耗尽后(upstream=undefined)首失败即切(policy 缺失 → 预算 0)', async () => {
+    // provider retryPolicy 缺失:预算按 0(首失败即切)——与旧 afterRetry
+    // 在未装官方 retry 执行器时的语义一致。
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['openai/gpt-4o'],
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const reqListener = findListener(listeners, 'agent/request');
+    const errListener = findListener(listeners, 'agent/request-error');
+    const { agent, selections } = stubAgent();
+    await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal, agent },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    const payload = {
+      turn: 1,
+      step: 1,
+      provider: 'deepseek',
+      failure: stubFailure('RATE_LIMIT'),
+      signal: new AbortController().signal,
+      agent,
+    };
+    // 首失败即切(预算 0)
+    expect(
+      await callListener(errListener, payload, async () => undefined),
+    ).toEqual({ kind: 'retry' });
+    expect(selections).toEqual([{ provider: 'openai', model: 'gpt-4o' }]);
+    const nextSeed = await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal, agent },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    expect(nextSeed).toEqual({
+      provider: 'deepseek',
+      model: 'deepseek-chat',
+    });
+  });
+
+  it('预算内 + 官方无决策(upstream=undefined)→ 透传 undefined,同候选不切换也不代执行', async () => {
+    // 0.6.0 起不再有插件代执行:upstream=undefined(官方 retry 未决策)时
+    // 预算内分支不透传(非 isRetryAction),直接落到切换分支。
+    // 这里验证预算 5 + always 混合场景之外的最简形态:policy normal(5),
+    // 官方 retry 已耗尽(upstream=undefined)→ 立即切换。
+    const { ctx, listeners } = stubCtx();
+    apply(ctx, {
+      fallbackChains: ['openai/gpt-4o'],
+      baseDelayMs: 0,
+      maxDelayMs: 0,
+    });
+    const reqListener = findListener(listeners, 'agent/request');
+    const errListener = findListener(listeners, 'agent/request-error');
+    const { agent, selections } = stubAgent();
+    await callListener(
+      reqListener,
+      { turn: 1, step: 1, signal: new AbortController().signal, agent },
+      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
+    );
+    const payload = {
+      turn: 1,
+      step: 1,
+      provider: 'deepseek',
+      failure: stubFailure('RATE_LIMIT'),
+      retryPolicy: { mode: 'normal', maxRetries: 5 },
+      signal: new AbortController().signal,
+      agent,
+    };
+    // 官方 retry 已耗尽(upstream=undefined):虽预算名义未用满,但预算内分支
+    // 只透传官方 retry 决策;无决策 → 切换分支接管,不代执行。
     expect(
       await callListener(errListener, payload, async () => undefined),
     ).toEqual({ kind: 'retry' });
@@ -1773,13 +1663,11 @@ describe('agent/request-error listener', () => {
   });
 
   it('切换后新候选获得完整预算(candidateFailures 清零)', async () => {
-    // N=1 且无 provider 策略(预算=1):会话模型失败 2 次(第 1 次代重试、
-    // 第 2 次切换)到候选 A;候选 A 同样失败 2 次才切到候选 B——证明计数
-    // 按候选独立、切换后清零。
+    // policy 缺失(预算 0):会话模型失败 1 次即切到候选 A;候选 A 同样
+    // 失败 1 次即切到候选 B——证明计数按候选独立、切换后清零。
     const { ctx, listeners } = stubCtx();
     apply(ctx, {
       fallbackChains: ['openai/a', 'anthropic/b'],
-      retriesBeforeSwitch: 1,
       baseDelayMs: 0,
       maxDelayMs: 0,
     });
@@ -1799,24 +1687,7 @@ describe('agent/request-error listener', () => {
       signal: new AbortController().signal,
       agent,
     });
-    // 会话模型第 1 次失败:预算内(candidates=0 < 1)无官方决策 → 代重试(不切换)
-    expect(
-      await callListener(
-        errListener,
-        payloadOf('deepseek'),
-        async () => undefined,
-      ),
-    ).toEqual({ kind: 'retry' });
-    const seedStillPage = await callListener(
-      reqListener,
-      { turn: 1, step: 1, signal: new AbortController().signal, agent },
-      async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
-    );
-    expect(seedStillPage).toEqual({
-      provider: 'deepseek',
-      model: 'deepseek-chat',
-    });
-    // 会话模型第 2 次失败:预算耗尽 → 切到候选 A 并持久化
+    // 会话模型第 1 次失败:预算 0 → 切到候选 A 并持久化
     expect(
       await callListener(
         errListener,
@@ -1831,21 +1702,7 @@ describe('agent/request-error listener', () => {
       async () => ({ provider: 'deepseek', model: 'deepseek-chat' }),
     );
     expect(seedOnA).toEqual({ provider: 'deepseek', model: 'deepseek-chat' });
-    // 候选 A 第 1 次失败:新候选预算 1,candidateRetries=0 < 1 → 代重试(不切换)
-    expect(
-      await callListener(
-        errListener,
-        payloadOf('openai'),
-        async () => undefined,
-      ),
-    ).toEqual({ kind: 'retry' });
-    const seedStillA = await callListener(
-      reqListener,
-      { turn: 1, step: 1, signal: new AbortController().signal, agent },
-      async () => ({ provider: 'openai', model: 'a' }),
-    );
-    expect(seedStillA).toEqual({ provider: 'openai', model: 'a' }); // seed 原样
-    // 候选 A 第 2 次失败:预算耗尽 → 切到候选 B 并持久化(candidateFailures 已清零)
+    // 候选 A 第 1 次失败:新候选预算 0 → 切到候选 B(candidateFailures 已清零)
     expect(
       await callListener(
         errListener,
@@ -2490,9 +2347,9 @@ describe('轨迹记录(llm/retry 事件)', () => {
     expect(second?.retryId).toBe(first?.retryId);
   });
 
-  it('代执行同候选重试:llm/retry 记候选内序号,maxRetries=有效预算,target=被重试的候选自身', async () => {
-    // 自动档 + provider 策略 normal(2)、官方 retry 未装:前 2 次失败由本
-    // 插件代执行同候选重试(第 3 次才切换)。轨迹应体现"同一模型第 N 次重试"。
+  it('官方预算耗尽才切换:llm/retry 只记切换事件,target=下一候选,序号接续', async () => {
+    // 0.6.0:同候选重试一律由官方 dsh-llm-retry 执行(插件透传,不写事件);
+    // 预算耗尽(policy normal(2))后第 3 次失败才切换——轨迹只应有切换事件。
     const { ctx, listeners } = stubCtx();
     apply(ctx, {
       fallbackChains: ['openai/y'],
@@ -2516,41 +2373,29 @@ describe('轨迹记录(llm/retry 事件)', () => {
       signal: new AbortController().signal,
       agent,
     };
-    // 第 1、2 次失败:代重试,各写一对事件
-    await callListener(errListener, payload, async () => undefined);
-    await callListener(errListener, payload, async () => undefined);
-    // 第 3 次失败:预算耗尽 → 切换
+    // 第 1、2 次失败:官方预算内 → 透传官方 retry,不写轨迹事件
+    await callListener(errListener, payload, async () => ({
+      kind: 'retry' as const,
+    }));
+    await callListener(errListener, payload, async () => ({
+      kind: 'retry' as const,
+    }));
+    expect(appends).toEqual([]);
+    // 第 3 次失败:预算耗尽 → 切换(写一对事件)
     await callListener(errListener, payload, async () => undefined);
     expect(appends.map((a) => a.type)).toEqual([
       'llm/retry',
       'llm/retry-started',
-      'llm/retry',
-      'llm/retry-started',
-      'llm/retry',
-      'llm/retry-started',
     ]);
-    const [first, , second, , switchEvent] = appends.map((a) => a.data);
-    // 代重试事件:retry = provider 链内序号(1 起连续),maxRetries = 有效
-    // 预算(2),target = 被重试的会话模型自身(provider 不变)
-    expect(first).toMatchObject({
+    const [switchEvent] = appends.map((a) => a.data);
+    // 切换事件:retry = provider 链内序号,target 变下一候选
+    expect(switchEvent).toMatchObject({
       provider: 'deepseek',
       retry: 1,
-      maxRetries: 2,
-      targetProvider: 'deepseek',
-      targetModel: 'x',
-      policyKey: 'llm-fallback',
-    });
-    expect(second).toMatchObject({ retry: 2, maxRetries: 2 });
-    // 切换事件:同一 provider 链上序号接续(2 → 3),maxRetries 换成链长
-    // 上限,target 变候选
-    expect(switchEvent).toMatchObject({
-      retry: 3,
-      maxRetries: 1,
       targetProvider: 'openai',
       targetModel: 'y',
+      policyKey: 'llm-fallback',
     });
-    // 同 provider 链:全部事件复用同一 retryId(format v4 校验要求)
-    expect(new Set(appends.map((a) => a.data.retryId)).size).toBe(1);
   });
 
   it('payload 无 agent(旧宿主)→ 不写轨迹且回退不受影响', async () => {
@@ -2732,7 +2577,6 @@ describe('Config schema', () => {
     const fields = [
       'enabled',
       'fallbackChains',
-      'retriesBeforeSwitch',
       'maxRetries',
       'baseDelayMs',
       'maxDelayMs',
@@ -2747,6 +2591,8 @@ describe('Config schema', () => {
       expect(dict[field], `missing field ${field}`).toBeDefined();
       expect(dict[field]?.meta?.volatile, `${field} not volatile`).toBe(true);
     }
+    // 0.6.0:retriesBeforeSwitch 已移除——schema 不再暴露该键
+    expect(dict.retriesBeforeSwitch).toBeUndefined();
   });
 
   it('maxRetries 挂 role("modelChainMeta", { kind: "retries" })', () => {
@@ -2824,7 +2670,6 @@ describe('Config schema 国际化(desc i18n 映射)', () => {
     const fields = [
       'enabled',
       'fallbackChains',
-      'retriesBeforeSwitch',
       'maxRetries',
       'baseDelayMs',
       'maxDelayMs',
@@ -2877,21 +2722,13 @@ describe('Config schema 国际化(desc i18n 映射)', () => {
     expect(chains.zh).toContain('回退候选队列');
     expect(chains.zh).not.toContain('首项');
     expect(chains.en).toContain('fallback candidates');
-    const when = fieldOf('retriesBeforeSwitch')?.meta?.description as Record<
-      string,
-      string
-    >;
-    expect(when.zh).toContain('重试次数');
-    expect(when.zh).toContain('预算');
-    expect(when.zh).toContain('以插件配置为准');
-    expect(when.en).toContain('retry budget');
-    expect(when.en).toContain('authoritative');
     const maxSwitches = fieldOf('maxRetries')?.meta?.description as Record<
       string,
       string
     >;
-    // 两个数字字段语义互斥可辨:maxRetries 限切换,retriesBeforeSwitch 限同候选重试
-    expect(maxSwitches.zh).toContain('retriesBeforeSwitch');
+    // 0.6.0:重试预算固定跟随官方,maxRetries 文案改述同候选重试预算来源
+    expect(maxSwitches.zh).toContain('retryPolicy');
+    expect(maxSwitches.zh).not.toContain('retriesBeforeSwitch');
     const cooldownOn = fieldOf('cooldownEnabled')?.meta?.description as Record<
       string,
       string
@@ -2966,7 +2803,6 @@ describe('volatile 解包', () => {
         wrap('openai/gpt-4o'),
       ]),
       maxRetries: wrap(2),
-      retriesBeforeSwitch: wrap(3),
     });
     expect(resolved.enabled).toBe(true);
     expect(resolved.chain).toEqual([
@@ -2974,7 +2810,6 @@ describe('volatile 解包', () => {
       { provider: 'openai', model: 'gpt-4o' },
     ]);
     expect(resolved.maxRetries).toBe(2);
-    expect(resolved.retriesBeforeSwitch).toBe(3);
   });
 
   it('volatileField 无 volatile 方法时原样返回(守卫)', () => {

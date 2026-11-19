@@ -9,20 +9,13 @@
  *     - `object`(`{provider, model, displayName?, description?}`,可在 dsh 设置
  *       面板里展示为可读条目;若 dsh 前端支持 `modelList` role 则渲染为模型
  *       复选框 + 拖拽排序的 picker)
- * - `retriesBeforeSwitch`:每候选重试次数——当前候选(含会话指定模型)在切换到
- *   下一候选前允许的同 provider 重试次数(0.5.0 起取代旧 fallbackWhen 两档):
- *   - `0`(默认)= 自动跟随官方 `dsh-llm-retry` 预算(provider retryPolicy 的
- *     `maxRetries`,宿主默认 5);预算内透传官方决策,耗尽后切换。无预算信息
- *     (policy 缺失)时视为 0——首失败即切,与旧 afterRetry 在未装官方插件时
- *     的语义一致;
- *   - `N > 0` = **以插件配置为准**:重试 N 次后才切,不再被 provider 预算封顶。
- *     N 大于官方预算时,预算内由官方 `dsh-llm-retry` 执行重试(本插件透传其
- *     决策),超出的部分由本插件代执行(自带退避 + 官方 `llm/retry` 轨迹事件),
- *     直到 N 用满才切下一候选。provider retryPolicy 本身可编辑(llm-deepseek
- *     顶层 volatile 字段 / llm-pi-ai 的 providers.<id>.retryPolicy,保存即经
- *     loader/volatile-update 热更新),自动档因此天然跟随 provider 侧调整;
- *   - `always` 模式策略(无限重试、无 maxRetries):自动档整体透传官方决策
- *     (永不提前切),自定义档按 N 切(超出 N 后覆盖官方 retry)。
+ * - `retriesBeforeSwitch`（0.6.0 起**已移除**）:每候选重试预算固定跟随官方
+ *   `dsh-llm-retry`（provider retryPolicy 的 `maxRetries`，宿主默认 5），
+ *   同候选重试一律由官方 retry 执行器完成，预算耗尽后本插件切换下一候选；
+ *   旧配置残留值被宽松解析自然忽略，无需迁移。provider retryPolicy 本身
+ *   可编辑（llm-deepseek 顶层 volatile 字段 / llm-pi-ai 的
+ *   providers.<id>.retryPolicy，保存即经 loader/volatile-update 热更新）；
+ *   `always` 模式策略（无限重试、无 maxRetries）整体透传官方决策（永不提前切）。
  * - `maxRetries`:单次请求最多**切换候选**次数(不含同候选重试);
  *   `0` = 链长(会话模型失败后可依次切完整个队列才报错)
  * - `baseDelayMs` / `maxDelayMs`:指数退避的初值与上界;`0` = 禁用退避(失败后立即重试/切换)
@@ -137,9 +130,6 @@ export function volatileField<T extends { volatile?: unknown }>(field: T): T {
     ? (volatile as () => T).call(field)
     : field;
 }
-
-/** `retriesBeforeSwitch` 的默认值:0 = 自动跟随官方重试预算(见文件头语义说明)。 */
-export const DEFAULT_RETRIES_BEFORE_SWITCH = 0;
 
 /**
  * `cooldownMs` 的默认值:失败候选的冷却窗口,5 分钟。
@@ -432,12 +422,6 @@ export interface ResolvedConfig {
   chain: ReadonlyArray<{ provider: string; model: string }>;
   /** 链中每项的规整形态(含 displayName / description);state 不直接用,留作未来扩展。 */
   entries: ReadonlyArray<ChainEntry>;
-  /**
-   * 每候选重试次数(切换前允许的同 provider 重试数);`0` = 自动跟随官方
-   * dsh-llm-retry 预算;`>0` 以插件配置为准。运行时与 provider retryPolicy
-   * 的合成(谁执行/代执行判定)见 state.ts 的 resolveCandidateRetryPlan。
-   */
-  retriesBeforeSwitch: number;
   /** 单次请求最多切换候选次数;0 = 链长(默认行为) */
   maxRetries: number;
   baseDelayMs: number;
@@ -495,17 +479,6 @@ export interface ResolvedConfig {
   timeWindow: ResolvedTimeWindow;
 }
 
-/**
- * 规整 retriesBeforeSwitch:仅接受非负有限数(向下取整);负数/非有限数/NaN
- * 一律回落 0(自动跟随官方预算)。运行时预算的执行者/代执行判定见 state.ts
- * 的 resolveCandidateRetryPlan(N>0 时以本值为准),此处只做输入防御。
- */
-export function resolveRetriesBeforeSwitch(input: unknown): number {
-  const raw = Number(input ?? DEFAULT_RETRIES_BEFORE_SWITCH);
-  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_RETRIES_BEFORE_SWITCH;
-  return Math.floor(raw);
-}
-
 export function resolveConfig(input: unknown): ResolvedConfig {
   // schemastery 已校验过类型/默认值;此处做语义校验并派生 retryableCodes Set。
   // 兼容 loader 在用户尚未填过任何配置时传入 undefined / null 的场景——视为空对象,
@@ -517,7 +490,6 @@ export function resolveConfig(input: unknown): ResolvedConfig {
   const raw = (unwrapVolatile(input) ?? {}) as {
     enabled?: unknown;
     fallbackChains?: unknown;
-    retriesBeforeSwitch?: unknown;
     maxRetries?: unknown;
     baseDelayMs?: unknown;
     maxDelayMs?: unknown;
@@ -553,9 +525,6 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     (e) => ({ provider: e.provider, model: e.model }),
   );
   const chainLen = chain.length;
-  const retriesBeforeSwitch = resolveRetriesBeforeSwitch(
-    raw.retriesBeforeSwitch,
-  );
   const maxRetriesRaw = Number(raw.maxRetries ?? 0);
   const maxRetries = maxRetriesRaw > 0 ? Math.floor(maxRetriesRaw) : chainLen;
   // 0 = 禁用退避(失败后立即切换),与文件头文档一致;非法/负值回落默认。
@@ -635,7 +604,6 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     enabled,
     chain,
     entries,
-    retriesBeforeSwitch,
     maxRetries: Math.max(maxRetries, 1), // 至少 1(否则什么都做不了)
     baseDelayMs,
     maxDelayMs,
@@ -776,23 +744,12 @@ export const Config = Schema.object({
       ),
     ),
   ),
-  retriesBeforeSwitch: volatileField(
-    setDescription(
-      Schema.number()
-        .default(DEFAULT_RETRIES_BEFORE_SWITCH)
-        .role('modelChainMeta', { kind: 'retries' }),
-      desc(
-        'Same-provider retries allowed per candidate before switching to the next: 0 (default) follows the official dsh-llm-retry budget (provider retryPolicy.maxRetries, host default 5); N > 0 is authoritative — retry the current candidate N times first, the plugin performs any retries beyond the official budget itself',
-        '每个候选在切换前允许的同 provider 重试次数:0(默认)= 跟随官方 dsh-llm-retry 重试预算(provider retryPolicy.maxRetries,宿主默认 5);N>0 = 以插件配置为准,当前候选重试 N 次后才切换,超出官方预算的部分由本插件代执行重试',
-      ),
-    ),
-  ),
   maxRetries: volatileField(
     setDescription(
       Schema.number().default(0).role('modelChainMeta', { kind: 'retries' }),
       desc(
-        'Max candidate switches per request (0 = queue length; i.e. try every candidate before erroring). Bounds chain switches only — same-candidate retries are governed by retriesBeforeSwitch',
-        '单次请求最多切换候选次数(0 = 队列长度,即切完所有候选才报错);只限切换次数,同候选重试次数由 retriesBeforeSwitch 控制',
+        'Max candidate switches per request (0 = queue length; i.e. try every candidate before erroring). Bounds chain switches only — same-candidate retries are governed by the provider retryPolicy (official dsh-llm-retry budget)',
+        '单次请求最多切换候选次数(0 = 队列长度,即切完所有候选才报错);只限切换次数,同候选重试预算固定跟随 provider retryPolicy(官方 dsh-llm-retry 预算)',
       ),
     ),
   ),

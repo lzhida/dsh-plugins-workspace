@@ -75,7 +75,6 @@ export interface SavedSettings {
   enabled: boolean;
   queue: Route[];
   maxRetries: number;
-  retriesBeforeSwitch: number;
   cooldownEnabled: boolean;
   cooldownMs: number;
   /** 连续失败熔断递增总开关（schema 默认 true）。 */
@@ -98,7 +97,6 @@ export interface DraftState {
   enabled: boolean;
   queue: Route[];
   maxRetries: number;
-  retriesBeforeSwitch: number;
   cooldownEnabled: boolean;
   cooldownMs: number;
   /** 连续失败熔断递增总开关（schema 默认 true）。 */
@@ -218,7 +216,6 @@ export function readSavedSettings(
         : {}),
     })),
     maxRetries: Number(v.maxRetries ?? 0) || 0,
-    retriesBeforeSwitch: Number(v.retriesBeforeSwitch ?? 0) || 0,
     cooldownEnabled: v.cooldownEnabled !== false,
     cooldownMs,
     cooldownBreakerEnabled: v.cooldownBreakerEnabled !== false,
@@ -237,7 +234,6 @@ export function beginDraft(saved: SavedSettings): DraftState {
     // 展开克隆保留候选级覆盖字段(均为原始类型,浅拷贝安全)
     queue: saved.queue.map((r) => ({ ...r })),
     maxRetries: saved.maxRetries,
-    retriesBeforeSwitch: saved.retriesBeforeSwitch,
     cooldownEnabled: saved.cooldownEnabled,
     cooldownMs: saved.cooldownMs,
     cooldownBreakerEnabled: saved.cooldownBreakerEnabled,
@@ -267,7 +263,6 @@ export function resolveView(
     enabled: draft.enabled,
     queue: draft.queue,
     maxRetries: draft.maxRetries,
-    retriesBeforeSwitch: draft.retriesBeforeSwitch,
     cooldownEnabled: draft.cooldownEnabled,
     cooldownMs: draft.cooldownMs,
     cooldownBreakerEnabled: draft.cooldownBreakerEnabled,
@@ -285,7 +280,6 @@ export function isDirty(view: SavedSettings, saved: SavedSettings): boolean {
     view.enabled !== saved.enabled ||
     !sameQueue(view.queue, saved.queue) ||
     view.maxRetries !== saved.maxRetries ||
-    view.retriesBeforeSwitch !== saved.retriesBeforeSwitch ||
     view.cooldownEnabled !== saved.cooldownEnabled ||
     view.cooldownMs !== saved.cooldownMs ||
     view.cooldownBreakerEnabled !== saved.cooldownBreakerEnabled ||
@@ -296,7 +290,7 @@ export function isDirty(view: SavedSettings, saved: SavedSettings): boolean {
   );
 }
 
-/** 构造保存载荷：11 个 set op（含熔断三字段，与冷却区块同一载荷链路）。 */
+/** 构造保存载荷：10 个 set op（含熔断三字段，与冷却区块同一载荷链路）。 */
 export function buildMutations(view: SavedSettings): MutationOp[] {
   return [
     { op: 'set', path: ['enabled'], value: view.enabled },
@@ -315,11 +309,6 @@ export function buildMutations(view: SavedSettings): MutationOp[] {
       })),
     },
     { op: 'set', path: ['maxRetries'], value: view.maxRetries },
-    {
-      op: 'set',
-      path: ['retriesBeforeSwitch'],
-      value: view.retriesBeforeSwitch,
-    },
     { op: 'set', path: ['cooldownEnabled'], value: view.cooldownEnabled },
     { op: 'set', path: ['cooldownMs'], value: view.cooldownMs },
     {
