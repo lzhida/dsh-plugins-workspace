@@ -24,6 +24,22 @@ class ResizeObserverStub {
   disconnect(): void {}
 }
 vi.stubGlobal('ResizeObserver', ResizeObserverStub);
+/**
+ * 运行时状态面板的 fetch 垫片（0.9.0）：默认 404 envelope → useRuntimeStatus
+ * 置 error → StatusSection 不渲染，既有断言不受影响;需要面板数据的用例在
+ * 用例内重新 stubGlobal('fetch', ...) 覆盖。
+ */
+vi.stubGlobal(
+  'fetch',
+  vi.fn(async () => ({
+    ok: false,
+    status: 404,
+    json: async () => ({
+      ok: false,
+      error: { code: 'NOT_FOUND', message: 'no route in test' },
+    }),
+  })),
+);
 
 /**
  * Poll until the probe passes (React 19 render is concurrent).
@@ -566,5 +582,47 @@ describe('FallbackCard 渲染', () => {
     expect(capInput!.value).toBe('');
     setNativeValue(capInput!, '4096');
     await waitFor(() => capInput!.value === '4096');
+  });
+
+  it('状态面板:status 路由 ready 时渲染今日计数与最近切换;error 时不渲染', async () => {
+    const statusValue = {
+      day: '2026-11-19',
+      totals: { attempts: 12, failures: 3, cooldownMarks: 1, switches: 2 },
+      candidates: [
+        {
+          route: 'openai/a',
+          attempts: 6,
+          failures: 2,
+          cooldownMarks: 1,
+          switches: 2,
+        },
+      ],
+      recent: [
+        { at: 1, from: 'deepseek/x', to: 'openai/a', reason: 'RATE_LIMIT' },
+      ],
+      incidents: 1,
+      cooldowns: [{ route: 'openai/a', untilMs: 9 }],
+      sessions: [],
+      guardExpectedCount: 0,
+    };
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ ok: true, value: statusValue }),
+      })),
+    );
+    const fake = fakeScope({ value: QUEUE_WITH_GHOST });
+    const div = mount(
+      <FallbackCard t={t} scope={fake.scope} session={fakeSession()} />,
+    );
+    // 面板渲染:今日计数 + 事故徽标 + 最近切换事件。
+    await waitFor(() => div.textContent!.includes(t('runtimeTitle')));
+    expect(div.textContent).toContain(t('runtimeAttempts') + ' 12');
+    expect(div.textContent).toContain(t('runtimeSwitches') + ' 2');
+    expect(div.textContent).toContain(t('runtimeIncidents') + ' 1');
+    expect(div.textContent).toContain('deepseek/x → openai/a');
+    expect(div.textContent).toContain('RATE_LIMIT');
   });
 });

@@ -597,3 +597,31 @@ describe('配置卡国际化（apply 行为）', () => {
     expect(cleanups.length).toBeGreaterThan(0);
   });
 });
+
+// ── 配置卡状态面板（0.9.0 切换可观测性）─────────────────────────────
+
+describe('配置卡状态面板(0.9.0)', () => {
+  it('dict 含 runtime 键组且 zh/en 均非空', () => {
+    for (const key of [
+      'runtimeTitle',
+      'runtimeReload',
+      'runtimeAttempts',
+      'runtimeFailures',
+      'runtimeSwitches',
+      'runtimeIncidents',
+      'runtimeIncidentsHint',
+      'runtimeCooldowns',
+      'runtimeRecent',
+      'runtimeRecentEmpty',
+    ]) {
+      expect(DICT.zh[key], `zh.${key} 应存在且非空`).toBeTruthy();
+      expect(DICT.en[key], `en.${key} 应存在且非空`).toBeTruthy();
+    }
+  });
+
+  it('client bundle 含状态面板与 /status 路由路径', () => {
+    const client = readPackageFile('../client/index.js');
+    expect(client).toContain('dsh-llm-fallback/status');
+    expect(client).toContain('runtimeTitle');
+  });
+});

@@ -97,6 +97,9 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import type { IncomingMessage, ServerResponse } from 'node:http';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
@@ -108,6 +111,20 @@ import {
   type ResolvedConfig,
   resolveConfig,
 } from './config.ts';
+import {
+  type SwitchEvent,
+  type UsageStats,
+  MAX_RECENT,
+  buildUsageSnapshot,
+  bumpAttempt,
+  bumpCooldownMark,
+  bumpFailure,
+  bumpSwitch,
+  dayKeyOf,
+  loadUsageFile,
+  persistUsageFile,
+  pruneUsage,
+} from './observability.ts';
 import { modelFallbackSection } from './protocol.ts';
 import { type CooldownDuration, resolveCooldownDuration } from './quota.ts';
 import {
@@ -140,6 +157,19 @@ import {
 /** Cordis 插件名(loader 依赖);与 cordis.patch.yml 的 id 对齐。 */
 export const name = 'dsh-llm-fallback';
 
+/** 宿主 webServer 服务的最小类型面——0.9.0 状态面板路由用。
+ *  只声明本插件用到的 register 契约(不引入额外依赖,类型面自持);
+ *  真实实现由宿主在 `ctx.inject(['webServer'])` 就绪时提供,缺失则本插件
+ *  不挂状态路由(静默降级,回退本体不受影响)。 */
+type StatusRoute = {
+  kind: 'exact' | 'prefix';
+  path: string;
+  handler: (req: IncomingMessage, res: ServerResponse) => void | Promise<void>;
+};
+type WebServerLike = {
+  register(route: StatusRoute): () => void;
+};
+
 /** 依赖注入:
  * - `systemPrompt`:注册协议 section 需要等待 ctx.systemPrompt 就绪,否则
  *   cordis proxy 抛 "cannot get property systemPrompt without inject"。
@@ -160,6 +190,16 @@ function isRetryAction(
     action !== null &&
     (action as { kind?: unknown }).kind === 'retry'
   );
+}
+
+/** 统计落盘文件路径(DSH_HOME 优先,缺省 ~/.dsh)。 */
+function usageFilePath(): string {
+  const override = process.env.DSH_HOME;
+  const home =
+    override !== undefined && override.length > 0
+      ? resolve(override)
+      : join(homedir(), '.dsh');
+  return join(home, 'dsh-llm-fallback-usage.json');
 }
 
 /**
@@ -326,6 +366,115 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
   //     行为与旧版完全一致。
   const breakers = new Map<string, BreakerEntry>();
 
+  // 4d. 切换可观测性(0.9.0;disabled 提前 return 时整面不启用——无活动
+  //     也无路由,历史计数在 DSH_HOME/dsh-llm-fallback-usage.json 落盘):
+  //     - usage:按天 × 候选计数,内存累加、5s debounce 原子落盘(重启
+  //       load 恢复,损坏回落空表);
+  //     - recent:最近切换事件环形缓冲(仅内存);
+  //     - incidents/guardExpected:「旧装配守卫」告警计数与切换期望表
+  //       (仅内存)——切换经 model.select 持久化后,记录"下一 step 的
+  //       selection 应等于目标";新 step 实际 selection 与期望不一致时
+  //       告警+计数(不干预请求)。有界(最多 200 会话,超过丢最旧)。
+  const usage: UsageStats = loadUsageFile(usageFilePath());
+  const recent: SwitchEvent[] = [];
+  const incidents = { count: 0 };
+  const guardExpected = new Map<string, { provider: string; model: string }>();
+  let flushTimer: ReturnType<typeof setTimeout> | undefined;
+  const flushUsage = (): void => {
+    if (flushTimer !== undefined) {
+      clearTimeout(flushTimer);
+      flushTimer = undefined;
+    }
+    try {
+      // 顺手清掉超过保留窗口的日期再写
+      pruneUsage(usage, dayKeyOf(new Date()));
+      persistUsageFile(usageFilePath(), usage);
+    } catch (err) {
+      console.warn(`[${name}] usage persist failed:`, err);
+    }
+  };
+  const scheduleFlush = (): void => {
+    if (flushTimer !== undefined) return;
+    flushTimer = setTimeout(() => {
+      flushTimer = undefined;
+      flushUsage();
+    }, 5_000);
+    flushTimer.unref?.();
+  };
+  ctx.effect(() => {
+    return () => {
+      // 插件卸载:把内存里没落盘的计数冲掉(同步),并注销状态路由。
+      flushUsage();
+      disposeStatusRoute?.();
+    };
+  }, 'dsh-llm-fallback: usage flush + status route');
+  // 状态路由(可选能力):webServer 缺失时子 fiber PENDING、静默无路由,
+  // 主插件与回退本体不受影响。
+  let disposeStatusRoute: (() => void) | undefined;
+  ctx.inject(['webServer'], (webCtx: Context) => {
+    // 回调签名按 inject 契约收 Context;webServer 形状经上方 WebServerLike
+    // 类型断言接入(真实契约见宿主 dsh-host-webserver 的合并声明)。
+    const server = (webCtx as Context & { webServer: WebServerLike }).webServer;
+    disposeStatusRoute = server.register({
+      kind: 'prefix',
+      path: '/dsh-llm-fallback',
+      handler: (req, res) => {
+        const url = new URL(req.url ?? '/', 'http://localhost');
+        if (url.pathname !== '/dsh-llm-fallback/status') {
+          res.writeHead(404, { 'content-type': 'application/json' });
+          res.end(
+            JSON.stringify({
+              ok: false,
+              error: { code: 'NOT_FOUND', message: 'unknown path' },
+            }),
+          );
+          return;
+        }
+        const today = dayKeyOf(new Date());
+        const snapshot = buildUsageSnapshot(
+          usage,
+          today,
+          recent,
+          incidents.count,
+        );
+        // 附加运行时视图:当前冷却表与各会话生效候选(内存,仅本机)。
+        const nowMs = Date.now();
+        const cooldownView = [...cooldowns.entries()]
+          .filter(([, until]) => until > nowMs)
+          .map(([route, until]) => ({ route, untilMs: until }));
+        const sessionView = new Map<
+          string,
+          { sessionId: string; route: string; switched: boolean }
+        >();
+        for (const [stepKey, st] of states) {
+          const sessionId = stepKey.split(':')[0] ?? stepKey;
+          const effective = currentEffectiveCandidate(st);
+          if (!effective) continue;
+          sessionView.set(sessionId, {
+            sessionId,
+            route: cooldownKey(effective),
+            switched: st.switched,
+          });
+        }
+        res.writeHead(200, {
+          'content-type': 'application/json; charset=utf-8',
+          'cache-control': 'no-store',
+        });
+        res.end(
+          JSON.stringify({
+            ok: true,
+            value: {
+              ...snapshot,
+              cooldowns: cooldownView,
+              sessions: [...sessionView.values()],
+              guardExpectedCount: guardExpected.size,
+            },
+          }),
+        );
+      },
+    });
+  });
+
   /** 取出或惰性初始化该 step 的回退状态(从当前角色链开始,0.8.0 起)。 */
   const getState = (
     key: StepKey,
@@ -362,6 +511,8 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
       // 既有 chain 快照语义一致)。
       const role = roleOf(payload.agent);
       const state = stateFor(states, key, roleChain(cfg, role));
+      // 可观测性:按 seed 路由累加今日尝试计数(内存,节流落盘)。
+      bumpAttempt(usage, dayKeyOf(new Date()), cooldownKey(seed));
       if (state.index < 0 && !state.pageModel) {
         // 官方 API 读当前 selection:与 seed(proposedConfig,同一 selection
         // 的投影)一致;current() 缺失时降级读 seed,双保险。
@@ -370,6 +521,35 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
           provider: selection?.provider ?? seed.provider,
           model: selection?.model ?? seed.model,
         };
+      }
+      // 旧装配守卫(0.9.0):仅在本 step 尚未切换(index<0)时校验——同 step
+      // 的官方 retry 会再次触发 agent/request,此时 state 仍是切换当 step 的
+      // 旧快照(index>=0、pageModel 还是旧模型),绝不能消费期望(否则每次
+      // 成功切换都会用陈旧值误报)。新 step 由 stateFor 重建(index=-1),
+      // 其首个请求才消费期望、校验实际 selection(上面刚捕获的 pageModel)
+      // 是否等于切换目标;不一致 → 告警+计数,不干预请求(期望读后即删)。
+      const sessionId = payload.agent?.session.id;
+      if (sessionId !== undefined && state.index < 0) {
+        const expected = guardExpected.get(sessionId);
+        if (expected !== undefined) {
+          guardExpected.delete(sessionId);
+          const actual = state.pageModel;
+          if (
+            !actual ||
+            actual.provider !== expected.provider ||
+            actual.model !== expected.model
+          ) {
+            incidents.count += 1;
+            console.warn(
+              `[${name}] guard: selection after switch is ${actual ? `${actual.provider}/${actual.model}` : 'unknown'}, expected ${expected.provider}/${expected.model} (switch may not have taken effect)`,
+            );
+          }
+        }
+        // 期望表有界:超过 200 会话丢最旧(Map 保持插入序)。
+        if (guardExpected.size > 200) {
+          const oldest = guardExpected.keys().next().value;
+          if (oldest !== undefined) guardExpected.delete(oldest);
+        }
       }
       // 时间窗预填冷却表(时段计划 v2,「时间窗=预填冷却表」):窗口内
       // 按规则动作(block=冷却命中 provider / prefer=冷却未命中 provider)
@@ -463,6 +643,12 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
       const plan = resolveCandidateRetryPlan(
         payload.retryPolicy as Parameters<typeof resolveCandidateRetryPlan>[0],
       );
+      // 可观测性:白名单内失败按当前生效候选路由计数。
+      const failedForUsage = currentEffectiveCandidate(state);
+      if (failedForUsage) {
+        bumpFailure(usage, dayKeyOf(new Date()), cooldownKey(failedForUsage));
+        scheduleFlush();
+      }
       state.candidateFailures += 1;
       // 首次失败不算重试:已重试次数 = 失败数 - 1
 
@@ -529,6 +715,8 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
             now,
           });
           markCooldown(cooldowns, failed, now, cooldown.durationMs);
+          // 可观测性:冷却标记计数。
+          bumpCooldownMark(usage, dayKeyOf(new Date()), cooldownKey(failed));
           // 熔断计数推进:本次失败计入连败,观察期从本次冷却到期起算
           // (窗口到期后半开试探,期间再失败 → 窗口继续翻倍)。
           if (cfg.cooldownBreakerEnabled) {
@@ -606,6 +794,7 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
         step,
         retry: chain.attempt,
       });
+      const fromCandidate = currentEffectiveCandidate(state);
       state.index = advance.index;
       state.retries = advance.retries;
       // 新候选获得完整预算:候选失败计数清零
@@ -613,6 +802,30 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
       // 切换已生效:消耗 one-shot 名额(perTurn=false 时本 step 不再切换;
       // 退避被 abort 的路径在上方提前返回,不置位、不消耗名额)
       state.switched = true;
+      // 可观测性:切换计数 + 最近事件环形缓冲 + 守卫期望(下一 step 校验
+      // selection 是否真的切过去了;persistModelSwitch 失败=切换降级,
+      // 期望仍在——下一 step 守卫会如实告警"未生效")。
+      if (target) {
+        bumpSwitch(usage, dayKeyOf(new Date()), cooldownKey(target));
+        recent.unshift({
+          at: Date.now(),
+          from: fromCandidate ? cooldownKey(fromCandidate) : 'unknown',
+          to: cooldownKey(target),
+          reason: failure.code ?? 'unknown',
+          ...(payload.agent?.session.id !== undefined
+            ? { sessionId: payload.agent.session.id }
+            : {}),
+        });
+        if (recent.length > MAX_RECENT) recent.length = MAX_RECENT;
+        const switchedSession = payload.agent?.session.id;
+        if (switchedSession !== undefined) {
+          guardExpected.set(switchedSession, {
+            provider: target.provider,
+            model: target.model,
+          });
+        }
+        scheduleFlush();
+      }
       // 0.6.0:切换经官方 agent.model.select 持久化(写 durable
       // model/selection 事件 + 自动插 [model changed] user message)。
       // **下一 step 生效**——本 step 的 selection 已在 preStep 快照,loop

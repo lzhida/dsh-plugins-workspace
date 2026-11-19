@@ -69,6 +69,9 @@ function stubCtx(): {
       listeners.push({ event, listener });
       return () => true;
     },
+    inject(): void {
+      // 依赖服务(webServer 等)缺失语义:回调不执行(子 fiber PENDING)。
+    },
   } as unknown as Context;
   return { ctx, listeners };
 }

@@ -4,8 +4,8 @@
  * - `view === 'summary'`：插件列表行/详情头的一句话说明（在调用任何
  *   hook 之前提前返回，符合 hooks 规则）。
  * - 其余（`view === 'page'`）：插件详情页「配置」区块的完整表单——
- *   启用开关、回退队列、模型目录（搜索+勾选）、最大切换候选数、
- *   失败候选冷却、保存/放弃操作区。
+ *   运行时状态面板（只读，0.9.0）、启用开关、回退队列、模型目录（搜索+
+ *   勾选）、最大切换候选数、失败候选冷却、保存/放弃操作区。
  *
  * 状态模型（对齐旧版手写实现）：
  * - configForms 快照订阅（scope.getSnapshot/subscribe 契约）；
@@ -22,7 +22,7 @@
  */
 
 import * as React from 'react';
-import { useLocaleTick, useModelCatalog } from '../hooks.ts';
+import { useLocaleTick, useModelCatalog, useRuntimeStatus } from '../hooks.ts';
 import {
   pruneStaleRoutes,
   staleRouteKeys,
@@ -52,6 +52,7 @@ import type {
 import { NumberRow, SwitchRow } from './fields.tsx';
 import { CatalogPicker, type CatalogData } from './CatalogPicker.tsx';
 import { QueueSection } from './QueueSection.tsx';
+import { StatusSection } from './StatusSection.tsx';
 import { TimeWindowSection } from './TimeWindowSection.tsx';
 import { Button } from './ui/button.tsx';
 
@@ -101,6 +102,9 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
     () => ({ groups: cat.groups, status: cat.status, onRetry: reload }),
     [cat, reload],
   );
+
+  // 运行时状态面板（0.9.0）：只读展示，失败静默不渲染。
+  const runtime = useRuntimeStatus();
 
   // 失效判定目录快照：仅目录 ready 时提供（loading/error/idle → null，
   // 绝不误标）；含查询失败的 provider 集（这些 provider 的条目不标失效）。
@@ -279,6 +283,8 @@ function FallbackCardPage(props: FallbackCardProps): React.ReactElement {
   return (
     <div className="flex flex-col gap-4 py-1 text-foreground">
       <div className="text-[13px] text-muted-foreground">{t('intro')}</div>
+
+      <StatusSection t={t} state={runtime.state} onReload={runtime.reload} />
 
       <SwitchRow
         checked={view.enabled}

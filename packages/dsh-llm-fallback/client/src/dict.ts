@@ -69,6 +69,17 @@ export const DICT: Dict = {
     cooldownStabilizationMs: '稳定观察期时长(毫秒)',
     cooldownStabilizationMsHint:
       '冷却到期后该候选仍可作为半开试探,但优先级低于其他可用候选;观察期内再失败则窗口继续翻倍,安静度过即视为恢复并清零失败计数;0 = 冷却到期后不再观察(会话指定模型在冷却窗内直接重试仍可能递增)',
+    runtimeTitle: '状态与统计',
+    runtimeReload: '刷新',
+    runtimeAttempts: '今日尝试',
+    runtimeFailures: '今日失败',
+    runtimeSwitches: '今日切换',
+    runtimeIncidents: '装配事故',
+    runtimeIncidentsHint:
+      '切换后仍有请求携带旧模型(旧装配/持久化未生效)的告警计数',
+    runtimeCooldowns: '冷却中',
+    runtimeRecent: '最近切换',
+    runtimeRecentEmpty: '暂无切换记录',
     timeWindowEnabled: '时间窗切换/错峰优先',
     timeWindowEnabledHint:
       '配置的窗口内,按规则把候选预填进失败冷却表(到期 = 窗口结束),请求自动改写切走;窗口结束由惰性过期自动恢复优先级,无需定时器',
@@ -155,6 +166,17 @@ export const DICT: Dict = {
     cooldownStabilizationMs: 'Stabilization period (ms)',
     cooldownStabilizationMsHint:
       'After the cooldown expires, the candidate remains a half-open probe but is lower priority than other available candidates; another failure during observation doubles the window again, while a quiet period means recovery and resets the counter; 0 = no post-cooldown observation (a direct retry of the session model during its cooldown may still escalate)',
+    runtimeTitle: 'Status & usage',
+    runtimeReload: 'Refresh',
+    runtimeAttempts: 'Attempts',
+    runtimeFailures: 'Failures',
+    runtimeSwitches: 'Switches',
+    runtimeIncidents: 'Incidents',
+    runtimeIncidentsHint:
+      'Requests that still carried the old model after a switch (stale assembly / persistence not taking effect)',
+    runtimeCooldowns: 'Cooling',
+    runtimeRecent: 'Recent switches',
+    runtimeRecentEmpty: 'No switches recorded yet',
     timeWindowEnabled: 'Time-window switching / off-peak priority',
     timeWindowEnabledHint:
       'During configured windows, candidates matching the rules are prefilled into the failure-cooldown table (expiry = window end) so requests switch away transparently; when a window ends the existing lazy expiry restores priority — no timers',

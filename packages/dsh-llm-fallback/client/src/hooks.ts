@@ -96,3 +96,82 @@ export function useModelCatalog(session: RemoteSessionFace | undefined): {
 
   return { cat, reload: load };
 }
+
+/**
+ * 运行时状态快照(插件宿主 HTTP 路由 /dsh-llm-fallback/status 的返回体)。
+ * 数据仅本机回环可读,统计含今日计数、最近切换与冷却中候选。
+ */
+export type RuntimeStatus = {
+  day: string;
+  totals: {
+    attempts: number;
+    failures: number;
+    cooldownMarks: number;
+    switches: number;
+  };
+  candidates: Array<{
+    route: string;
+    attempts: number;
+    failures: number;
+    cooldownMarks: number;
+    switches: number;
+  }>;
+  recent: Array<{
+    at: number;
+    from: string;
+    to: string;
+    reason: string;
+    sessionId?: string;
+  }>;
+  incidents: number;
+  cooldowns: Array<{ route: string; untilMs: number }>;
+  sessions: Array<{ sessionId: string; route: string; switched: boolean }>;
+  guardExpectedCount: number;
+};
+
+export type RuntimeStatusState =
+  | { status: 'loading' }
+  | { status: 'ready'; value: RuntimeStatus }
+  | { status: 'error' };
+
+/**
+ * 运行时状态加载:挂载与定期轮询插件宿主的 /status 路由。失败静默置
+ * error 态(面板直接不渲染,不影响配置卡其余功能);intervalMs<=0 时不轮询。
+ */
+export function useRuntimeStatus(
+  path = '/dsh-llm-fallback/status',
+  intervalMs = 30_000,
+): { state: RuntimeStatusState; reload: () => void } {
+  const [state, setState] = React.useState<RuntimeStatusState>({
+    status: 'loading',
+  });
+
+  const load = React.useCallback((): void => {
+    fetch(path)
+      .then(async (res) => {
+        const body = (await res.json()) as {
+          ok: boolean;
+          value?: RuntimeStatus;
+        };
+        if (res.ok && body.ok && body.value) {
+          setState({ status: 'ready', value: body.value });
+        } else {
+          setState({ status: 'error' });
+        }
+      })
+      .catch(() => {
+        setState({ status: 'error' });
+      });
+  }, [path]);
+
+  React.useEffect(() => {
+    load();
+    if (!(intervalMs > 0)) return undefined;
+    const timer = setInterval(load, intervalMs);
+    return () => {
+      clearInterval(timer);
+    };
+  }, [load, intervalMs]);
+
+  return { state, reload: load };
+}
