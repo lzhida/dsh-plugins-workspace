@@ -1,11 +1,13 @@
 /**
  * 模型工具包装:disclosure_template_fill / disclosure_check /
  * patent_claims_check / claims_evidence_check / draft_review_check /
- * claims_code_map / patent_search / application_scaffold。
+ * claims_code_map / patent_search / application_scaffold /
+ * claims_ab_diff / figure_manifest / case_index。
  *
  * 全部业务逻辑在纯函数层(disclosure.ts / disclosure-check.ts / claims.ts /
  * claims-evidence.ts / draft-review.ts / claims-code-map.ts / patent-search.ts /
- * application-scaffold.ts),
+ * application-scaffold.ts / claims-ab-diff.ts / figure-manifest.ts /
+ * case-index.ts),
  * 这里只做参数归一、公司默认值合并与输出渲染。唯一的文件读是
  * draft_review_check 与 claims_code_map 读初稿/权项 docx 或文本的正文(最小
  * zip 解析),docx 落盘仍由模型按交付指引经 office skill / python 完成。
@@ -35,6 +37,26 @@ import {
   fetchGooglePatents,
 } from './patent-search.ts';
 import { buildApplicationScaffold } from './application-scaffold.ts';
+import { checkClaimsAbDiff } from './claims-ab-diff.ts';
+import { checkFigureManifest } from './figure-manifest.ts';
+import { buildCaseIndex } from './case-index.ts';
+
+/** 对象数组入参的元素级过滤：只保留普通对象元素。 */
+function objectArray(value: unknown): Record<string, unknown>[] {
+  return Array.isArray(value)
+    ? value.filter(
+        (item): item is Record<string, unknown> =>
+          typeof item === 'object' && item !== null && !Array.isArray(item),
+      )
+    : [];
+}
+
+/** 字符串数组入参的元素级过滤：只保留字符串元素。 */
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
+}
 
 /** 从自由对象里取非空字符串。 */
 function str(value: unknown): string {
@@ -739,6 +761,201 @@ export function buildPatentTools(getDefaults: () => DisclosureDefaults) {
             abstractFigure: str(options.abstractFigure) || undefined,
           },
         });
+      },
+    }),
+    defineTool({
+      name: 'claims_ab_diff',
+      description:
+        'Compare the 权利要求书 of a 公开文本 and a 授权文本 (the A/B amendment pattern) and report the per-claim differences. Detects three modes: 并入独权 (a 公开从权 feature was merged into the 授权独立权), 从权重编号 (dependent claims renumbered), 引用基准迁移 (reference base shifted). Also reports dropped / added claims, the 授权文本 claims diagnostics, and — when the full documents are supplied — whether the non-claims parts (说明书 / 附图 / 发明名称 / 摘要) changed, which must stay verbatim identical. Output is a mechanical diff for an attorney to judge; it is not a legal conclusion.',
+      parameters: {
+        publicText: {
+          type: 'string',
+          description:
+            'The 公开文本 (published version) — at least the 权利要求书 part.',
+        },
+        grantedText: {
+          type: 'string',
+          description:
+            'The 授权文本 (granted version) — at least the 权利要求书 part.',
+        },
+        publicDocument: {
+          type: 'string',
+          description:
+            'Optional: the full 公开文本 — used to check that the non-claims parts did not change.',
+        },
+        grantedDocument: {
+          type: 'string',
+          description:
+            'Optional: the full 授权文本 — used together with publicDocument.',
+        },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value) => {
+          const report = value as {
+            ok: boolean;
+            markdown: string;
+            issues: { code: string; severity: string; message: string }[];
+          };
+          const issues =
+            report.issues.length > 0
+              ? `Issues (${report.issues.length}):\n${report.issues
+                  .map((i) => `- [${i.severity}] ${i.code}: ${i.message}`)
+                  .join('\n')}\n\n`
+              : '';
+          return [{ type: 'text', text: `${issues}${report.markdown}` }];
+        },
+      },
+      isConcurrencySafe: () => true,
+      async execute(args) {
+        const input = (args ?? {}) as Record<string, unknown>;
+        return checkClaimsAbDiff({
+          publicText: str(input.publicText) || undefined,
+          grantedText: str(input.grantedText) || undefined,
+          publicDocument: str(input.publicDocument) || undefined,
+          grantedDocument: str(input.grantedDocument) || undefined,
+        });
+      },
+    }),
+    defineTool({
+      name: 'figure_manifest',
+      description:
+        'Check the 附图 side of a patent case: 附图清单 (from the 交底书 第七部分) ↔ 附图文件命名 ↔ 正文图号引用 ↔ 就近指引 ↔ 附图标记 ↔ 图面文本 ↔ 说明书规则条目 ↔ 术语改名一致性. The figure CONTENT (marks / text / elements) must be supplied by the model after reading the drawings; this tool only checks completeness and consistency, and reads only the first 16 bytes of each image file to detect its real encoding (so a JPEG renamed to .png is reported). Diagnostics cover missing files, extra / unnamed files, dangling and unused figure references, missing nearby guidance, missing marks, terminology split between drawing and body, element/rule mismatch, direction mismatch and encoding mismatch.',
+      parameters: {
+        disclosure: {
+          type: 'string',
+          description:
+            'Optional: the 交底书 markdown — the 附图清单 is taken from its 第七部分（附图要求）.',
+        },
+        document: {
+          type: 'string',
+          description:
+            'Optional: the 说明书 / 初稿 body text — used for the figure reference and nearby guidance checks.',
+        },
+        figureFiles: {
+          type: 'array',
+          items: { type: 'object', additionalProperties: true },
+          description:
+            'Optional: the 附图 files. Each item: { path }. Only the first 16 bytes are read to detect the real encoding.',
+        },
+        figureMarks: {
+          type: 'array',
+          items: { type: 'object', additionalProperties: true },
+          description:
+            'Optional: marks found in each drawing. Each item: { figure: number, marks: string[] }.',
+        },
+        figureText: {
+          type: 'array',
+          items: { type: 'object', additionalProperties: true },
+          description:
+            'Optional: text found in each drawing. Each item: { figure: number, text: string }.',
+        },
+        figureElements: {
+          type: 'array',
+          items: { type: 'object', additionalProperties: true },
+          description:
+            'Optional: elements found in each drawing. Each item: { figure: number, branches?: string[], directions?: string[], layers?: string[] }.',
+        },
+        specRules: {
+          type: 'array',
+          items: { type: 'object', additionalProperties: true },
+          description:
+            'Optional: 说明书 rule entries. Each item: { keyword: string, text?: string, directions?: string[] }.',
+        },
+        termRenames: {
+          type: 'array',
+          items: { type: 'object', additionalProperties: true },
+          description:
+            'Optional: body terminology renames. Each item: { old: string, new: string } — a drawing still using the old name is reported.',
+        },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value) => {
+          const report = value as {
+            ok: boolean;
+            markdown: string;
+            issues: { code: string; severity: string; message: string }[];
+          };
+          const issues =
+            report.issues.length > 0
+              ? `Issues (${report.issues.length}):\n${report.issues
+                  .map((i) => `- [${i.severity}] ${i.code}: ${i.message}`)
+                  .join('\n')}\n\n`
+              : '';
+          return [{ type: 'text', text: `${issues}${report.markdown}` }];
+        },
+      },
+      isConcurrencySafe: () => true,
+      async execute(args) {
+        const input = (args ?? {}) as Record<string, unknown>;
+        return checkFigureManifest({
+          disclosure: str(input.disclosure) || undefined,
+          document: str(input.document) || undefined,
+          figureFiles: objectArray(input.figureFiles)
+            .map((f) => ({ path: str(f.path) }))
+            .filter((f) => f.path.length > 0) as never[],
+          figureMarks: objectArray(input.figureMarks)
+            .map((m) => ({
+              figure: Number(m.figure),
+              marks: stringArray(m.marks),
+            }))
+            .filter((m) => Number.isFinite(m.figure)) as never[],
+          figureText: objectArray(input.figureText)
+            .map((t) => ({ figure: Number(t.figure), text: str(t.text) }))
+            .filter((t) => Number.isFinite(t.figure)) as never[],
+          figureElements: objectArray(input.figureElements)
+            .map((e) => ({
+              figure: Number(e.figure),
+              branches: stringArray(e.branches),
+              layers: stringArray(e.layers),
+              directions: stringArray(e.directions),
+            }))
+            .filter((e) => Number.isFinite(e.figure)) as never[],
+          specRules: objectArray(input.specRules)
+            .map((r) => ({
+              keyword: str(r.keyword),
+              directions: stringArray(r.directions),
+            }))
+            .filter((r) => r.keyword.length > 0) as never[],
+          termRenames: objectArray(input.termRenames)
+            .map((t) => ({ old: str(t.old), new: str(t.new) }))
+            .filter((t) => t.old.length > 0 && t.new.length > 0) as never[],
+        });
+      },
+    }),
+    defineTool({
+      name: 'case_index',
+      description:
+        'Build an index of the patent cases (交底书) inside a workspace directory: one row per case with its 案例标识, 标题, 七部分填充情况 and 状态 (ready / draft / empty). The status is inferred from the six key sections (附图要求 excluded — it is short by nature) and can be overridden by a sidecar file named `<文件名>.case.json` next to the 交底书 (fields: caseId, title, status, notes). Read-only scan; it never writes or modifies anything.',
+      parameters: {
+        root: {
+          type: 'string',
+          description:
+            'The directory to scan (depth 3; node_modules / .git / dist / coverage / .agents are skipped).',
+        },
+      },
+      output: {
+        schema: { type: 'object', additionalProperties: true },
+        render: (_args, value) => {
+          const report = value as {
+            ok: boolean;
+            markdown: string;
+            issues: { code: string; severity: string; message: string }[];
+          };
+          const issues =
+            report.issues.length > 0
+              ? `Issues (${report.issues.length}):\n${report.issues
+                  .map((i) => `- [${i.severity}] ${i.code}: ${i.message}`)
+                  .join('\n')}\n\n`
+              : '';
+          return [{ type: 'text', text: `${issues}${report.markdown}` }];
+        },
+      },
+      isConcurrencySafe: () => true,
+      async execute(args) {
+        const input = (args ?? {}) as Record<string, unknown>;
+        return buildCaseIndex(str(input.root));
       },
     }),
   ];

@@ -152,6 +152,28 @@ export type {
   ScaffoldPart,
   ScaffoldReport,
 } from './application-scaffold.ts';
+export { checkClaimsAbDiff } from './claims-ab-diff.ts';
+export type {
+  AbClaimPair,
+  AbDiffIssue,
+  AbDiffMode,
+  AbDiffReport,
+  AbDiffRow,
+} from './claims-ab-diff.ts';
+export { checkFigureManifest } from './figure-manifest.ts';
+export type {
+  FigureManifestInput,
+  FigureManifestIssue,
+  FigureManifestItem,
+  FigureManifestReport,
+} from './figure-manifest.ts';
+export { buildCaseIndex } from './case-index.ts';
+export type {
+  CaseEntry,
+  CaseIndexIssue,
+  CaseIndexReport,
+  CaseSection,
+} from './case-index.ts';
 export { buildSections } from './sections.ts';
 export { buildPatentTools, mergeHeader } from './tools.ts';
 export {
