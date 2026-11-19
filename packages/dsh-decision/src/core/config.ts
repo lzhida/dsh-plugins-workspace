@@ -75,7 +75,7 @@ export interface ResolvedConfig {
   decisionProvider: string;
   /** 决策模型模型名；空串＝未配置。 */
   decisionModel: string;
-  /** 置信度阈值：≥ 阈值自动作答、< 阈值放行真实提问（0~1）。 */
+  /** 置信度阈值：≥ 阈值自动作答、< 阈值放行真实提问（可填区间 0.05~1）。 */
   confidenceThreshold: number;
   /** 单次决策评估超时（毫秒），超时按降级放行处理。 */
   decisionTimeoutMs: number;
@@ -164,7 +164,7 @@ export const Config = Schema.object({
         .default(DEFAULT_CONFIDENCE_THRESHOLD),
       desc(
         'Confidence threshold: >= threshold auto-answers with the decision model, < threshold passes through to a real question',
-        '置信度阈值：≥ 阈值由决策模型自动作答，< 阈值放行真实提问（0~1，默认 0.8）',
+        '置信度阈值：≥ 阈值由决策模型自动作答，< 阈值放行真实提问（0.05~1，默认 0.8）',
       ),
     ),
   ),

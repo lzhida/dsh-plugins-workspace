@@ -207,7 +207,12 @@ export function buildAutoAnswers(
   return { answers };
 }
 
-/** 由决策报告构建落账 meta（自动作答路径）。 */
+/**
+ * 由决策报告构建落账 meta（自动作答路径，以及「评估成功但低于阈值」的放行路径）。
+ *
+ * rationale 一律取模型给的 reason（模型没给就是空串）——评估本身跑通时，
+ * 放行理由是「把握度不够」而不是任何技术故障信号。
+ */
 export function buildAutoMeta(
   parse: DecisionParseResult,
   decision: 'auto-answered' | 'passed-through',

@@ -367,7 +367,7 @@ describe('dsh-decision ask-gate', () => {
   });
 
   it('低置信放行真实提问并落 passed-through meta', async () => {
-    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const spy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const asker = recordingAsk();
     const ctx = stubContext(asker.ask, {
       llm: stubDecisionLlm(
@@ -389,6 +389,12 @@ describe('dsh-decision ask-gate', () => {
       decision: 'passed-through',
       rationale: '没有可靠默认',
     });
+    // 低置信不是降级：日志走「below threshold」出口，信号位不得出现 'ok'
+    // （否则读日志的人会把「评估成功但没把握」误当成「模型调用失败」）。
+    const warnText = spy.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(warnText).toContain('decision below threshold');
+    expect(warnText).not.toContain('decision degraded');
+    expect(warnText).not.toContain('(ok,');
   });
 
   it('决策模型降级（llm 服务缺失）时放行并落降级 meta', async () => {

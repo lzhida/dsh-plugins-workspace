@@ -63,12 +63,15 @@ export const inject: string[] = ['tools', 'userQuestions'];
 export const ASK_USER_QUESTION_TOOL = 'ask_user_question';
 
 /**
- * 工具描述：与出厂 legacy 模式逐字一致，保证模型侧行为不因换实现而漂移。
+ * 工具描述：与出厂 legacy 模式的描述**不完全逐字一致**——首句沿用出厂文案，
+ * 后半句补充本实现对「每题带稳定 id」的要求（id 会在答案里回显）。
+ * 结构约束（必填性 / additionalProperties）与出厂一致；文案差异会让模型侧
+ * 行为有轻微漂移，详见 README「已知限制」。
  */
 export const ASK_USER_QUESTION_DESCRIPTION =
   'Ask the user a concise question when you need confirmation, a choice, or missing information before proceeding. Send one or more questions, each with a stable id that will be echoed in the answer.';
 
-/** 工具入参 schema：与出厂 legacy 模式逐字兼容（含 additionalProperties）。 */
+/** 工具入参 schema：与出厂 legacy 模式的结构约束兼容（含 additionalProperties）。 */
 export const ASK_USER_QUESTION_PARAMETERS = {
   questions: {
     type: 'array' as const,
@@ -275,16 +278,31 @@ export function apply(ctx: Context, configInput?: unknown): void {
             rationale: `answers-incomplete: ${incompleteMeta.rationale}`,
           };
         } else {
-          // 解析失败时用 parseError 描述真实原因，别把 call.kind='ok'
-          // 当成降级理由落进 meta 与日志（语义正好相反）。
-          const reason = report.parse.parseError ?? report.call.kind;
-          console.warn(
-            `[${name}] decision degraded (${reason}, confidence=${report.parse.confidence.toFixed(2)}); passing through`,
-          );
-          meta =
-            report.parse.ok && report.parse.confidence > 0
-              ? buildAutoMeta(report.parse, 'passed-through')
-              : buildDegradedMeta(reason);
+          // 三条出口必须分开：
+          //   - 评估/解析没跑通（parse.ok=false）→ 真正降级，日志带**真实信号**
+          //     （parseError 或 call.kind），meta 的 rationale 也是该信号；
+          //   - 阈值非法 → 降级（信号 invalid-threshold），fail-open 放行；
+          //   - 评估跑通了但把握度不够（低于阈值）→ 不是降级，日志说「低于阈值」，
+          //     meta 的 rationale 是模型的 reason。
+          // 早先把前两者混在一条 'degraded' 日志里，导致信号位出现 'ok'，读日志的人
+          // 会把「评估成功但没把握」误当成「模型调用失败」。
+          if (!report.parse.ok) {
+            const reason = report.parse.parseError ?? report.call.kind;
+            console.warn(
+              `[${name}] decision degraded (${reason}, confidence=${report.parse.confidence.toFixed(2)}); passing through`,
+            );
+            meta = buildDegradedMeta(reason);
+          } else if (report.threshold.reason === 'invalid-threshold') {
+            console.warn(
+              `[${name}] decision degraded (invalid-threshold, confidence=${report.parse.confidence.toFixed(2)}); passing through`,
+            );
+            meta = buildDegradedMeta('invalid-threshold');
+          } else {
+            console.warn(
+              `[${name}] decision below threshold (confidence=${report.parse.confidence.toFixed(2)}, threshold=${config.confidenceThreshold}); passing through`,
+            );
+            meta = buildAutoMeta(report.parse, 'passed-through');
+          }
         }
 
         const result = await askThroughUserQuestions(

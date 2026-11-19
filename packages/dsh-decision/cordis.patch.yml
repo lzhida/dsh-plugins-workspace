@@ -16,6 +16,10 @@
 #   宿主错误语义（ASK_ABORTED / EMPTY_QUESTIONS / CALLER_NOT_LIVE /
 #   DELEGATED_CALLER / BAD_INTENT / NO_PROVIDER）保持一致，1/4 阶段直通，
 #   用户侧行为与出厂无差别。
+#   注意：一致的是**结构约束**（必填性、additionalProperties）与错误语义；
+#   工具 description 与 header / options 字段描述相对出厂 legacy 行做了
+#   改写（模型每次调用都会看到，会带来轻微的模型侧行为漂移），详见
+#   README「已知限制」。
 #
 # 规则
 #   - 每行的 id 必须与入口文件导出的 name 一致（loader 以 id 定位行、
