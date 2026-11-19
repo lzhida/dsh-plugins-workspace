@@ -14,6 +14,7 @@ dsh 的模型回退插件：拦截全局 LLM 调用，**会话页面指定的模
 - [重试预算固定跟随官方](#重试预算固定跟随官方dsh-llm-retry)
 - [时间窗切换与错峰优先](#时间窗切换与错峰优先)
 - [候选级参数覆盖（reasoningEffort / maxTokens）](#候选级参数覆盖reasoningeffort--maxtokens)
+- [角色级回退链（subagent / 角色专属候选池）](#角色级回退链subagent--角色专属候选池)
 - [失败码白名单](#失败码白名单)
 - [模型目录与失效候选](#模型目录与失效候选)
 - [行为](#行为)
@@ -34,6 +35,7 @@ dsh 的模型回退插件：拦截全局 LLM 调用，**会话页面指定的模
 - ⏰ **时间窗切换/错峰优先（时段计划，默认关闭）**——配置的窗口内把候选预填进冷却表（到期 = 窗口结束）影响失败推进的候选选择；错峰窗口（官方半价 00:30–08:30）可反向优先 DeepSeek；窗口结束由既有惰性过期自动恢复优先级，无定时器，见[时间窗切换与错峰优先](#时间窗切换与错峰优先)
 - 🤝 **重试预算固定跟随官方**——同候选重试一律由官方 `dsh-llm-retry` 执行（provider 重试策略，默认 5）：预算内透传其决策，耗尽才跨 provider 回退；0.6.0 起移除插件侧自定义重试次数（0.5.0 引入的 `retriesBeforeSwitch`），见[重试预算固定跟随官方](#重试预算固定跟随官方dsh-llm-retry)
 - 🎚️ **候选级参数覆盖**——链条目可配置 `reasoningEffort` / `maxTokens`：切到该候选时推理力度随官方 `agent.model.select()` 写入 selection（下一轮生效），路由到该候选的请求经 waterfall controls 覆盖单次输出上限；未配置的候选零改写、会话指定模型不勾进队列时其请求永不命中，见[候选级参数覆盖](#候选级参数覆盖reasoningeffort--maxtokens)
+- 👥 **角色级回退链（0.8.0）**——按角色（`subagent` / agentPreset id）配置专属候选池：子代理与顶层会话可走不同的回退队列；未配置的角色回落全局链、旧配置零迁移，冷却跨角色共享（同一候选一处被冷却处处跳过，不会一个角色打爆另一个角色的后备），见[角色级回退链](#角色级回退链subagent--角色专属候选池)
 - 🎛️ **可视化配置卡**——内嵌设置面板：勾选候选模型、排序队列、设置最大切换候选数，保存即生效，无需重载插件
 - 🌐 **中英双语设置表单**——配置卡文案与 schema 字段描述跟随 dsh 语言设置（设置 → 通用 → 语言）即时切换，无需重载插件
 - 🧩 **失败码路由**——只按宿主稳定失败码（`RATE_LIMIT` / `QUOTA` / `SERVER` / `TIMEOUT` / `TRANSPORT` …）与结构化 `status` 字段（网关 408 请求超时）决策，从不解析错误消息；鉴权类错误直接上抛、不做无谓切换
@@ -41,7 +43,7 @@ dsh 的模型回退插件：拦截全局 LLM 调用，**会话页面指定的模
 
 ## 工作原理
 
-1. 插件监听 dsh agent-loop 的两个 loop 级 waterfall：`agent/request`（发请求前：selection 一律只读，仅按请求路由为命中链项补写候选级 `maxTokens` controls 覆盖，见[候选级参数覆盖](#候选级参数覆盖reasoningeffort--maxtokens)）与 `agent/request-error`（请求失败后）；
+1. 插件监听 dsh agent-loop 的两个 loop 级 waterfall：`agent/request`（发请求前：selection 一律只读，仅按请求路由为命中链项补写候选级 `maxTokens` controls 覆盖，见[候选级参数覆盖](#候选级参数覆盖reasoningeffort--maxtokens)）与 `agent/request-error`（请求失败后）；两处都会先按 `agent.session.header` 解析请求归属角色，配置了 `roleChains[角色]` 时该请求的建态与推进都走角色专属链（未配置回落全局链，见[角色级回退链](#角色级回退链subagent--角色专属候选池)）；
 2. 失败时，若失败码在白名单，按官方重试预算决策（固定跟随 provider 重试策略，0.6.0 起无插件侧配置）：预算内官方 retry 有决策则透传（它执行同候选重试）；预算用满（或预算内官方无决策）且队列还有候选 → 指数退避后推进到下一候选（会话指定模型失败后切到队列第 1 项，再失败切第 2 项，依此推进；队列中与会话指定模型相同的项会被自动跳过），经官方 `agent.model.select()` 持久化切换（写入 durable model/selection 事件 + 自动插 `[model changed]` user message），返回 `{kind: 'retry'}`；
 3. 切换在**下一 step 生效**——selection 在 step 准备时快照，`select` 后 loop 会用旧模型重发一次请求（该次失败后本 step 不再推进，turn 以错误结束，重发消息即从新候选继续）；切换若发生在 turn 首个 step 前（如冷却期跨 step 保留的失败冷却），同样由 `select` 在下一 step 无缝生效；
 4. 失败码不在白名单或队列耗尽 → 透传上游（官方 retry / loop 默认行为），错误正常上抛；
@@ -96,6 +98,7 @@ dsh plugin add github:lzhida/dsh-plugins-workspace#main\&path:packages/dsh-llm-f
 | ------------------------- | ------------------------------------------------------------------------------------ | ------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `enabled`                 | `boolean`                                                                            | `true`                          | 总开关，关闭后不再拦截模型失败                                                                                                                                                    |
 | `fallbackChains`          | `Array<{provider, model, displayName?, description?, reasoningEffort?, maxTokens?}>` | `[]`                            | 纯回退候选队列（不含会话指定的主模型），失败后按序切换；旧 `string[]` 形态自动归一；后两个可选字段为候选级参数覆盖，见[候选级参数覆盖](#候选级参数覆盖reasoningeffort--maxtokens) |
+| `roleChains`              | `Record<role, Array<链项>>`                                                          | `{}`                            | 角色级回退链字典（0.8.0）：角色 id → 该角色专属候选链；未配置的角色回落全局 `fallbackChains`，`default` 键被忽略，见[角色级回退链](#角色级回退链subagent--角色专属候选池)         |
 | `maxRetries`              | `number`                                                                             | `0`（= 链长）                   | 单次请求最多**切换候选**次数，不含同候选重试（同候选重试预算固定跟随官方，见[重试预算固定跟随官方](#重试预算固定跟随官方dsh-llm-retry)）                                          |
 | `baseDelayMs`             | `number`                                                                             | `500`                           | 指数退避初值；`0` = 禁用退避（失败后立即重试/切换）                                                                                                                               |
 | `maxDelayMs`              | `number`                                                                             | `30000`                         | 指数退避上限                                                                                                                                                                      |
@@ -281,6 +284,48 @@ fallbackChains:
 - **合法性**：`reasoningEffort` 是 adapter 自有的不透明字符串 id（dsh-llm 类型层无全局枚举），候选不支持该力度时请求期抛 `UNSUPPORTED_REASONING_EFFORT`——该码已在默认[失败码白名单](#失败码白名单)内，自动切下一候选，无需预校验；`maxTokens` 为正整数（配置非法直接报配置错误），超出 provider 侧限制时以普通失败暴露（可能不在白名单 → 透传不切换）；
 - **配置卡**：队列行内两个可清空输入（力度自由文本 / 上限正整数），清空 = 未配置；保存时未配置的候选不带这两个键（详见配置卡功能段）。
 
+## 角色级回退链（subagent / 角色专属候选池）
+
+全局 `fallbackChains` 是所有请求共享的一条回退队列；0.8.0 起 `roleChains` 允许**按角色配置专属候选池**——子代理用便宜快速的模型兜底、主会话保持强模型队列，互不干扰：
+
+```yaml
+fallbackChains: # 全局链(所有未配置角色的请求,含主会话)
+  - provider: anthropic
+    model: claude-sonnet-4
+  - provider: openai
+    model: gpt-4o
+roleChains:
+  subagent: # 角色键,该角色的请求走这条链
+    - provider: openai
+      model: gpt-4o-mini
+    - provider: deepseek
+      model: deepseek-chat
+  researcher: # 任意自定义角色键(来自 agentPreset)同样支持
+    - provider: anthropic
+      model: claude-opus-4
+```
+
+**角色识别**：插件从宿主 `agent.session.header`（会话创建时固化的元数据）解析请求归属角色——
+
+| 会话特征                                                    | 角色键                        |
+| ----------------------------------------------------------- | ----------------------------- |
+| `origin: 'subagent'` 或 `delegationDepth > 0`（子代理会话） | `subagent`（固定）            |
+| 顶层会话带 `agentPreset`（如 `'researcher'`）               | preset id（如 `researcher`）  |
+| 其余（普通主会话 / header 缺失 / 旧宿主）                   | `default`（走全局链，零变化） |
+
+**链选择语义**：
+
+- 配置了 `roleChains[角色]` 的请求从该角色链第 1 项开始推进，语义与全局链完全一致（同一套冷却/熔断/预算/参数覆盖机制）；
+- 未配置的角色**回落全局 `fallbackChains`**——只配全局链的旧用户零行为变化、零迁移；
+- `roleChains` 里的 `default` 键被显式忽略（全局链恒为默认角色，避免两处配置打架）；
+- 链条目与全局链同构：可带 `displayName` / `description` / 候选级参数覆盖（`reasoningEffort` / `maxTokens`）；
+- **候选级覆盖的查找顺序**：先查该角色自己的链（同 `provider/model` 的条目若带 `reasoningEffort` 或 `maxTokens` 即采用）；角色链条目**不带**覆盖时不遮蔽——回落全局链中同候选的覆盖。因此「角色链优先」指的是角色链**显式写了**覆盖时才压过全局链；
+- **激活前提**：全局链与角色链**全空**时插件不挂监听器（无候选可推进）；只配 `roleChains`（全局链留空）同样激活——此时未配置角色的请求没有候选可用，失败即耗尽并透传，不会误切到别的角色链；
+- **冷却跨角色共享**：冷却表按 `provider/model` 键，与角色无关——同一候选在角色链 A 中被冷却，角色链 B（或全局链）同样跳过它。这是有意决策：避免一个角色的流量反复打爆另一个角色的后备池；代价是角色间冷却联动（一处失败冷却,处处生效）；
+- 时间窗预填同样作用于角色链（规则按 provider 匹配,窗口内角色链候选一并进冷却表）。
+
+**边界**：角色识别依赖宿主 `session.header` 的 `origin` / `delegationDepth` / `agentPreset` 元数据（`origin` 目前是演示性元数据，见[已知限制](#已知限制)）；配置卡暂未提供角色链编辑入口——`roleChains` 经设置面板 schema 字段或 profile YAML 直接编辑，面板保存已镜像字段时不会触碰它。
+
 ## 失败码白名单
 
 插件按 `LlmFailure.code` 白名单与唯一一个结构化 `status` 判定（`status === 408` 网关请求超时）路由（宿主约定：route on code, never parse message——**重试/切换路由**同样绝不解析 message；唯一例外是记冷却时的[配额感知自适应冷却](#配额感知自适应冷却)，message 解析只影响冷却时长、不影响路由）。默认白名单是宿主官方重试码（`EMPTY_RESPONSE / RATE_LIMIT / SERVER / TIMEOUT / TRANSPORT`）的超集——多出配额与上下文类，切模型正是这些失败的本职出路；另含两类**确定性失败**，同模型重试必复现，切下一候选是唯一有意义的恢复路径：`UNSUPPORTED_REASONING_EFFORT`（模型不支持所请求的 reasoning effort）与 `UNKNOWN_MODEL`（候选模型已从 provider 配置中删除或 id 变更——回退队列的[失效候选兜底](#模型目录与失效候选)）。
@@ -366,7 +411,8 @@ dsh 侧的模型身份是**字面 `provider/model` 路由键**：deepseek 与 pi
 - 每 step 的回退状态以 `<会话id>:<turn>:<step>` 为 key 存内存（会话标识取自 `agent/request(-error)` payload 的 `agent.session.id`，缺失时降级为无会话段的 `turn:step` 共享键位）：新 turn 首次请求时清理**同会话**其他 turn 的旧状态，跨会话互不清理、同号 turn 互不串扰；每会话在其最末 turn 后遗留少量状态（上界 ≈ 会话数 × 单 turn step 数，每项小对象，宿主重启即清零，量级可忽略）
 - `LlmFailure.status` 仅由 deepseek 路由的 provider 错误路径填充；pi-ai 路由对错误纯文本分类、不产出该字段——「网关 408 结构化判定」只在 deepseek 路由生效，pi-ai 路由的网关 408 退化为无 `status` 的 `INVALID_REQUEST`（白名单外、不切换）。修复点在宿主上游（408 归类为超时类失败、或在失败事件中透传 status），见[故障排查](#故障排查)
 - **候选级 `reasoningEffort` 是 adapter 自有的不透明 id**：dsh-llm 类型层无全局力度枚举，合法值由各 provider/model 的模型信息决定（用户需查所选模型的文档）；未配置候选级力度时**继承切换前 selection 的 effort**（零回归语义）；仅当切换前 selection 本身不含力度（如适配器未上报）时，宿主才回落适配器默认而不继承——力度不会凭空跨候选延续；`maxTokens` 覆盖无宿主层边界校验——超出 provider 侧上限时以普通失败暴露（可能不在白名单 → 透传不切换），请按候选模型的实际上限填写
-- 不实现 provider/* 通配条目、role/specificity 多链分派、同一 step 链耗尽后切回会话指定模型（新 step 天然从会话指定模型重新开始）
+- **角色识别依赖宿主 `session.header` 元数据**：角色键取自 `origin` / `delegationDepth` / `agentPreset`，其中 `origin` 在宿主侧是演示性元数据（宿主注释自述"非可持续性证明"）——若上游调整该字段语义，子代理识别需跟随调整；header 缺失（旧宿主 / 非 agent 作用域）一律回落 `default` 全局链，绝不因角色识别失败而误切链。**冷却跨角色共享**是明确决策（见[角色级回退链](#角色级回退链subagent--角色专属候选池)）：角色间没有冷却隔离，一处失败冷却处处生效；配置卡暂无角色链编辑入口（经 schema 字段或 YAML 编辑）
+- 不实现 provider/* 通配条目、同一 step 链耗尽后切回会话指定模型（新 step 天然从会话指定模型重新开始）
 
 ## 故障排查
 

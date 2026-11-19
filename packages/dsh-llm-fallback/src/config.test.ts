@@ -35,6 +35,7 @@ import { apply, inject, name } from './index.ts';
 import {
   resolveConfig,
   normalizeChainEntry,
+  normalizeRole,
   isVolatileLike,
   unwrapVolatile,
   volatileField,
@@ -354,12 +355,14 @@ describe('resolveConfig', () => {
         model: 'deepseek-chat',
         displayName: 'deepseek/deepseek-chat',
         description: '',
+        label: 'default',
       },
       {
         provider: 'openai',
         model: 'gpt-4o',
         displayName: 'openai/gpt-4o',
         description: '',
+        label: 'default',
       },
     ]);
     // chain 字段保持旧的 (provider, model) 形态(下游 state.ts / 监听器不变)
@@ -385,6 +388,7 @@ describe('resolveConfig', () => {
       model: 'deepseek-chat',
       displayName: 'DeepSeek Chat (primary)',
       description: 'cheapest default',
+      label: 'default',
     });
   });
 
@@ -417,6 +421,7 @@ describe('resolveConfig', () => {
       model: 'gpt-4o',
       displayName: 'openai/gpt-4o',
       description: '',
+      label: 'default',
     });
   });
 
@@ -449,12 +454,14 @@ describe('resolveConfig', () => {
       model: 'x',
       displayName: 'a/x',
       description: '',
+      label: 'default',
     });
     expect(normalizeChainEntry({ provider: 'b', model: 'y' }, 0)).toEqual({
       provider: 'b',
       model: 'y',
       displayName: 'b/y',
       description: '',
+      label: 'default',
     });
     expect(
       'error' in normalizeChainEntry({ provider: '', model: 'x' }, 0),
@@ -473,6 +480,7 @@ describe('resolveConfig', () => {
       model: 'y',
       displayName: 'b/y',
       description: '',
+      label: 'default',
       reasoningEffort: 'high',
       maxTokens: 4096,
     });
@@ -487,6 +495,7 @@ describe('resolveConfig', () => {
       model: 'y',
       displayName: 'b/y',
       description: '',
+      label: 'default',
     });
     // maxTokens 非正整数 → 配置错误(不静默丢弃)
     expect(
@@ -558,6 +567,76 @@ describe('resolveConfig', () => {
         ],
       }),
     ).toThrow(/reasoningEffort must be a non-empty string/);
+  });
+
+  it('roleChains(0.8.0):按角色归一出独立候选链,default 键被忽略', () => {
+    const c = resolveConfig({
+      fallbackChains: ['a/x'],
+      roleChains: {
+        subagent: ['b/y', { provider: 'c', model: 'z' }],
+        default: ['ignored/entry'],
+      },
+    });
+    // 角色链按角色 id 分组,链项带归属角色标记
+    expect(
+      c.roleChains.get('subagent')?.map((e) => `${e.provider}/${e.model}`),
+    ).toEqual(['b/y', 'c/z']);
+    expect(c.roleChains.get('subagent')?.[0]?.label).toBe('subagent');
+    // default 恒为全局兜底:显式 default 角色键被忽略,不进 roleChains
+    expect(c.roleChains.has('default')).toBe(false);
+    expect(c.roleChains.size).toBe(1);
+    // 全局链不受角色配置影响
+    expect(c.chain.map((e) => `${e.provider}/${e.model}`)).toEqual(['a/x']);
+  });
+
+  it('roleChains(0.8.0):未配置时为空表(旧配置零迁移)', () => {
+    const c = resolveConfig({ fallbackChains: ['a/x'] });
+    expect(c.roleChains.size).toBe(0);
+  });
+
+  it('roleChains(0.8.0):非法形态整体失败(非字典 / 值非数组 / 链项非法)', () => {
+    expect(() =>
+      resolveConfig({ roleChains: ['a/x'] as unknown as string }),
+    ).toThrow(/roleChains must be a dictionary/);
+    expect(() =>
+      resolveConfig({
+        roleChains: { subagent: 'a/x' as unknown as string },
+      }),
+    ).toThrow(/roleChains\["subagent"\] must be an array/);
+    expect(() =>
+      resolveConfig({
+        roleChains: { subagent: [{ provider: 'b' } as unknown as string] },
+      }),
+    ).toThrow(/must have non-empty "provider" and "model"/);
+  });
+
+  it('roleChains(0.8.0):角色链条目的错误文案带归属上下文(roleChains["<role>"][i])', () => {
+    // 链项级错误不再误标为 fallbackChains[N]——排障能直接定位配置来源
+    expect(() =>
+      resolveConfig({
+        roleChains: { subagent: [{ provider: 'b', model: 'y', maxTokens: 0 }] },
+      }),
+    ).toThrow(
+      /roleChains\["subagent"\]\[0\]\.maxTokens must be a positive integer/,
+    );
+    expect(() =>
+      resolveConfig({
+        roleChains: { researcher: ['no-slash'] },
+      }),
+    ).toThrow(/roleChains\["researcher"\]\[0\]/);
+    // 全局链错误文案保持 fallbackChains[N] 前缀(零回归)
+    expect(() => resolveConfig({ fallbackChains: ['no-slash'] })).toThrow(
+      /fallbackChains\[0\]/,
+    );
+  });
+
+  it('normalizeRole(0.8.0):非空字符串原样返回;空串/非法回落 default 并告警', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    expect(normalizeRole('subagent', 'subagent')).toBe('subagent');
+    expect(normalizeRole('', 'bad-key')).toBe('default');
+    expect(normalizeRole(42, 'num-key')).toBe('default');
+    expect(warnSpy).toHaveBeenCalledTimes(2);
+    warnSpy.mockRestore();
   });
 
   it('maxRetries=0 时退化为链长', () => {
@@ -2577,6 +2656,7 @@ describe('Config schema', () => {
     const fields = [
       'enabled',
       'fallbackChains',
+      'roleChains',
       'maxRetries',
       'baseDelayMs',
       'maxDelayMs',
@@ -2670,6 +2750,7 @@ describe('Config schema 国际化(desc i18n 映射)', () => {
     const fields = [
       'enabled',
       'fallbackChains',
+      'roleChains',
       'maxRetries',
       'baseDelayMs',
       'maxDelayMs',

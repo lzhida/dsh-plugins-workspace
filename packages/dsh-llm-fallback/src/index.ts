@@ -75,7 +75,11 @@
  *   最多再支付一次旧模型调用(retry 重发),随后透传上游——官方预算已耗尽
  *   时 turn 以错误结束,用户重发即从新候选续跑。"对话不中断"的承诺相应
  *   调整为"切换无缝生效于下一轮";
- * - 不实现 provider/* 通配条目、role/specificity 分派链;
+ * - 角色级链(0.8.0 起)的冷却状态**跨角色共享**(cooldowns/breakers 按
+ *   provider/model 键,与角色无关):同一候选在一个角色链被冷却,其它角色
+ *   链同样跳过——这是有意决策(避免一个角色打爆另一个角色的后备,见
+ *   config.ts 文件头 roleChains 注释);若未来要按角色隔离冷却需拆分冷却表;
+ * - 不实现 provider/* 通配条目;
  * - 不实现"跨回合切回会话指定模型"(回退状态以 `<会话id>:<turn>:<step>`
  *   为 key——会话隔离,多会话同号 turn 互不串扰;payload 缺会话标识时
  *   降级共享键位——新 step 天然从会话指定模型重新开始;同一 step 内链耗尽
@@ -99,11 +103,16 @@ import type { Agent } from '@deepseek-ai/dsh-agent';
 import type {} from '@deepseek-ai/dsh-system-prompt';
 import type { ReasoningEffortId } from '@deepseek-ai/dsh-llm';
 
-import { type ResolvedConfig, resolveConfig } from './config.ts';
+import {
+  type ChainEntry,
+  type ResolvedConfig,
+  resolveConfig,
+} from './config.ts';
 import { modelFallbackSection } from './protocol.ts';
 import { type CooldownDuration, resolveCooldownDuration } from './quota.ts';
 import {
   type BreakerEntry,
+  type Candidate,
   type FallbackState,
   type StepKey,
   advanceBreaker,
@@ -151,6 +160,68 @@ function isRetryAction(
     action !== null &&
     (action as { kind?: unknown }).kind === 'retry'
   );
+}
+
+/**
+ * 角色识别(0.8.0):从 agent 会话 header 解析请求的 fallback 角色。
+ * - 子代理(host SessionHeader.origin === 'subagent' 或 delegationDepth > 0)
+ *   → 固定角色 `subagent`;
+ * - 顶层会话携带 agentPreset(装配该会话 agent 的预设 id)→ 以 preset id
+ *   为角色名(与 roleChains 键对齐,可按预设定制候选池);
+ * - header 缺失 / 无 origin / 无 preset → 全局角色 `default`(回落全局链)。
+ * 防御:测试 stubAgent 与极旧宿主可能没有 session.header,一律回落 default。
+ */
+function roleOf(agent: Agent | undefined): string {
+  const header = agent?.session?.header as
+    | { origin?: string; delegationDepth?: number; agentPreset?: string }
+    | undefined;
+  if (!header) return 'default';
+  if (header.origin === 'subagent' || (header.delegationDepth ?? 0) > 0) {
+    return 'subagent';
+  }
+  if (typeof header.agentPreset === 'string' && header.agentPreset.length > 0) {
+    return header.agentPreset;
+  }
+  return 'default';
+}
+
+/** 角色 → 候选链(0.8.0):default 或未配置角色回落全局链。 */
+function roleChain(
+  cfg: ResolvedConfig,
+  role: string,
+): ReadonlyArray<Candidate> {
+  if (role === 'default') return cfg.chain;
+  const items = cfg.roleChains.get(role);
+  if (!items) return cfg.chain;
+  return items.map((e) => ({ provider: e.provider, model: e.model }));
+}
+
+/**
+ * 按路由在配置里查链项,取候选级参数覆盖(0.8.0):**本角色链命中且条目带
+ * 任一覆盖字段(`reasoningEffort` / `maxTokens`)时用角色链条目(角色级
+ * 优先);否则回落全局链同候选条目**。语义要点:
+ * - 角色链成员**不带覆盖时不遮蔽**全局链同候选的覆盖(配置了角色链只是
+ *   换候选池,不静默清空全局按路由配置的参数);
+ * - 各角色只查自己的链——同一候选出现在多个角色链且覆盖不同时,各角色
+ *   各用各的,无跨角色歧义。
+ */
+function findEntry(
+  cfg: ResolvedConfig,
+  role: string,
+  provider: string,
+  model: string,
+): ChainEntry | undefined {
+  const match = (x: ChainEntry): boolean =>
+    x.provider === provider && x.model === model;
+  const mine =
+    role === 'default' ? undefined : cfg.roleChains.get(role)?.find(match);
+  if (
+    mine &&
+    (mine.reasoningEffort !== undefined || mine.maxTokens !== undefined)
+  ) {
+    return mine;
+  }
+  return cfg.entries.find(match);
 }
 
 /**
@@ -226,8 +297,13 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
     return () => disposeSection();
   }, 'dsh-llm-fallback: protocol section');
 
-  // 3. disabled 或空链 → 不挂监听器(只装 section)
-  if (!resolved.enabled || resolved.chain.length === 0) {
+  // 3. disabled 或「全局链与角色链全空」→ 不挂监听器(只装 section)。
+  //    只配 roleChains(全局链留空)同样激活:未配置角色的请求链为空,
+  //    失败推进立即耗尽透传,不会误切(0.8.0 起)。
+  if (
+    !resolved.enabled ||
+    (resolved.chain.length === 0 && resolved.roleChains.size === 0)
+  ) {
     return;
   }
 
@@ -250,9 +326,11 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
   //     行为与旧版完全一致。
   const breakers = new Map<string, BreakerEntry>();
 
-  /** 取出或惰性初始化该 step 的回退状态(从当前 chain 开始)。 */
-  const getState = (key: StepKey): FallbackState =>
-    stateFor(states, key, current().chain);
+  /** 取出或惰性初始化该 step 的回退状态(从当前角色链开始,0.8.0 起)。 */
+  const getState = (
+    key: StepKey,
+    chain: ReadonlyArray<Candidate>,
+  ): FallbackState => stateFor(states, key, chain);
 
   // 5. 监听 agent/request(只读,0.6.0 起):每次 loop 准备发请求时——
   //    - 尚未切换(index<0):经官方 `agent.model.current()` 把会话页面指定
@@ -279,7 +357,11 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
       // 惰性创建/取出该 step 的状态(此前仅在失败时创建;现在请求阶段就建,
       // 以便在首次失败前捕获会话指定模型——error payload 不带 model)
       const cfg = current();
-      const state = stateFor(states, key, cfg.chain);
+      // 0.8.0 角色级链:按会话 header 解析角色,该角色未配置链时回落全局链。
+      // chain 在建态时快照进 state.chain,配置中途变更自下一 step 生效(与
+      // 既有 chain 快照语义一致)。
+      const role = roleOf(payload.agent);
+      const state = stateFor(states, key, roleChain(cfg, role));
       if (state.index < 0 && !state.pageModel) {
         // 官方 API 读当前 selection:与 seed(proposedConfig,同一 selection
         // 的投影)一致;current() 缺失时降级读 seed,双保险。
@@ -336,10 +418,11 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
       // 覆盖不动 selection,合法。命中判定纯按路由:会话指定模型不勾进
       // 队列时其请求永不命中(把它也勾进队列时,其自身请求按路由命中该
       // 项覆盖,属显式按路由配参);未配置/不命中/命中项无覆盖时原样返回
-      // seed(零回归,不多产生拷贝)。
-      const entry = cfg.entries.find(
-        (e) => e.provider === seed.provider && e.model === seed.model,
-      );
+      // seed(零回归,不多产生拷贝)。0.8.0:先查该角色自己的链——条目带
+      // 覆盖(reasoningEffort/maxTokens)时采用;角色链条目不带覆盖时
+      // 不遮蔽,回落全局链中同路由的覆盖(各角色只查自己的链,无跨角色
+      // 歧义)。
+      const entry = findEntry(cfg, role, seed.provider, seed.model);
       if (
         entry?.maxTokens !== undefined &&
         entry.maxTokens !== seed.maxTokens
@@ -369,7 +452,11 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
       if (!isFailureRetryable(failure, cfg.retryableCodes)) {
         return upstream;
       }
-      const state = getState(key);
+      // 0.8.0 角色级链:与 agent/request 同一角色解析——request 建态用角色
+      // 链,error 推进必须用同一链快照,否则两处 state 对不上(建态时
+      // 已存在的 state.chain 保留,后续读 stateFor 按键返回同一对象)。
+      const role = roleOf(payload.agent);
+      const state = getState(key, roleChain(cfg, role));
       // 每候选重试预算固定跟随 provider retryPolicy(0.6.0 起无插件侧
       // 自定义档)。防御:payload.retryPolicy 形态异常时按缺失处理,见
       // resolveCandidateRetryPlan。
@@ -540,9 +627,14 @@ export function apply(ctx: Context, configInput?: FallbackConfigInput): void {
         // 重新 resolve 的最新配置,会话中途重排/增删链项后两者不再同序,
         // 用快照下标索引最新配置会取到别的候选的力度。路由匹配与 target
         // 同源自洽;未配置时 persistModelSwitch 回退现行为(保留切换前
-        // effort)。
-        const targetEntry = cfg.entries.find(
-          (e) => e.provider === target?.provider && e.model === target?.model,
+        // effort)。0.8.0:先查该角色自己的链(条目带覆盖才采用),角色链
+        // 条目不带覆盖时回落全局链同路由的覆盖——角色链的请求用角色级
+        // 覆盖,全局链的请求沿用全局覆盖,两者都是按路由查,同源自洽。
+        const targetEntry = findEntry(
+          cfg,
+          role,
+          target?.provider ?? '',
+          target?.model ?? '',
         );
         persistModelSwitch(payload.agent, target, targetEntry?.reasoningEffort);
       }

@@ -113,8 +113,13 @@ API Key 提供商为 `deepseek-official`（`dsh-llm-deepseek-api-key`）。
 - [ ] **任务分型路由**——交互请求走强模型、后台批量走廉价模型，批量任务延迟到
       错峰执行。阻塞点：loop 层不知道请求「用途」，需宿主侧元数据支持（可能要向上游提需求）。
       先例：自建错峰调度网关的 overnight 优先级队列（见 §6）。
-- [ ] **角色分派链**——`fallbackChains.<role>` 多链（当前为明确的设计简化，
-      见 `src/config.ts` 设计注释「本期不做」段）。等待真实场景需求再解禁。
+- [x] **角色分派链**——`roleChains.<role>` 字典多链(0.8.0 实装):
+      角色识别走宿主 `agent.session.header`(origin='subagent' /
+      delegationDepth>0 → 固定角色 `subagent`;顶层会话带 agentPreset →
+      以 preset id 为角色键;header 缺失回落 default)。未配置的角色
+      回落全局 `fallbackChains`;`roleChains.default` 键显式忽略
+      (全局链恒为默认角色)。冷却跨角色共享(键仍是 provider/model,
+      有意决策:避免一个角色打爆另一个角色的后备)。
 
 ## 4. 推荐演进顺序
 

@@ -141,11 +141,21 @@ function stubAgent(
     provider: 'deepseek',
     model: 'x',
   },
+  header?: {
+    origin?: string;
+    delegationDepth?: number;
+    agentPreset?: string;
+  },
 ): {
   agent: {
     session: {
       id: string;
       append: (type: string, data: Record<string, unknown>) => void;
+      header?: {
+        origin?: string;
+        delegationDepth?: number;
+        agentPreset?: string;
+      };
     };
     model: {
       current: () => { provider: string; model: string } | undefined;
@@ -178,6 +188,7 @@ function stubAgent(
       append: (type: string, data: Record<string, unknown>): void => {
         appends.push({ type, data });
       },
+      ...(header ? { header } : {}),
     },
     model: {
       current: (): { provider: string; model: string } | undefined =>
@@ -1238,5 +1249,219 @@ describe('熔断递增(apply 集成)', () => {
       source: 'default',
       untilMs: T0 + 1000,
     });
+  });
+});
+
+// ── 5. 角色级回退链(apply 集成,0.8.0)─────────────────────────────────
+
+describe('角色级回退链(apply 集成,0.8.0)', () => {
+  const T0 = Date.UTC(2026, 4, 15, 12, 0, 0);
+  const seed = { provider: 'deepseek', model: 'x' };
+
+  it('子代理角色使用角色专属链;无 header 的主会话回落全局链', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const { req, err } = setup({
+      fallbackChains: ['anthropic/b', 'openai/a'],
+      roleChains: { subagent: ['openai/a'] },
+    });
+    // 主会话(无 session.header)→ 角色 default → 全局链,首候选 anthropic/b
+    const main = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 1), agent: main.agent },
+      async () => ({ ...seed }),
+    );
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'deepseek'), agent: main.agent },
+      async () => undefined,
+    );
+    expect(main.selections).toEqual([{ provider: 'anthropic', model: 'b' }]);
+    // 子代理(header.origin='subagent')→ 角色 subagent → 专属链,首候选 openai/a
+    const sub = stubAgent(undefined, {
+      origin: 'subagent',
+      delegationDepth: 1,
+    });
+    await callListener(
+      req,
+      { ...stepReq(2, 1), agent: sub.agent },
+      async () => ({ ...seed }),
+    );
+    await callListener(
+      err,
+      { ...stepErr(2, 1, 'deepseek'), agent: sub.agent },
+      async () => undefined,
+    );
+    expect(sub.selections).toEqual([{ provider: 'openai', model: 'a' }]);
+  });
+
+  it('配置了 agentPreset 顶层会话按 preset 取角色;该角色未配置链时回落全局链', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const { req, err } = setup({
+      fallbackChains: ['anthropic/b', 'openai/a'],
+      roleChains: { subagent: ['openai/a'] },
+    });
+    // researcher 角色未配置 roleChains → roleChain 回落全局链,首候选 anthropic/b
+    const preset = stubAgent(undefined, { agentPreset: 'researcher' });
+    await callListener(
+      req,
+      { ...stepReq(1, 1), agent: preset.agent },
+      async () => ({ ...seed }),
+    );
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'deepseek'), agent: preset.agent },
+      async () => undefined,
+    );
+    expect(preset.selections).toEqual([{ provider: 'anthropic', model: 'b' }]);
+  });
+
+  it('冷却跨角色共享:同一候选在一角色链被冷却,另一角色链同样跳过', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const { req, err } = setup({
+      fallbackChains: ['openai/a', 'anthropic/b'],
+      roleChains: { subagent: ['openai/a', 'anthropic/b'] },
+    });
+    // 主会话:deepseek 失败切 openai/a;openai 再失败 → 冷却 openai/a,
+    // 切到 anthropic/b。此时 openai/a 已进入冷却表。
+    const main = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 1), agent: main.agent },
+      async () => ({ ...seed }),
+    );
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'deepseek'), agent: main.agent },
+      async () => undefined,
+    );
+    expect(main.selections).toEqual([{ provider: 'openai', model: 'a' }]);
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'openai'), agent: main.agent },
+      async () => undefined,
+    );
+    expect(main.selections).toEqual([
+      { provider: 'openai', model: 'a' },
+      { provider: 'anthropic', model: 'b' },
+    ]);
+    // 子代理角色:专属链同含 openai/a;同一时点 openai/a 仍冷却中
+    // → 失败后跳过它,直接切到 anthropic/b(冷却共享决策)
+    const sub = stubAgent(undefined, {
+      origin: 'subagent',
+      delegationDepth: 1,
+    });
+    await callListener(
+      req,
+      { ...stepReq(2, 1), agent: sub.agent },
+      async () => ({ ...seed }),
+    );
+    await callListener(
+      err,
+      { ...stepErr(2, 1, 'deepseek'), agent: sub.agent },
+      async () => undefined,
+    );
+    expect(sub.selections).toEqual([{ provider: 'anthropic', model: 'b' }]);
+  });
+
+  it('agentPreset 命中专属链:researcher 角色配置了链时走角色候选', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const { req, err } = setup({
+      fallbackChains: ['anthropic/b', 'openai/a'],
+      roleChains: { researcher: ['openai/a'] },
+    });
+    const preset = stubAgent(undefined, { agentPreset: 'researcher' });
+    await callListener(
+      req,
+      { ...stepReq(1, 1), agent: preset.agent },
+      async () => ({ ...seed }),
+    );
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'deepseek'), agent: preset.agent },
+      async () => undefined,
+    );
+    // preset 角色命中专属链,首候选 openai/a(而非全局链首候选 anthropic/b)
+    expect(preset.selections).toEqual([{ provider: 'openai', model: 'a' }]);
+  });
+
+  it('只配 roleChains(全局链留空)同样激活:主会话空链耗尽透传,子代理走专属链', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    const { req, err } = setup({
+      fallbackChains: [],
+      roleChains: { subagent: ['openai/a'] },
+    });
+    // 主会话(角色 default,无全局链)→ 空链,失败推进立即耗尽,透传不误切
+    const main = stubAgent();
+    await callListener(
+      req,
+      { ...stepReq(1, 1), agent: main.agent },
+      async () => ({ ...seed }),
+    );
+    await callListener(
+      err,
+      { ...stepErr(1, 1, 'deepseek'), agent: main.agent },
+      async () => undefined,
+    );
+    expect(main.selections).toEqual([]);
+    // 子代理角色 → 专属链激活,正常切换
+    const sub = stubAgent(undefined, {
+      origin: 'subagent',
+      delegationDepth: 1,
+    });
+    await callListener(
+      req,
+      { ...stepReq(2, 1), agent: sub.agent },
+      async () => ({ ...seed }),
+    );
+    await callListener(
+      err,
+      { ...stepErr(2, 1, 'deepseek'), agent: sub.agent },
+      async () => undefined,
+    );
+    expect(sub.selections).toEqual([{ provider: 'openai', model: 'a' }]);
+  });
+
+  it('候选级覆盖:角色链条目带覆盖时角色级优先;不带覆盖时不遮蔽全局覆盖', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    // 场景 A:角色链条目带 maxTokens → 角色级覆盖生效(优先于全局)
+    const a = setup({
+      fallbackChains: ['anthropic/b'],
+      roleChains: {
+        subagent: [{ provider: 'openai', model: 'a', maxTokens: 4096 }],
+      },
+    });
+    const agentA = stubAgent(undefined, {
+      origin: 'subagent',
+      delegationDepth: 1,
+    });
+    const outA = await callListener(
+      a.req,
+      { ...stepReq(1, 1), agent: agentA.agent },
+      async () => ({ provider: 'openai', model: 'a' }),
+    );
+    expect(outA).toEqual({ provider: 'openai', model: 'a', maxTokens: 4096 });
+
+    // 场景 B:角色链条目不带覆盖(string 形态)→ 不遮蔽,回落全局链覆盖
+    const b = setup({
+      fallbackChains: [{ provider: 'openai', model: 'a', maxTokens: 2048 }],
+      roleChains: { subagent: ['openai/a'] },
+    });
+    const agentB = stubAgent(undefined, {
+      origin: 'subagent',
+      delegationDepth: 1,
+    });
+    const outB = await callListener(
+      b.req,
+      { ...stepReq(1, 1), agent: agentB.agent },
+      async () => ({ provider: 'openai', model: 'a' }),
+    );
+    expect(outB).toEqual({ provider: 'openai', model: 'a', maxTokens: 2048 });
   });
 });

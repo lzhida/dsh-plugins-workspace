@@ -53,13 +53,20 @@
  *   候选,`prefer`(错峰反向)冷却未命中候选(错峰时段自动优先 DeepSeek)。
  *   语义与解析见 src/schedule.ts;全部候选被预填冷却时降级回原顺序放行
  *   (对齐冷却哲学「绝不吞掉全部候选」)
+ * - `roleChains`(0.8.0 起):角色级回退链——`{ 角色id: 链项数组 }` 字典,
+ *   按角色(如 `subagent`)配置专属候选池。该角色的请求优先使用其角色链;
+ *   未配置的角色(含 `default`)回落全局 `fallbackChains`。同一候选可同时
+ *   出现在多个角色链,**冷却状态按 provider/model 共享**(同一候选在一个
+ *   角色链被冷却,其它角色链同样跳过——避免一个角色打爆另一个角色的后备)。
+ *   `default` 键被明确忽略(全局链恒为默认角色)。角色识别见 src/index.ts
+ *   `roleOf`(origin='subagent' / delegationDepth>0 → 'subagent';顶层会话带
+ *   agentPreset → 以 preset id 为角色名;header 缺失 → 'default')。
  *
  * 主模型语义(0.5.0 起):插件配置里没有"主模型"——dsh 会话页面指定的模型
  * 就是事实主模型。回退推进时自动跳过与会话模型相同的队列项(用户把会话模型
  * 也勾进队列的防呆),旧"首项=主模型"的存量配置因此零迁移、行为不劣化。
  *
  * 设计简化(本期不做):
- * - 不区分 role/specificity 的多链(`retry.fallbackChains.<role>`);本期就是"按 provider/model 串行"
  * - 不实现 `fallbackRevertPolicy`(同一 step 链耗尽后切回会话指定模型);回退状态
  *   以 `turn:step` 为 key,新 step 天然从会话指定模型重新开始
  * - 不实现 provider/* 通配条目;链中每项就是字面 `provider/model`
@@ -306,27 +313,53 @@ export interface ChainEntry {
    * 缺省 = 透传会话原值(零回归)。
    */
   maxTokens?: number;
+  /**
+   * 归属角色(0.8.0 起):链项默认归属全局角色 `default`,放进该角色的
+   * 候选池;配置了 `roleChains` 时,该角色链的成员被标记对应角色,同一
+   * 候选可同时出现在多个角色链(冷却共享,见 src/index.ts 冷却表)。
+   * 角色链不覆盖默认角色——default 恒为全局兜底。
+   */
+  label?: string;
+}
+
+/** 角色级链映射的规整形态(0.8.0 起):key=角色 id,value=该角色专属链项列表。 */
+export type RoleChains = ReadonlyMap<string, ReadonlyArray<ChainEntry>>;
+
+/** 归一角色名:非空字符串;空串/非法回落 `default`。 */
+export function normalizeRole(val: unknown, key: string): string {
+  if (typeof val === 'string' && val.length > 0) return val;
+  console.warn(
+    `[dsh-llm-fallback] role "${key}" is not a non-empty string; falling back to default`,
+  );
+  return 'default';
 }
 
 /** 校验并规范化一条链项:`provider/model` 形式,且两段均非空。 */
 export function parseChainEntry(
   raw: string,
   index: number,
+  label = 'default',
 ): { provider: string; model: string } | { error: string } {
+  // 错误文案带归属上下文:全局链用 fallbackChains[i],角色链用
+  // roleChains["<role>"][i]——排障时能直接定位配置来源(0.8.0 起)。
+  const where =
+    label === 'default'
+      ? `fallbackChains[${index}]`
+      : `roleChains["${label}"][${index}]`;
   if (typeof raw !== 'string' || raw.length === 0) {
-    return { error: `fallbackChains[${index}] must be a non-empty string` };
+    return { error: `${where} must be a non-empty string` };
   }
   const slash = raw.indexOf('/');
   if (slash <= 0 || slash === raw.length - 1) {
     return {
-      error: `fallbackChains[${index}] = ${JSON.stringify(raw)} is not in "provider/model" form`,
+      error: `${where} = ${JSON.stringify(raw)} is not in "provider/model" form`,
     };
   }
   const provider = raw.slice(0, slash);
   const model = raw.slice(1 + slash);
   if (provider.length === 0 || model.length === 0) {
     return {
-      error: `fallbackChains[${index}] = ${JSON.stringify(raw)} has empty provider or model`,
+      error: `${where} = ${JSON.stringify(raw)} has empty provider or model`,
     };
   }
   return { provider, model };
@@ -334,20 +367,28 @@ export function parseChainEntry(
 
 /**
  * 把任一形态(string 或 object)归一为 ChainEntry。
+ * `label`(0.8.0 起)标记该条链项的归属角色;缺省/空串回落 `default`。
  * 失败时返回 `{error}`,与 parseChainEntry 风格一致。
  */
 export function normalizeChainEntry(
   raw: unknown,
   index: number,
+  label = 'default',
 ): ChainEntry | { error: string } {
+  // 错误文案带归属上下文(与 parseChainEntry 同一规则,见其 where 注释)。
+  const where =
+    label === 'default'
+      ? `fallbackChains[${index}]`
+      : `roleChains["${label}"][${index}]`;
   if (typeof raw === 'string') {
-    const parsed = parseChainEntry(raw, index);
+    const parsed = parseChainEntry(raw, index, label);
     if ('error' in parsed) return parsed;
     return {
       provider: parsed.provider,
       model: parsed.model,
       displayName: `${parsed.provider}/${parsed.model}`,
       description: '',
+      label,
       // string 形态(旧配置)不带覆盖字段——缺省即沿用会话原值,零回归。
     };
   }
@@ -364,7 +405,7 @@ export function normalizeChainEntry(
     const model = typeof obj.model === 'string' ? obj.model : '';
     if (provider.length === 0 || model.length === 0) {
       return {
-        error: `fallbackChains[${index}] object must have non-empty "provider" and "model"`,
+        error: `${where} object must have non-empty "provider" and "model"`,
       };
     }
     // 候选级参数覆盖(缺省 = 缺键,即沿用会话原值):
@@ -378,7 +419,7 @@ export function normalizeChainEntry(
     if (effortRaw !== undefined && effortRaw !== null && effortRaw !== '') {
       if (typeof effortRaw !== 'string') {
         return {
-          error: `fallbackChains[${index}].reasoningEffort must be a non-empty string (adapter-owned effort id)`,
+          error: `${where}.reasoningEffort must be a non-empty string (adapter-owned effort id)`,
         };
       }
       reasoningEffort = effortRaw;
@@ -393,7 +434,7 @@ export function normalizeChainEntry(
       const n = Number(maxTokensRaw);
       if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) {
         return {
-          error: `fallbackChains[${index}].maxTokens must be a positive integer (token count)`,
+          error: `${where}.maxTokens must be a positive integer (token count)`,
         };
       }
       maxTokens = n;
@@ -406,12 +447,13 @@ export function normalizeChainEntry(
           ? obj.displayName
           : `${provider}/${model}`,
       description: typeof obj.description === 'string' ? obj.description : '',
+      label,
       ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
       ...(maxTokens !== undefined ? { maxTokens } : {}),
     };
   }
   return {
-    error: `fallbackChains[${index}] must be a string or object`,
+    error: `${where} must be a string or object`,
   };
 }
 
@@ -422,6 +464,8 @@ export interface ResolvedConfig {
   chain: ReadonlyArray<{ provider: string; model: string }>;
   /** 链中每项的规整形态(含 displayName / description);state 不直接用,留作未来扩展。 */
   entries: ReadonlyArray<ChainEntry>;
+  /** 角色级链(0.8.0 起):key=角色 id(如 "subagent"),value=该角色专属链项;永不包含 `default` 角色。 */
+  roleChains: RoleChains;
   /** 单次请求最多切换候选次数;0 = 链长(默认行为) */
   maxRetries: number;
   baseDelayMs: number;
@@ -490,6 +534,7 @@ export function resolveConfig(input: unknown): ResolvedConfig {
   const raw = (unwrapVolatile(input) ?? {}) as {
     enabled?: unknown;
     fallbackChains?: unknown;
+    roleChains?: unknown;
     maxRetries?: unknown;
     baseDelayMs?: unknown;
     maxDelayMs?: unknown;
@@ -520,6 +565,42 @@ export function resolveConfig(input: unknown): ResolvedConfig {
       throw new Error(`Invalid dsh-llm-fallback config: ${norm.error}`);
     }
     entries.push(norm);
+  }
+  // 角色级链(0.8.0 起):roleChains 是 { 角色id: 链项数组 } 字典。
+  // 每个角色的链项独立归一;`default` 键被明确忽略(全局链永远是默认
+  // 角色,见配置文档——default 恒为全局兜底,不参与角色层)。
+  // 同一条链项可同时出现在多个角色链(冷却共享,按 provider/model 键)。
+  const roleRaw = raw.roleChains;
+  const roleChains = new Map<string, ReadonlyArray<ChainEntry>>();
+  const roleErr = (msg: string): Error =>
+    new Error(`Invalid dsh-llm-fallback config: ${msg}`);
+  if (roleRaw !== undefined && roleRaw !== null) {
+    if (typeof roleRaw !== 'object' || Array.isArray(roleRaw)) {
+      throw roleErr(
+        'roleChains must be a dictionary of role id to candidate chain',
+      );
+    }
+    for (const [roleKey, chainVal] of Object.entries(
+      roleRaw as Record<string, unknown>,
+    )) {
+      const role = normalizeRole(roleKey, roleKey);
+      if (role === 'default') continue; // default 恒为全局兜底,显式忽略
+      const arr = Array.isArray(chainVal) ? chainVal : null;
+      if (!arr) {
+        throw roleErr(
+          `roleChains["${roleKey}"] must be an array of chain entries`,
+        );
+      }
+      const items: ChainEntry[] = [];
+      for (let i = 0; i < arr.length; i++) {
+        const norm = normalizeChainEntry(arr[i], i, role);
+        if ('error' in norm) {
+          throw roleErr(norm.error);
+        }
+        items.push(norm);
+      }
+      roleChains.set(role, items);
+    }
   }
   const chain: Array<{ provider: string; model: string }> = entries.map(
     (e) => ({ provider: e.provider, model: e.model }),
@@ -604,6 +685,7 @@ export function resolveConfig(input: unknown): ResolvedConfig {
     enabled,
     chain,
     entries,
+    roleChains,
     maxRetries: Math.max(maxRetries, 1), // 至少 1(否则什么都做不了)
     baseDelayMs,
     maxDelayMs,
@@ -741,6 +823,15 @@ export const Config = Schema.object({
       desc(
         'Ordered fallback candidates — the model selected in the session UI is the primary and is not configured here; tried in order when the session model fails',
         '回退候选队列(不含主模型——会话页面指定的模型即事实主模型),失败后按顺序切换',
+      ),
+    ),
+  ),
+  roleChains: volatileField(
+    setDescription(
+      Schema.dict(Schema.array(ChainEntrySchema)).default({}),
+      desc(
+        'Role-scoped fallback chains (0.8.0): map role id (e.g. "subagent") to its own ordered candidate list. Requests from that role use its chain first; roles without a chain fall back to the global fallbackChains. A candidate may appear in several role chains — cooldown state is shared by provider/model regardless of role. The "default" key is ignored (the global chain is always the default role)',
+        '角色级回退链(0.8.0):按角色 id(如 "subagent")映射到该角色专属的有序候选列表。该角色的请求优先使用其角色链;未配置的角色回落全局 fallbackChains。同一候选可出现在多个角色链——冷却状态按 provider/model 共享,与角色无关。"default" 键被忽略(全局链恒为默认角色)',
       ),
     ),
   ),
