@@ -19,6 +19,11 @@ import {
   SKILL_DESCRIPTION,
   SKILL_NAME,
 } from './skill-content.ts';
+import {
+  REVIEW_SKILL_CONTENT,
+  REVIEW_SKILL_DESCRIPTION,
+  REVIEW_SKILL_NAME,
+} from './review-skill-content.ts';
 import { buildSections } from './sections.ts';
 import { buildPatentTools } from './tools.ts';
 
@@ -65,15 +70,28 @@ export function apply(ctx: Context, configInput?: unknown): void {
   }
 
   // 4. 内嵌方法论 skill（runtime 注册，模型可按需加载；卸载即注销）。
+  //    两份：patent-disclosure（撰写侧）+ patent-draft-review（审查侧，0.2.0）。
   ctx.effect(() => {
-    return ctx.skills.register({
-      name: SKILL_NAME,
-      description: SKILL_DESCRIPTION,
-      source: 'bundled',
-      content: SKILL_CONTENT,
-      invocation: { modelInvocable: true, userInvocable: true },
-    });
-  }, 'dsh-patent: skill');
+    const disposers = [
+      {
+        name: SKILL_NAME,
+        description: SKILL_DESCRIPTION,
+        source: 'bundled' as const,
+        content: SKILL_CONTENT,
+        invocation: { modelInvocable: true, userInvocable: true },
+      },
+      {
+        name: REVIEW_SKILL_NAME,
+        description: REVIEW_SKILL_DESCRIPTION,
+        source: 'bundled' as const,
+        content: REVIEW_SKILL_CONTENT,
+        invocation: { modelInvocable: true, userInvocable: true },
+      },
+    ].map((skill) => ctx.skills.register(skill));
+    return () => {
+      for (const dispose of disposers) dispose();
+    };
+  }, 'dsh-patent: skills');
 
   // 5. 注册工具（disposer 自动附着插件，卸载即注销；config 每次执行现读）。
   const tools = buildPatentTools(
@@ -83,7 +101,7 @@ export function apply(ctx: Context, configInput?: unknown): void {
     ctx.tools.register(tool);
   }
   console.log(
-    `[${name}] registered ${tools.length} patent tools + skill ${SKILL_NAME}`,
+    `[${name}] registered ${tools.length} patent tools + skills ${SKILL_NAME}, ${REVIEW_SKILL_NAME}`,
   );
 }
 
@@ -101,3 +119,8 @@ export {
   SKILL_DESCRIPTION,
   SKILL_CONTENT,
 } from './skill-content.ts';
+export {
+  REVIEW_SKILL_NAME,
+  REVIEW_SKILL_DESCRIPTION,
+  REVIEW_SKILL_CONTENT,
+} from './review-skill-content.ts';
