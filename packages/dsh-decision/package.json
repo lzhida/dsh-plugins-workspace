@@ -1,0 +1,36 @@
+{
+  "name": "@zhidal/dsh-decision",
+  "description": "dsh-decision 决策域组合包（骨架阶段）：把「需要人拍板的决策点」做成可插拔的门控插件，按 <决策点>-gate 命名。本阶段只落 ask-gate 空壳——注册与出厂 legacy 模式 schema 兼容的同名 ask_user_question 工具，执行直通宿主 userQuestions 通道（总开关默认关闭＝行为与出厂完全一致），门控逻辑与决策模型调用留给后续卡。",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/cordis.d.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./ask-gate": "./src/entries/ask-gate.ts",
+    "./core": "./src/core/index.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4"
+  }
+}

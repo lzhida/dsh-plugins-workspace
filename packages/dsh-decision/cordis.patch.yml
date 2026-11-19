@@ -1,0 +1,33 @@
+# dsh-decision bundle 层：决策域插件行 + ask_user_question 让位。
+#
+# 为什么用相对路径
+#   loader 的 anchorInsertedPluginNames() 会把 patch 条目里的相对路径转成
+#   file URL（基准 = 本 patch 文件所在目录），于是同一个包内可以放多个插件
+#   入口文件，各自导出自己的 name / apply / Config——而路径与「包被装到
+#   哪儿」（link: 源码目录 / npm 包目录）无关。决策域按 <决策点>-gate 命名，
+#   后续 2/4、3/4 追加新入口即在此列表续行。
+#
+# 让位规则（本包的关键约束）
+#   宿主工具注册面语义：同一层内重复注册同名工具会失败。ask-gate 行要接管
+#   模型侧的 ask_user_question，就必须让出厂行
+#   `@deepseek-ai/dsh-tool-ask-user`（出厂预设里的 `- id: tool-ask-user`）
+#   停用，否则两个插件行争抢同一个工具名。
+#   让位后提问能力由 ask-gate 行提供：工具名、参数 schema、输出 schema 与
+#   宿主错误语义（ASK_ABORTED / EMPTY_QUESTIONS / CALLER_NOT_LIVE /
+#   DELEGATED_CALLER / BAD_INTENT / NO_PROVIDER）保持一致，1/4 阶段直通，
+#   用户侧行为与出厂无差别。
+#
+# 规则
+#   - 每行的 id 必须与入口文件导出的 name 一致（loader 以 id 定位行、
+#     以 name 找模块）；
+#   - profile 侧不要再写这些行的 insert:——重复声明会让同一插件被实例化
+#     两次、同名工具注册两次。profile 只用「- id: <同一 id> + config」
+#     覆盖配置。
+
+- insert:
+    - id: ask-gate
+      name: './src/entries/ask-gate.ts'
+
+# 让位：出厂提问工具行停用，由 ask-gate 行接管同名工具面。
+- id: tool-ask-user
+  disabled: true
