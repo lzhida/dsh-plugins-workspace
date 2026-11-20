@@ -154,7 +154,7 @@ github-release <tag>`(需 gh 已安装并登录,或配置 GH_TOKEN)。创建步�
 - **版本合法性**:打 tag 前校验清单版本为合法 semver(`INVALID_CURRENT_VERSION`),
   防止把垃圾版本打进 tag;版本递增/降级防护由 Changesets 负责。
 - **workspace 模式**:只支持 `pnpm-workspace.yaml` 中字面目录与单层通配
-  (`packages/*`);复杂 glob 显式报错,不静默漏包。
+  (`plugins/*`);复杂 glob 显式报错,不静默漏包。
 - **私有包**:`private: true` 的包经 `privatePackages.version: true` 同样参与
   版本递增与 CHANGELOG;tag 是仓库内的发布标记,与 npm publish 解耦,
   仅 `@zhidal/dsh-llm-fallback` 走 npm 公开发行。

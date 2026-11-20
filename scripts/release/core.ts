@@ -46,7 +46,7 @@ export interface WorkspacePackage {
   readonly version: string;
   /** package.json 的 private 字段(true 的包不发布 npm,仅做仓库内版本标记)。 */
   readonly isPrivate: boolean;
-  /** 相对仓库根目录的 posix 风格目录,如 `packages/dsh-taskboard`。 */
+  /** 相对仓库根目录的 posix 风格目录,如 `plugins/dsh-taskboard`。 */
   readonly dir: string;
 }
 

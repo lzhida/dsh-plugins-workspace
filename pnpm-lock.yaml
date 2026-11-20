@@ -51,7 +51,7 @@ importers:
         specifier: ^5.0.1
         version: 5.0.1(@opentelemetry/api@1.9.1)(@types/node@26.6.2)(jsdom@25.0.1)(vite@8.3.0(@types/node@26.6.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13)(yaml@2.9.1))
 
-  packages/dsh-anytype:
+  plugins/dsh-anytype:
     dependencies:
       '@deepseek-ai/dsh-tools':
         specifier: 0.2.1-rc.2
@@ -103,7 +103,7 @@ importers:
         specifier: ^4.3.3
         version: 4.3.3
 
-  packages/dsh-decision:
+  plugins/dsh-decision:
     dependencies:
       '@deepseek-ai/dsh-tools':
         specifier: 0.2.1-rc.2
@@ -116,7 +116,7 @@ importers:
         specifier: ^4.0.4
         version: 4.0.5(@deepseek-ai/cordis-plugin-include@1.0.10)(@deepseek-ai/cordis-plugin-loader@1.0.6)
 
-  packages/dsh-llm-fallback:
+  plugins/dsh-llm-fallback:
     dependencies:
       '@deepseek-ai/schemastery':
         specifier: ^3.18.4
@@ -174,7 +174,7 @@ importers:
         specifier: ^4.3.3
         version: 4.3.3
 
-  packages/dsh-patent:
+  plugins/dsh-patent:
     dependencies:
       esbuild:
         specifier: ^0.28.2
@@ -196,7 +196,7 @@ importers:
         specifier: ^3.18.4
         version: 3.18.5
 
-  packages/dsh-victauri:
+  plugins/dsh-victauri:
     devDependencies:
       '@deepseek-ai/cordis':
         specifier: ~4.0.5

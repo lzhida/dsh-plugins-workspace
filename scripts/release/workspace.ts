@@ -15,7 +15,7 @@ interface ManifestJson {
 
 /**
  * 解析 pnpm-workspace.yaml 中的 `packages:` 模式列表。
- * 仅支持字面目录(`packages/foo`)与单层通配(`packages/*`),
+ * 仅支持字面目录(`plugins/foo`)与单层通配(`plugins/*`),
  * 复杂 glob(如 `**`)不被支持并显式报错,避免静默漏包。
  */
 export function loadWorkspacePatterns(rootDir: string): string[] {
@@ -66,7 +66,7 @@ function expandPattern(rootDir: string, pattern: string): string[] {
   if (pattern.includes('**') || starIndex !== segments.length - 1) {
     throw new ReleaseError(
       'WORKSPACE_CONFIG',
-      `不支持的 workspace 模式 "${pattern}":本工具仅支持字面目录与单层通配(如 packages/*)`,
+      `不支持的 workspace 模式 "${pattern}":本工具仅支持字面目录与单层通配(如 plugins/*)`,
     );
   }
   const base = join(rootDir, ...segments.slice(0, starIndex));

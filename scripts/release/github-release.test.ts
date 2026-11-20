@@ -35,10 +35,10 @@ function makeFixture(options: FixtureOptions = {}): string {
   dirs.push(root);
   writeFileSync(
     join(root, 'pnpm-workspace.yaml'),
-    "packages:\n  - 'packages/*'\n",
+    "packages:\n  - 'plugins/*'\n",
     'utf8',
   );
-  const pkgDir = join(root, 'packages', 'dsh-demo');
+  const pkgDir = join(root, 'plugins', 'dsh-demo');
   mkdirSync(pkgDir, { recursive: true });
   writeFileSync(
     join(pkgDir, 'package.json'),

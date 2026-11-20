@@ -2,7 +2,7 @@
  * 包 CHANGELOG 的版本段提取与发布内容组装(纯函数 + 只读文件)。
  *
  * 内容源唯一原则:Changesets 在 `changeset version` 时把每个版本的更新
- * 说明写入 `packages/<pkg>/CHANGELOG.md`(标题行 `## {version}`)。发布链的
+ * 说明写入 `plugins/<pkg>/CHANGELOG.md`(标题行 `## {version}`)。发布链的
  * 两处"给人看"的内容——annotated tag 的 message 与 GitHub Release 的
  * release notes——都从同一段落提取,保证 tag 页 / Release 页 / CHANGELOG
  * 三处内容一致。
@@ -46,7 +46,7 @@ export function extractChangelogSection(
 
 /**
  * 读取包 CHANGELOG 中指定版本的段落:文件不存在或段落缺失 → null。
- * pkgDir 为相对仓库根的包目录(如 `packages/dsh-llm-fallback`)。
+ * pkgDir 为相对仓库根的包目录(如 `plugins/dsh-llm-fallback`)。
  */
 export function readChangelogSection(
   rootDir: string,

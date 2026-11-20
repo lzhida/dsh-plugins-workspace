@@ -1,7 +1,7 @@
 ---
 name: dsh-plugin-dev
-description: 开发与维护 DeepSeek Harness (dsh) 插件及 bundle 包内的插件行——脚手架新插件包、cordis 契约与 ctx.effect 生命周期、defineTool 工具与类型契约、新增/下线/归档插件行的完整接线面与留痕面、客户端侧栏面板插槽注册、真实 test profile 实例的加载级断言与活体全链路验证，直到中文 Conventional Commits 提交门禁与看板交接。当用户要创建、修改、验证、下线或归档 dsh 插件（packages/*/src、apply(ctx)、ctx.effect、defineTool、cordis.patch.yml insert 行、sidebar.panellist、e2e 自验、提交收尾）时使用。
-whenToUse: 触发词——「写个 dsh 插件」「加一个插件行」「新增工具」「下线/归档某个插件行」「插件侧栏面板」「插件 e2e 自验」「起 test profile 实例验证」「插件改动提交」。也用于 bundle 单包（packages/dsh-anytype 一类）内新增/下线插件行时的接线清单、defineTool 类型契约与工具计数口径对齐、cordis.patch.yml insert 行增删、守卫测试改写、加载级三断言与直驱活体后端的 e2e 脚本、门禁四连与中文 Conventional Commits 提交收尾。
+description: 开发与维护 DeepSeek Harness (dsh) 插件及 bundle 包内的插件行——脚手架新插件包、cordis 契约与 ctx.effect 生命周期、defineTool 工具与类型契约、新增/下线/归档插件行的完整接线面与留痕面、客户端侧栏面板插槽注册、真实 test profile 实例的加载级断言与活体全链路验证，直到中文 Conventional Commits 提交门禁与看板交接。当用户要创建、修改、验证、下线或归档 dsh 插件（plugins/*/src、apply(ctx)、ctx.effect、defineTool、cordis.patch.yml insert 行、sidebar.panellist、e2e 自验、提交收尾）时使用。
+whenToUse: 触发词——「写个 dsh 插件」「加一个插件行」「新增工具」「下线/归档某个插件行」「插件侧栏面板」「插件 e2e 自验」「起 test profile 实例验证」「插件改动提交」。也用于 bundle 单包（plugins/dsh-anytype 一类）内新增/下线插件行时的接线清单、defineTool 类型契约与工具计数口径对齐、cordis.patch.yml insert 行增删、守卫测试改写、加载级三断言与直驱活体后端的 e2e 脚本、门禁四连与中文 Conventional Commits 提交收尾。
 ---
 
 # dsh 插件开发工作流
@@ -13,14 +13,14 @@ whenToUse: 触发词——「写个 dsh 插件」「加一个插件行」「新�
 ### 1. 仓库速览
 
 - 插件以 **TS 源码** 被宿主 dsh loader 直接加载——**默认无构建步骤、不产出 dist**，`package.json` 的 `main` 直指 `src/index.ts`（例外：`dsh-llm-fallback` 为构建式发行，`main` 指 esbuild 打包的 `dist/index.js`）。
-- 一个插件一个目录：`packages/<kebab-name>/`；测试与源码同目录 `src/*.test.ts`（vitest）。
+- 一个插件一个目录：`plugins/<kebab-name>/`；测试与源码同目录 `src/*.test.ts`（vitest）。
 - 全仓 ESM（`type: "module"`）+ `verbatimModuleSyntax`：类型导入必须写 `import type`。
-- **bundle 单包多插件行**（`packages/dsh-anytype` 一类）：一个 npm 包内并存多个插件行，每行 = `src/entries/<name>.ts` 入口 + `src/<域>/**` 实现；**包级 `cordis.patch.yml` 里的 `- insert:` 行决定哪些行被宿主装载**，`src/index.ts` 做 barrel 汇总导出。
+- **bundle 单包多插件行**（`plugins/dsh-anytype` 一类）：一个 npm 包内并存多个插件行，每行 = `src/entries/<name>.ts` 入口 + `src/<域>/**` 实现；**包级 `cordis.patch.yml` 里的 `- insert:` 行决定哪些行被宿主装载**，`src/index.ts` 做 barrel 汇总导出。
 
 ### 2. 新插件脚手架（照抄即可）
 
 ```
-packages/my-plugin/
+plugins/my-plugin/
 ├── package.json
 ├── tsconfig.json
 └── src/
@@ -128,7 +128,7 @@ export function apply(ctx: Context): void {
 #### 5.1 结构
 
 ```
-packages/dsh-anytype/
+plugins/dsh-anytype/
 ├── package.json            # exports 子路径 + description
 ├── cordis.patch.yml        # 各插件行的 - insert: 注册行（决定装载）
 ├── README.md               # 插件行表
@@ -184,7 +184,7 @@ packages/dsh-anytype/
 不要只看当前工作树就断言「代码不存在」。用 git 历史定位：
 
 ```sh
-git log --oneline --all -- packages/<name>          # 该包的历史提交
+git log --oneline --all -- plugins/<name>          # 该包的历史提交
 git log --all --grep=<关键词>                        # 按关键词找并入 bundle 的那次提交
 ```
 
@@ -230,7 +230,7 @@ e2e **无专用脚本**：直接用 `pnpm dsh` 原生命令，在独立的 **`te
 pnpm --filter <pkg-name> build
 # 1) link: 安装（--profile 必须置于 plugin 子命令之后，否则 too many arguments；
 #    link: 后必须是绝对路径——相对路径按 pnpm 语义解析到 profile 目录而非 CWD）
-pnpm dsh plugin --profile test add link:<仓库绝对路径>/packages/<name>
+pnpm dsh plugin --profile test add link:<仓库绝对路径>/plugins/<name>
 #    临时插件同理：link:<仓库绝对路径>/.agents/tmp/<kebab>
 # 2) 核对注册：profile/package.json 的 dependencies 与 dsh.profile.bundles 应含被测包
 ```
@@ -239,14 +239,14 @@ pnpm dsh plugin --profile test add link:<仓库绝对路径>/packages/<name>
 
 | 安装方式 | 命令示例 | 适用 | 已知约束 |
 |----------|----------|------|----------|
-| `link:` | `plugin add link:<abs>/packages/<n>` | 默认；本地开发迭代 | TS 源码入口依赖 Node 原生 type-stripping（仅 `link:` 下可用） |
+| `link:` | `plugin add link:<abs>/plugins/<n>` | 默认；本地开发迭代 | TS 源码入口依赖 Node 原生 type-stripping（仅 `link:` 下可用） |
 | npm registry | `plugin add @scope/<pkg>@<exact>` | 验证实体安装 / 修复 e2e | 必须**精确版本号**（registry 元数据分钟级边缘缓存，`@latest` 易命中未传播旧版）；实体安装必须 JS 入口（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`） |
 | git | `plugin add <git-url>#<ref>` | 验证 git 安装 | 同样必须 JS 入口；git 依赖消费方需 `allowBuilds` 放行 |
 | tarball | `plugin add <pkg>-<ver>.tgz` | 验证打包完整性 | 同样必须 JS 入口；首次 add 中断重跑会丢 `dsh.profile.bundles` 注册 |
 
 构建式插件（如 `dsh-llm-fallback`）无论哪种安装方式都先 build 一次，再加 client bundle（`./client/index.js` 入口）；`cordis.patch.yml` 内的 `name: <pkg>` 与 `package.json#name` 必须一致，否则 web boot 静默失败。
 
-> bundle 单包场景：被测对象是**包内的一个插件行**时，装的是**包**（`link:<abs>/packages/<bundle>`），行是否装载由包级 `cordis.patch.yml` 的 insert 行决定——改行后需重启/重载实例再断言。
+> bundle 单包场景：被测对象是**包内的一个插件行**时，装的是**包**（`link:<abs>/plugins/<bundle>`），行是否装载由包级 `cordis.patch.yml` 的 insert 行决定——改行后需重启/重载实例再断言。
 
 #### 7.3 Step 3 — 启动服务 + 浏览器验证工具预检（dsh-browser 优先，MCP 回退）
 

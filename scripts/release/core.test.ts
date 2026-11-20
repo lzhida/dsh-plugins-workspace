@@ -14,7 +14,7 @@ function pkg(name: string, version: string): WorkspacePackage {
     shortName,
     version,
     isPrivate: true,
-    dir: `packages/${shortName}`,
+    dir: `plugins/${shortName}`,
   };
 }
 

@@ -9,7 +9,7 @@ import {
   readChangelogSection,
 } from './changelog.ts';
 
-/** 与仓库 packages/dsh-llm-fallback/CHANGELOG.md 相同结构的 changesets 输出。 */
+/** 与仓库 plugins/dsh-llm-fallback/CHANGELOG.md 相同结构的 changesets 输出。 */
 const CHANGELOG = `# @zhidal/dsh-llm-fallback
 
 ## 0.5.0
@@ -89,7 +89,7 @@ describe('readChangelogSection', () => {
   function makePkgDir(files: Record<string, string>): string {
     const root = mkdtempSync(join(tmpdir(), 'dsh-changelog-test-'));
     dirs.push(root);
-    const pkgDir = join(root, 'packages', 'dsh-demo');
+    const pkgDir = join(root, 'plugins', 'dsh-demo');
     mkdirSync(pkgDir, { recursive: true });
     for (const [name, content] of Object.entries(files)) {
       writeFileSync(join(pkgDir, name), content, 'utf8');
@@ -99,14 +99,14 @@ describe('readChangelogSection', () => {
 
   it('读取包目录下 CHANGELOG.md 的对应版本段', () => {
     const root = makePkgDir({ 'CHANGELOG.md': CHANGELOG });
-    expect(readChangelogSection(root, 'packages/dsh-demo', '0.5.0')).toContain(
+    expect(readChangelogSection(root, 'plugins/dsh-demo', '0.5.0')).toContain(
       '冷却跳过',
     );
   });
 
   it('CHANGELOG.md 不存在 → null(降级,不抛错)', () => {
     const root = makePkgDir({ 'package.json': '{}' });
-    expect(readChangelogSection(root, 'packages/dsh-demo', '0.5.0')).toBeNull();
+    expect(readChangelogSection(root, 'plugins/dsh-demo', '0.5.0')).toBeNull();
   });
 });
 

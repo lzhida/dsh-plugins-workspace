@@ -4,6 +4,6 @@ coverage/
 pnpm-lock.yaml
 .agents/
 
-# 客户端打包产物（esbuild 生成，见 packages/*/scripts/build-client.ts）
-packages/*/web/app.js
-packages/*/client/index.js
+# 客户端打包产物（esbuild 生成，见 plugins/*/scripts/build-client.ts）
+plugins/*/web/app.js
+plugins/*/client/index.js

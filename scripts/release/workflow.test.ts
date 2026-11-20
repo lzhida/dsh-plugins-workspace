@@ -41,7 +41,7 @@ function writePackage(
   manifest: Record<string, unknown>,
   changelog?: string,
 ): void {
-  const pkgDir = join(rootDir, 'packages', shortName);
+  const pkgDir = join(rootDir, 'plugins', shortName);
   mkdirSync(pkgDir, { recursive: true });
   writeFileSync(
     join(pkgDir, 'package.json'),
@@ -65,7 +65,7 @@ function makeFixture(): string {
   git(['config', 'user.email', 'test@example.com'], dir);
   writeFileSync(
     join(dir, 'pnpm-workspace.yaml'),
-    "packages:\n  - 'packages/*'\n",
+    "packages:\n  - 'plugins/*'\n",
     'utf8',
   );
   writePackage(dir, 'dsh-alpha', {
@@ -116,11 +116,11 @@ describe('release workflow(临时 git 仓库端到端)', () => {
       shortName: 'dsh-alpha',
       version: '0.1.0',
       isPrivate: true,
-      dir: 'packages/dsh-alpha',
+      dir: 'plugins/dsh-alpha',
     });
     expect(packages[1]).toMatchObject({
       isPrivate: false,
-      dir: 'packages/dsh-beta',
+      dir: 'plugins/dsh-beta',
     });
   });
 
@@ -145,7 +145,7 @@ describe('release workflow(临时 git 仓库端到端)', () => {
     // makeFixture 之后补写:给 dsh-beta 加 CHANGELOG(仍纳入工作树会弄脏 →
     // 直接提交后再打 tag,保证 clean 检查通过)
     writeFileSync(
-      join(root, 'packages', 'dsh-beta', 'CHANGELOG.md'),
+      join(root, 'plugins', 'dsh-beta', 'CHANGELOG.md'),
       '# @zhidal/dsh-beta\n\n## 1.2.3\n\n### Minor Changes\n\n- abc1234: 新增演示功能\n',
       'utf8',
     );
@@ -175,7 +175,7 @@ describe('release workflow(临时 git 仓库端到端)', () => {
   it('tagPackage 包 CHANGELOG 无该版本段落时降级为纯 subject', () => {
     const root = makeFixture();
     writeFileSync(
-      join(root, 'packages', 'dsh-beta', 'CHANGELOG.md'),
+      join(root, 'plugins', 'dsh-beta', 'CHANGELOG.md'),
       '# @zhidal/dsh-beta\n\n## 0.0.1\n\n- 旧版本内容\n',
       'utf8',
     );
@@ -310,7 +310,7 @@ describe('release workflow(临时 git 仓库端到端)', () => {
     fixtures.push(dir);
     writeFileSync(
       join(dir, 'pnpm-workspace.yaml'),
-      "packages:\n  - 'packages/*'\n",
+      "packages:\n  - 'plugins/*'\n",
       'utf8',
     );
     writePackage(dir, 'dsh-alpha', {
@@ -327,7 +327,7 @@ describe('release workflow(临时 git 仓库端到端)', () => {
     fixtures.push(dir);
     writeFileSync(
       join(dir, 'pnpm-workspace.yaml'),
-      "packages:\n  - 'packages/*'\n",
+      "packages:\n  - 'plugins/*'\n",
       'utf8',
     );
     writePackage(dir, 'dsh-nover', { name: '@zhidal/dsh-nover' });

@@ -1,7 +1,7 @@
 /**
  * 真实 workspace 可枚举性回归测试。
  *
- * `scripts/release/*.test.ts` 全部用 mkdtemp 临时 fixture(packages/dsh-alpha
+ * `scripts/release/*.test.ts` 全部用 mkdtemp 临时 fixture(plugins/dsh-alpha
  * 等),从不针对真实仓库;一旦真实 workspace 的包目录或发布约定漂移
  * (例如包目录名与包名短名不一致、tag 前缀不再匹配 release.yml 的触发形态、
  * 新包漏了 npm scope),这些单测仍全绿,而 `pnpm release list/tag/publish`
@@ -64,7 +64,7 @@ describe('release-workspace(真实仓库)', () => {
   it('dsh-victauri 已入 workspace 且为公开包(版本不写死,随发布推进)', () => {
     const victauri = resolvePackageName('dsh-victauri', packages);
     expect(victauri.name).toBe('@zhidal/dsh-victauri');
-    expect(victauri.dir).toBe('packages/dsh-victauri');
+    expect(victauri.dir).toBe('plugins/dsh-victauri');
     expect(victauri.version).toMatch(/^\d+\.\d+\.\d+$/);
     expect(victauri.isPrivate).toBe(false);
     expect(tagFor(victauri.shortName, victauri.version)).toBe(
@@ -74,10 +74,10 @@ describe('release-workspace(真实仓库)', () => {
 
   it('按短名与全名解析 dsh-victauri 都唯一命中', () => {
     expect(resolvePackageName('dsh-victauri', packages).dir).toBe(
-      'packages/dsh-victauri',
+      'plugins/dsh-victauri',
     );
     expect(resolvePackageName('@zhidal/dsh-victauri', packages).dir).toBe(
-      'packages/dsh-victauri',
+      'plugins/dsh-victauri',
     );
   });
 });

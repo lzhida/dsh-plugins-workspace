@@ -9,7 +9,7 @@ export default tseslint.config(
       '**/dist/**',
       '**/coverage/**',
       '.agents/**',
-      // 提交的客户端打包产物（esbuild 生成，见 packages/*/scripts/build-client.ts）
+      // 提交的客户端打包产物（esbuild 生成，见 plugins/*/scripts/build-client.ts）
       '**/web/app.js',
       '**/client/index.js',
     ],

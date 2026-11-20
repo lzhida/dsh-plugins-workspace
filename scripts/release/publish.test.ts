@@ -69,7 +69,7 @@ function pkg(
     shortName,
     version,
     isPrivate,
-    dir: `packages/${shortName}`,
+    dir: `plugins/${shortName}`,
   };
 }
 
@@ -93,7 +93,7 @@ function writePackage(
   shortName: string,
   manifest: Record<string, unknown>,
 ): void {
-  const pkgDir = join(rootDir, 'packages', shortName);
+  const pkgDir = join(rootDir, 'plugins', shortName);
   mkdirSync(pkgDir, { recursive: true });
   writeFileSync(
     join(pkgDir, 'package.json'),
@@ -108,7 +108,7 @@ function makePlainFixture(): string {
   fixtures.push(dir);
   writeFileSync(
     join(dir, 'pnpm-workspace.yaml'),
-    "packages:\n  - 'packages/*'\n",
+    "packages:\n  - 'plugins/*'\n",
     'utf8',
   );
   writePackage(dir, 'dsh-alpha', {
@@ -432,7 +432,7 @@ describe('release publish(临时 workspace 端到端)', () => {
       pkg: { name: '@zhidal/dsh-beta', version: '1.2.3' },
     });
     expect(outcome.command).toBe(
-      'pnpm publish --no-git-checks --access public(cwd: packages/dsh-beta)',
+      'pnpm publish --no-git-checks --access public(cwd: plugins/dsh-beta)',
     );
     expect(outcome.published).toBe(false);
     expect(calls).toEqual([]);
@@ -449,7 +449,7 @@ describe('release publish(临时 workspace 端到端)', () => {
     expect(outcome.published).toBe(true);
     expect(calls).toEqual([
       {
-        cwd: join(root, 'packages', 'dsh-beta'),
+        cwd: join(root, 'plugins', 'dsh-beta'),
         command: 'pnpm',
         args: ['publish', '--no-git-checks', '--access', 'public'],
       },
@@ -468,11 +468,11 @@ describe('release publish(临时 workspace 端到端)', () => {
     });
     expect(outcome.published).toBe(true);
     expect(outcome.command).toBe(
-      'npm publish --access public(cwd: packages/dsh-beta)',
+      'npm publish --access public(cwd: plugins/dsh-beta)',
     );
     expect(calls).toEqual([
       {
-        cwd: join(root, 'packages', 'dsh-beta'),
+        cwd: join(root, 'plugins', 'dsh-beta'),
         command: 'npm',
         args: ['publish', '--access', 'public'],
       },
@@ -490,11 +490,11 @@ describe('release publish(临时 workspace 端到端)', () => {
     });
     expect(outcome.published).toBe(true);
     expect(outcome.command).toBe(
-      'npm stage publish --access public(cwd: packages/dsh-beta)',
+      'npm stage publish --access public(cwd: plugins/dsh-beta)',
     );
     expect(calls).toEqual([
       {
-        cwd: join(root, 'packages', 'dsh-beta'),
+        cwd: join(root, 'plugins', 'dsh-beta'),
         command: 'npm',
         args: ['stage', 'publish', '--access', 'public'],
       },
@@ -655,7 +655,7 @@ describe('release publish(registry 幂等守卫)', () => {
     expect(outcome.skipped).toBe('already-published');
     expect(outcome.probe).toBe('exists');
     expect(outcome.command).toBe(
-      'pnpm publish --no-git-checks --access public(cwd: packages/dsh-beta)',
+      'pnpm publish --no-git-checks --access public(cwd: plugins/dsh-beta)',
     );
     expect(calls).toEqual([]);
     expect(probes).toEqual([{ pkgName: '@zhidal/dsh-beta', version: '1.2.3' }]);
@@ -681,7 +681,7 @@ describe('release publish(registry 幂等守卫)', () => {
     expect(probeCalls).toBe(1);
     expect(calls).toEqual([
       {
-        cwd: join(root, 'packages', 'dsh-beta'),
+        cwd: join(root, 'plugins', 'dsh-beta'),
         command: 'pnpm',
         args: ['publish', '--no-git-checks', '--access', 'public'],
       },

@@ -2,7 +2,7 @@
 
 [English](./README.en.md) | 简体中文
 
-[dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)(DeepSeek Harness)插件仓库——TypeScript + cordis 插件 monorepo。当前收录四个包:[@zhidal/dsh-llm-fallback](./packages/dsh-llm-fallback/README.md)与 [@zhidal/dsh-patent](./packages/dsh-patent/README.md)(已发布 npm)、[@zhidal/dsh-victauri](./packages/dsh-victauri/README.md)(构建式发行,首发版本)与内部私有包 [@zhidal/dsh-anytype](./packages/dsh-anytype/README.md)(private,未发布);三个公开包均为构建式发行,入口为 esbuild 打包的 dist。
+[dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)(DeepSeek Harness)插件仓库——TypeScript + cordis 插件 monorepo。当前收录四个包:[@zhidal/dsh-llm-fallback](./plugins/dsh-llm-fallback/README.md)与 [@zhidal/dsh-patent](./plugins/dsh-patent/README.md)(已发布 npm)、[@zhidal/dsh-victauri](./plugins/dsh-victauri/README.md)(构建式发行,首发版本)与内部私有包 [@zhidal/dsh-anytype](./plugins/dsh-anytype/README.md)(private,未发布);三个公开包均为构建式发行,入口为 esbuild 打包的 dist。
 
 > **纯 AI 开发**:本仓库的全部代码均由 AI 编码代理生成。
 
@@ -10,15 +10,15 @@
 
 ### @zhidal/dsh-llm-fallback
 
-dsh 的模型回退插件:拦截全局 LLM 调用,**会话页面指定的模型**(事实主模型)失败时,按回退队列自动切换到下一个 `provider/model`,**对话不中断**。支持每候选重试次数(`retriesBeforeSwitch`)、失败候选冷却跳过与可视化配置卡,失败码路由只按宿主稳定失败码决策。特性、原理、配置与故障排查详见 [packages/dsh-llm-fallback/README.md](./packages/dsh-llm-fallback/README.md);后续策略演进(时段限制、成本路由等)的盘点与决策清单见 [docs/llm-fallback-roadmap.md](./docs/llm-fallback-roadmap.md)。
+dsh 的模型回退插件:拦截全局 LLM 调用,**会话页面指定的模型**(事实主模型)失败时,按回退队列自动切换到下一个 `provider/model`,**对话不中断**。支持每候选重试次数(`retriesBeforeSwitch`)、失败候选冷却跳过与可视化配置卡,失败码路由只按宿主稳定失败码决策。特性、原理、配置与故障排查详见 [plugins/dsh-llm-fallback/README.md](./plugins/dsh-llm-fallback/README.md);后续策略演进(时段限制、成本路由等)的盘点与决策清单见 [docs/llm-fallback-roadmap.md](./docs/llm-fallback-roadmap.md)。
 
 ### @zhidal/dsh-patent
 
-dsh 的「专利交底」预设包:以发明人模式提供交底书撰写工具行——权利要求结构校验、交底书模板填充(bundled docx / 用户自带模板 / markdown 自填三路径)与格式合规检查,并内嵌方法论 skill。详见 [packages/dsh-patent/README.md](./packages/dsh-patent/README.md)。
+dsh 的「专利交底」预设包:以发明人模式提供交底书撰写工具行——权利要求结构校验、交底书模板填充(bundled docx / 用户自带模板 / markdown 自填三路径)与格式合规检查,并内嵌方法论 skill。详见 [plugins/dsh-patent/README.md](./plugins/dsh-patent/README.md)。
 
 ### @zhidal/dsh-victauri
 
-dsh 的 Tauri 开发测试环境插件:把 [Victauri](https://github.com/4da-systems/Victauri)(Tauri 应用内嵌的 MCP 服务器)暴露的 **35 个调试/测试工具**全量桥接为 dsh 原生工具,并桥接 `victauri` CLI 能力(check / test / doctor / coverage 等),合计 **39 个 dsh 工具**(含 CLI 桥、CLI 探测、工具发现与 `victauri_doctor` 桥接体检)。主通道 REST 直连 Victauri discovery,辅通道 spawn CLI,连接惰性建立。工具清单、配置与故障排查详见 [packages/dsh-victauri/README.md](./packages/dsh-victauri/README.md)。
+dsh 的 Tauri 开发测试环境插件:把 [Victauri](https://github.com/4da-systems/Victauri)(Tauri 应用内嵌的 MCP 服务器)暴露的 **35 个调试/测试工具**全量桥接为 dsh 原生工具,并桥接 `victauri` CLI 能力(check / test / doctor / coverage 等),合计 **39 个 dsh 工具**(含 CLI 桥、CLI 探测、工具发现与 `victauri_doctor` 桥接体检)。主通道 REST 直连 Victauri discovery,辅通道 spawn CLI,连接惰性建立。工具清单、配置与故障排查详见 [plugins/dsh-victauri/README.md](./plugins/dsh-victauri/README.md)。
 
 ## 安装
 
@@ -26,16 +26,16 @@ dsh 的 Tauri 开发测试环境插件:把 [Victauri](https://github.com/4da-sys
 
 ```sh
 dsh plugin add @zhidal/dsh-llm-fallback                       # npm 安装(推荐)
-dsh plugin add link:<仓库绝对路径>/packages/dsh-llm-fallback  # 仓库内开发(link: 必须是绝对路径)
+dsh plugin add link:<仓库绝对路径>/plugins/dsh-llm-fallback  # 仓库内开发(link: 必须是绝对路径)
 
 dsh plugin add @zhidal/dsh-victauri                           # npm 安装(推荐)
-dsh plugin add link:<仓库绝对路径>/packages/dsh-victauri      # 仓库内开发(link: 必须是绝对路径)
+dsh plugin add link:<仓库绝对路径>/plugins/dsh-victauri      # 仓库内开发(link: 必须是绝对路径)
 
 dsh plugin add @zhidal/dsh-patent                             # npm 安装(推荐)
-dsh plugin add link:<仓库绝对路径>/packages/dsh-patent        # 仓库内开发(link: 必须是绝对路径)
+dsh plugin add link:<仓库绝对路径>/plugins/dsh-patent        # 仓库内开发(link: 必须是绝对路径)
 ```
 
-完整安装方式(npm / link / git / tarball)、`allowBuilds` 放行与安装验证见各包 README([dsh-llm-fallback](./packages/dsh-llm-fallback/README.md) / [dsh-victauri](./packages/dsh-victauri/README.md) / [dsh-patent](./packages/dsh-patent/README.md))。
+完整安装方式(npm / link / git / tarball)、`allowBuilds` 放行与安装验证见各包 README([dsh-llm-fallback](./plugins/dsh-llm-fallback/README.md) / [dsh-victauri](./plugins/dsh-victauri/README.md) / [dsh-patent](./plugins/dsh-patent/README.md))。
 
 > **新增 TS 源码入口插件时注意**:TS 源码入口(`main: "src/index.ts"`)仅支持本地 `link:`(绝对路径)安装——`link:` 相对路径按 pnpm 语义解析到 profile 目录,必败;git/npm/tarball 实体安装会被 Node 以 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING` 拒绝。需要实体安装必须像 dsh-llm-fallback 一样以 dist 为入口(esbuild 构建)。
 
@@ -51,7 +51,7 @@ pnpm test           # Vitest,全仓 src/**/*.test.ts
 
 - **构建式发行**:`@zhidal/dsh-llm-fallback` 的 `main` 指向 esbuild 打包的 `dist/index.js`(`pnpm --filter @zhidal/dsh-llm-fallback build` 单独重建)——这是宿主 Node 拒绝对 node_modules 下 `.ts` 文件做 type-stripping 时的唯一可行入口方案;
 - **E2E**:无专用脚本——按 [.agents/skills/dsh-plugin-dev/SKILL.md](./.agents/skills/dsh-plugin-dev/SKILL.md) §5 的手工 CLI 流程,以独立 profile(默认 `test`)启动真实 dsh 实例;插件列表按 profile 隔离,`DSH_HOME` 共享全局 `~/.dsh`(模型凭证不隔离);断言 `[dsh-llm-fallback] plugin loaded` 加载日志、端口可达与 tokened URL 页面健康,测完 `plugin remove` 清理;
-- **新增插件**:仿照 `packages/dsh-llm-fallback/package.json` 建 `packages/<name>/` 即可,`pnpm-workspace.yaml` 自动收录;`@deepseek-ai/cordis` 只放 `devDependencies` 且仅 `import type` 引入(运行时由宿主提供);
+- **新增插件**:仿照 `plugins/dsh-llm-fallback/package.json` 建 `plugins/<name>/` 即可,`pnpm-workspace.yaml` 自动收录;`@deepseek-ai/cordis` 只放 `devDependencies` 且仅 `import type` 引入(运行时由宿主提供);
 - **版本与发布**:Changesets(`pnpm changeset` → `changeset:version`)+ `{短包名}-v{X.Y.Z}` git tag 触发 npm 发布流水线,详见 [.changeset/README.md](./.changeset/README.md) 与 [scripts/release/README.md](./scripts/release/README.md);
 - **提交规范**:中文 Conventional Commits;开发走 `feat/*`、`fix/*` 分支合入 `dev`,验证后合入 `main`。
 - **CI**:GitHub Actions 流水线([.github/workflows/ci.yml](.github/workflows/ci.yml))在 push / PR 面向 `main`、`dev` 时运行,Ubuntu 上 Node 22 / 24 双版本执行与本地一致的 `format:check → lint → typecheck → test` 门禁链;[tests/ci-workflow.test.ts](tests/ci-workflow.test.ts) 作为配置回归测试,守护工作流引用的脚本、门禁顺序与 action 固定版本。e2e 与 npm 发布不在 CI 范围内(前者需真实 dsh 实例与凭证,后者需发布授权)。

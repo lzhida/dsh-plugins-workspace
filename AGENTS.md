@@ -2,22 +2,22 @@
 
 ## Project Overview
 
-dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/cordis`）插件集合，pnpm workspaces 单层结构。插件默认以 TS 源码形态被宿主 dsh loader 直接加载——**没有构建步骤、不产出 dist**；需要实体安装（git/npm/tarball）的插件必须以 JS 为入口。当前包含 `packages/dsh-llm-fallback`、`packages/dsh-patent`、`packages/dsh-victauri`（三者均为构建式发行，见下）与内部私有包 `packages/dsh-anytype`（private，未发布 npm）。
+dsh（deepseek harness）插件 monorepo：TypeScript + cordis（`@deepseek-ai/cordis`）插件集合，pnpm workspaces 单层结构。插件默认以 TS 源码形态被宿主 dsh loader 直接加载——**没有构建步骤、不产出 dist**；需要实体安装（git/npm/tarball）的插件必须以 JS 为入口。当前包含 `plugins/dsh-llm-fallback`、`plugins/dsh-patent`、`plugins/dsh-victauri`（三者均为构建式发行，见下）与内部私有包 `plugins/dsh-anytype`（private，未发布 npm）。
 
 ## Architecture & Data Flow
 
-- **加载链**：宿主 dsh loader 按插件包 `main` 字段 import 插件入口 → 调用 `apply(ctx)`。TS 源码入口（`main: "src/index.ts"`）依赖 Node 原生 type-stripping，**只在 `link:` 安装下可用**——实体安装（git/npm/tarball，落盘于 profile 的 node_modules）会被 Node 以 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING` 拒绝，宿主只报静默的 `failed to import`。需要支持实体安装的插件必须以 JS 为入口（见 `packages/dsh-llm-fallback` 的 dist 方案）。
-- **插件契约三符号**（见 `packages/dsh-llm-fallback/src/index.ts`）：
+- **加载链**：宿主 dsh loader 按插件包 `main` 字段 import 插件入口 → 调用 `apply(ctx)`。TS 源码入口（`main: "src/index.ts"`）依赖 Node 原生 type-stripping，**只在 `link:` 安装下可用**——实体安装（git/npm/tarball，落盘于 profile 的 node_modules）会被 Node 以 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING` 拒绝，宿主只报静默的 `failed to import`。需要支持实体安装的插件必须以 JS 为入口（见 `plugins/dsh-llm-fallback` 的 dist 方案）。
+- **插件契约三符号**（见 `plugins/dsh-llm-fallback/src/index.ts`）：
   - `export const name`——loader 依赖的字符串标识，必须与插件语义一致；
   - `export function apply(ctx: Context)`——cordis 安装钩子，在此注册能力/副作用；
   - 业务辅助纯函数（如 `greet`）。
 - **生命周期**：副作用一律用 `ctx.effect(fn)` 注册。`fn` **立即执行**，其返回的函数在插件卸载时被 cordis 自动调用（事件监听、定时器、连接的清理都走这条路径，勿手写 removeListener/clearInterval 之外的反注册逻辑）。
 - **依赖注入**：需要其他服务时 `export const inject = ['tools']`，框架保证 `ctx.tools` 就绪后才调 `apply`（`dsh-tool-nushell` 即用此模式；该插件已在 2026-10-08 整包下线，示例仅供契约参考）。
-- **依赖策略**：`@deepseek-ai/cordis` 通常只放插件的 `devDependencies` 且仅 `import type` 引入——运行时由宿主提供，插件不打包框架。**例外**：构建式发行的插件若在公开 `.d.ts` 里引用框架类型（`Context` 等）或运行时需要其提供的工具函数（如 `defineTool`），则把 cordis / schemastery / dsh-tools 放 `peerDependencies`（宿主提供），并在 esbuild 构建时用 `--external` 把它们交回宿主解析——**禁止放 `dependencies`**：消费端用 pnpm（profile 侧 `nodeLinker: hoisted`）安装时，会把精确钉死的旧版框架包平铺进 profile 根 `node_modules`，顶替宿主运行时版本，dsh 兼容性守卫随即禁用对应插件行，整个实例启动失败（2026-11-12 实测：`@zhidal/dsh-victauri@0.1.0` 装上即崩，根因是 `dependencies` 里钉死 `dsh-tools@0.2.1-rc.2` 顶替了宿主的 `0.2.2-rc.1`）。详见 `packages/dsh-victauri/docs/release.md` 的依赖设计表。
+- **依赖策略**：`@deepseek-ai/cordis` 通常只放插件的 `devDependencies` 且仅 `import type` 引入——运行时由宿主提供，插件不打包框架。**例外**：构建式发行的插件若在公开 `.d.ts` 里引用框架类型（`Context` 等）或运行时需要其提供的工具函数（如 `defineTool`），则把 cordis / schemastery / dsh-tools 放 `peerDependencies`（宿主提供），并在 esbuild 构建时用 `--external` 把它们交回宿主解析——**禁止放 `dependencies`**：消费端用 pnpm（profile 侧 `nodeLinker: hoisted`）安装时，会把精确钉死的旧版框架包平铺进 profile 根 `node_modules`，顶替宿主运行时版本，dsh 兼容性守卫随即禁用对应插件行，整个实例启动失败（2026-11-12 实测：`@zhidal/dsh-victauri@0.1.0` 装上即崩，根因是 `dependencies` 里钉死 `dsh-tools@0.2.1-rc.2` 顶替了宿主的 `0.2.2-rc.1`）。详见 `plugins/dsh-victauri/docs/release.md` 的依赖设计表。
 
 ## Key Directories
 
-- `packages/<plugin-name>/`——一个插件一个目录（`pnpm-workspace.yaml` 收录 `packages/*`）
+- `plugins/<plugin-name>/`——一个插件一个目录（`pnpm-workspace.yaml` 收录 `plugins/*`）
   - `src/index.ts` 插件入口；`src/*.test.ts` 测试与源码同目录
 - 根目录——全部工具链配置集中于此；子包 tsconfig 仅 `extends` 根配置，不重复设置
 
@@ -39,7 +39,7 @@ pnpm release list    # 列出子包版本与 tag 预览
                      # --dry-run 预览；永不自动 push
 ```
 
-新增插件的最小步骤：建 `packages/my-plugin/`，仿照 `packages/dsh-llm-fallback/package.json`（`type: "module"`、`devDependencies` 含 cordis、`scripts.typecheck`；其 `main` 指向 esbuild 构建的 dist——若插件只走 `link:` 安装可用 TS 源码入口 `main: "src/index.ts"`），tsconfig extends 根配置即可，无需其他注册动作。
+新增插件的最小步骤：建 `plugins/my-plugin/`，仿照 `plugins/dsh-llm-fallback/package.json`（`type: "module"`、`devDependencies` 含 cordis、`scripts.typecheck`；其 `main` 指向 esbuild 构建的 dist——若插件只走 `link:` 安装可用 TS 源码入口 `main: "src/index.ts"`），tsconfig extends 根配置即可，无需其他注册动作。
 
 ## Subpackage Versioning & Release
 
@@ -70,7 +70,7 @@ pnpm release list    # 列出子包版本与 tag 预览
 - Node ≥22（`engines`），包管理器锁定 pnpm 11（`packageManager` 字段），勿用 npm/yarn。
 - **纯 TypeScript**：源码与工具链配置均为 `.ts`（`eslint.config.ts` 由 ESLint 加载）；仓库内无 `.js`/`.mjs` 源文件。
 - TypeScript 锁 5.x 稳定线——typescript-eslint 8 的 peer 范围是 `<6.1.0`，勿升级 TS 7。
-- 插件默认禁止引入构建步骤；`dist`、`coverage` 等产物目录已入 `.gitignore`。**例外**：`dsh-llm-fallback` / `dsh-patent` / `dsh-victauri` 为构建式发行（esbuild 打包 `dist/index.js`，`main` 指 dist，`prepare`/`prepack` 自动构建）——因为 Node 拒绝对 realpath 位于 node_modules 之下的 `.ts` 文件做 type-stripping（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`），TS 源码入口在 git/npm/tarball 实体安装下必然加载失败；其他 TS 插件如需支持实体安装，照此模式改造（构建依赖 esbuild、运行时依赖放 `dependencies`——pnpm 对 git 依赖不保证安装 devDeps；git 安装的消费方还需在 allowBuilds 放行且 pnpm 要求 sha 全形态键，详见 dsh-llm-fallback README）。**注意**：根 `.gitignore` 的 `dist/` 通配也会命中「名为 dist 但其实是源码」的目录（`packages/dsh-victauri/demo-app/dist/` 是纯静态前端源码）——此类文件须用 `git add -f` 强制入库并在包内自建 `.gitignore` 覆盖 cargo 产物。
+- 插件默认禁止引入构建步骤；`dist`、`coverage` 等产物目录已入 `.gitignore`。**例外**：`dsh-llm-fallback` / `dsh-patent` / `dsh-victauri` 为构建式发行（esbuild 打包 `dist/index.js`，`main` 指 dist，`prepare`/`prepack` 自动构建）——因为 Node 拒绝对 realpath 位于 node_modules 之下的 `.ts` 文件做 type-stripping（`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`），TS 源码入口在 git/npm/tarball 实体安装下必然加载失败；其他 TS 插件如需支持实体安装，照此模式改造（构建依赖 esbuild、运行时依赖放 `dependencies`——pnpm 对 git 依赖不保证安装 devDeps；git 安装的消费方还需在 allowBuilds 放行且 pnpm 要求 sha 全形态键，详见 dsh-llm-fallback README）。**注意**：根 `.gitignore` 的 `dist/` 通配也会命中「名为 dist 但其实是源码」的目录（`plugins/dsh-victauri/demo-app/dist/` 是纯静态前端源码）——此类文件须用 `git add -f` 强制入库并在包内自建 `.gitignore` 覆盖 cargo 产物。
 - remote origin：`github:lzhida/dsh-plugins-workspace`（push 操作留给用户）。
 - 编辑器（如 Zed）的 ESLint 行内提示若不识别 `eslint.config.ts`，属编辑器集成限制；CLI 门禁 `pnpm lint` 始终权威。
 
@@ -88,7 +88,7 @@ pnpm release list    # 列出子包版本与 tag 预览
 
 - **无专用脚本**：完整流程在 `.agents/skills/dsh-plugin-dev/SKILL.md` §5，按四步标准顺序执行：① profile 解析 → ② 安装被测插件 → ③ 启动 + 浏览器工具预检（dsh-browser 优先，MCP 回退） → ④ 加载级三断言 + 功能级逐项验证。**测试完毕的清理必须询问用户**，禁止 agent 自动执行破坏性清理动作（见 SKILL.md §5.6）。
 - **profile**：统一用 `test`；复用前做残留预检（package.json dependencies、cordis.patch.yml、node_modules 孤儿）；不存在则 `pnpm dsh --profile test --from-default-profile web` 创建。`--from-default-profile` 只拷 bundle 清单，不继承 web profile 的用户补丁层。
-- **安装**：默认 `pnpm dsh plugin --profile test add link:<仓库绝对路径>/packages/<name>`（**`--profile` 须置于 `plugin` 之后；`link:` 后必须是绝对路径**）；构建式插件先 `pnpm --filter <pkg> build`；其他安装方式（npm/git/tarball）仅当被测对象就是安装链路时使用，并须按 SKILL.md §5.2 表逐项注明约束。
+- **安装**：默认 `pnpm dsh plugin --profile test add link:<仓库绝对路径>/plugins/<name>`（**`--profile` 须置于 `plugin` 之后；`link:` 后必须是绝对路径**）；构建式插件先 `pnpm --filter <pkg> build`；其他安装方式（npm/git/tarball）仅当被测对象就是安装链路时使用，并须按 SKILL.md §5.2 表逐项注明约束。
 - **浏览器工具预检**（浏览器验证前必跑，dsh-browser 优先）：① 本会话已有 `dsh_browser_*`（dsh-browser 插件，宿主级内置浏览器）→ 直接用，零 profile 配置；② 均缺失才回退 chrome-devtools MCP：`pnpm dsh --profile <p> --dump-config | grep mcp` 查 mcp-client 实例，缺失时自配置为所属 profile `cordis.patch.yml` 的 `- insert:` 块（**必须 insert，不能平级 id 覆盖**——bundle 层不存在该条目），HMR/重启生效。顺带盘点其他控制类插件/MCP（victauri 桥等），避免重复建设。
 - **加载级三断言**：① 实例输出出现 `[<name>] ` 前缀格式的日志行（按结构化格式匹配，路径中裸包名不算）② 端口可达（默认 3865；3080 是上游默认，本机被占）③ tokened UI URL 状态 <400。
 - **功能级逐项验证**：从 README/变更说明派生「本次更新特性清单」→ 映射到 UI 配置面 / 行为契约面 / 轨迹与日志面 → 逐项打勾。轨迹核查：`~/.dsh/sessions/--<cwd-dir>--/session-*/session.v3.jsonl.zstd` 流式解压。纯净 profile 对比法用于排除 hindsight 记忆污染。
