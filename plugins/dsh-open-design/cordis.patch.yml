@@ -1,0 +1,11 @@
+- insert:
+    # 插件行 id 必须与入口导出的 name 一致（dsh-open-design）。
+    # 用相对路径 './src/index.ts'，插件行直接从源码装载（link: 安装）。
+    - id: dsh-open-design
+      name: './src/index.ts'
+      config:
+        autoDetect: true
+        source: custom
+        serverName: open-design
+        startupTimeoutMs: 120000
+        toolCallTimeoutMs: 60000

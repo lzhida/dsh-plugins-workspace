@@ -1,0 +1,40 @@
+{
+  "name": "@zhidal/dsh-open-design",
+  "description": "dsh-open-design：用 dsh 插件系统封装 Open Design 的 MCP 能力。启动时自动探测 Open Design 安装环境（管道端点自动推算、进程 argv 兜底）并自动配置 MCP 连接；bundle 配置卡可改 source/command/args/env；生效配置持久化 ~/.dsh/plugins/dsh-open-design/config.json。",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "docs",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/client": "2.2.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-tools": ">=0.2.0-rc.1 <0.3.0-0",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/dsh-tools": "0.2.1-rc.2",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  }
+}
