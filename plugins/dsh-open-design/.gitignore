@@ -1,0 +1,4 @@
+# 构建产物不入库（对齐 plugins/dsh-anytype 的根 .gitignore 先例：
+# link: 安装与 smoke 验证读取磁盘上的构建结果，构建由 prepare 钩子自动执行）。
+client/index.js
+client/index.js.map

@@ -38,6 +38,61 @@ pnpm dsh plugin add link:<仓库绝对路径>/plugins/dsh-open-design
 > （`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`），宿主只会静默报
 > `failed to import`。
 
+## 客户端面板
+
+插件带 **client 半区**（宿主 Web UI 侧）：左栏「全局面板」点击 Open Design
+图标打开主列面板，与 Agent 侧的工具调用互补（工具给 Agent 用，面板给人看）。
+
+面板分五节：
+
+| 区块     | 内容                                                                                             |
+| -------- | ------------------------------------------------------------------------------------------------ |
+| 连接状态 | 连接/探测方式/管道端点/安装目录/上游工具数/跳过的工具 + 「重新检测」按钮                         |
+| 当前焦点 | `get_active_context` 的实时焦点（含 5 分钟过期语义的提示）                                       |
+| 项目列表 | `list_projects` 的名称/状态徽章/更新时间                                                         |
+| 生成运行 | 项目/agent/技能搜索/prompt 表单发起 `start_run`，轮询 `get_run`（退避 1.5s→6s 封顶），可请求取消 |
+| 目录浏览 | OD 技能库 / OD 插件 / OD Agent 三子视图；技能支持搜索 + 服务端分页 + 「用于生成」回填运行表单    |
+
+未检测到 Open Design 时面板不消失：顶部横幅提示，各节降级为可读错误 +
+重试按钮。配置卡参数改动经懒刷新在下次工具调用/面板刷新前生效。
+
+> client 产物（`client/index.js`）不入库（包内 `.gitignore` 忽略），clone
+> 后先 `pnpm --filter @zhidal/dsh-open-design build:client` 再启动宿主，
+> 否则宿主报 `MissingClientBundleError`。这是引入构建步骤的已知例外：
+> **服务端仍 TS 直载无构建**，只有浏览器半区必须打包（宿主要求 classic
+> script + cjs bundle）。
+
+## 宿主 HTTP 路由（只读数据出口）
+
+服务端经宿主 webServer 注册同源路由 `/dsh-open-design/*`，客户端面板与
+排障脚本均可直接 fetch（需带实例 token 访问）：
+
+| 路由                                        | 方法 | 说明                                                                                                                     |
+| ------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------ |
+| `/dsh-open-design/status`                   | GET  | 生效配置 + 探测结果 + 连接状态快照（`env` 凭据类键值脱敏为 `<redacted>`）                                                |
+| `/dsh-open-design/projects`                 | GET  | 上游 `list_projects`（已解包 CallToolResult，直接返回业务对象）                                                          |
+| `/dsh-open-design/focus`                    | GET  | 上游 `get_active_context`                                                                                                |
+| `/dsh-open-design/skills?q=&limit=&offset=` | GET  | 上游 `list_skills`：服务端按关键词过滤、截断（默认 50 条、上限 200）、description 裁剪、offset 分页（返回 `nextOffset`） |
+| `/dsh-open-design/plugins?limit=`           | GET  | 上游 `list_plugins`：形状兼容（数组/`{plugins}`/`{items}`）并限量                                                        |
+| `/dsh-open-design/agents`                   | GET  | 上游 `list_agents`                                                                                                       |
+| `/dsh-open-design/runs?runId=<id>`          | GET  | 上游 `get_run` 单查（缺 `runId` 返回 400）                                                                               |
+| `/dsh-open-design/runs`                     | POST | 上游 `start_run`（body `{prompt, project?, skill?, agent?, plugin?}`，服务端生成幂等 `requestId`；prompt 必填）          |
+| `/dsh-open-design/runs/cancel`              | POST | 上游 `cancel_run`（body `{runId}` 必填）                                                                                 |
+| `/dsh-open-design/redetect`                 | POST | 重新探测安装环境并重连，返回新状态快照（GET 返回 405）                                                                   |
+
+行为约定：上游不可用时统一降级为 `502 + {error, connectionState}`（绝不
+500 崩盘）；本层超时（如 startRun 45s）先于宿主 60s 收敛返回
+`504 + {error, connectionState}`；`env` 中键名匹配 `/key|password|secret|token/i`
+的值一律 `<redacted>`，其余键（`OD_*` 路径、管道端点等排障必需项）原样返回。
+
+说明：路由所在插件行声明了 `inject: [webServer]`（行级），HTTP 服务未
+就绪时插件行不会激活——这是宿主的依赖注入语义，不是插件故障。
+
+client 产物（`client/index.js`）不入库，由构建脚本产出（见上节）；宿主
+加载 client bundle 的判据：启动日志无 `MissingClientBundleError`、
+无 `loaded without registering`；浏览器控制台可见
+`[dsh-open-design] client loaded`。
+
 ## 配置卡字段
 
 | 字段                | 类型     | 默认           | 说明                                                                                                                                                  |
@@ -132,13 +187,22 @@ MCP 客户端对应的组合固定为 `source=packaged` / `mode=runtime` / `app=
 | 个别工具缺失                                                                 | 上游工具 schema 超出宿主支持子集被跳过          | 看 `open_design_status` 的 `upstreamSkippedTools` 与插件日志          |
 | 管道端点失效                                                                 | Open Design 升级换了 namespace                  | 清空 `command`/`args`/`env` 后重新探测                                |
 
+## 已知限制
+
+- **只支持 `link:` 源码直载**（见安装节警示）；实体安装需先把服务端编译为 JS。
+- **client 产物需先构建**（`build:client`），clone 后直接启动宿主会报 `MissingClientBundleError`。
+- 图片/音频/resource 类工具返回块只输出占位文案，未投影为宿主附件。
+- 插槽契约（`sidebar.panellist`/`main` 等）与 locale 服务随宿主版本演化，升级宿主后如面板不出现请先比对宿主 client-ui 包版本。
+- desktop（Electron）壳内同源路由可达性未验证，当前验证面为 web 实例。
+
 ## 开发
 
 ```sh
 pnpm --filter @zhidal/dsh-open-design typecheck
-pnpm vitest run plugins/dsh-open-design/src
+pnpm vitest run plugins/dsh-open-design
 pnpm lint
 pnpm format:check
+pnpm --filter @zhidal/dsh-open-design build:client
 ```
 
 插件日志一律带 `[dsh-open-design] ` 前缀，宿主据此识别本插件的日志行（如 `[dsh-open-design] plugin loaded`、`[dsh-open-design] registered 2 diagnostic tools`）。

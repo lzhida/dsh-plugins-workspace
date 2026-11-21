@@ -1,7 +1,7 @@
 /**
  * 插件行契约测试：loader 三符号、装载日志、工具注册面与工具名唯一性。
  */
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { access, mkdtemp, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Context } from '@deepseek-ai/cordis';
@@ -47,6 +47,22 @@ async function tempConfigDir(): Promise<string> {
 /** 等插件的异步启动流程跑完（日志留在 spy 窗口内，测试输出更干净）。 */
 async function flushAsyncStartup(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 20));
+}
+
+/** 轮询等待文件出现（全仓并发下 start() 异步链可能慢于固定 flush）。 */
+async function waitForFile(path: string, timeoutMs = 5000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      await access(path);
+      return;
+    } catch {
+      if (Date.now() > deadline) {
+        throw new Error(`等待文件超时（${timeoutMs}ms）：${path}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
 }
 
 /** 假的 MCP 连接（避免测试真的拉起子进程）。 */
@@ -197,6 +213,9 @@ describe('dsh-open-design 插件行', () => {
       },
     );
     await flushAsyncStartup();
+    // 全仓并发跑时 worker CPU 竞争会拖长 start() 的异步链（探测→persist→
+    // connect→listTools），固定 20ms 的 flush 不够——轮询等文件落地，最多 5s。
+    await waitForFile(join(dir, 'config.json'));
 
     const raw = JSON.parse(
       await readFile(join(dir, 'config.json'), 'utf8'),

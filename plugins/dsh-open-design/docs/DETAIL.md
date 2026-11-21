@@ -131,6 +131,22 @@
 | 改了配置卡不生效                                                             | 值与默认相同被视作「未显式」，或连接指纹未变      | 改一个与默认值不同的值；日志里应出现「已注册 N 个 Open Design 工具」         |
 | 桌面端没开                                                                   | 探测能拿到安装目录，但连不上 daemon               | 先启动 Open Design 桌面端再跑 `open_design_redetect`                         |
 
+## 客户端面板架构
+
+插件带 client 半区（宿主 Web UI 侧），与 Agent 侧工具互补：工具给 Agent 用，面板给人看。
+
+**插槽选择**（宿主 `dsh-client-ui-slots` 契约）：
+
+- `sidebar.panellist`（root 全局）——左栏图标行（`id` 用 `PANEL_ID`，`order: 20`）。选它是因为「连接状态/焦点/项目/运行」都是**全局资源**，与会话无关；会话视图 tab 与右栏面板是 session scope，放这里反而要处理「没有会话时面板去哪」。
+- `main`（root 全局）——主列面板位。嵌套注册在外层 `ctx.effect` 内：`ctx.slots.inject('main', () => ctx.slots.inject('sidebar.panellist', () => { … }))`，外层注销自动带走内层，杜绝「图标在、面板亡」的半注册态。
+- 面板关闭走 `ctx.get?.('layout')?.selectPanel(null)`（软读取——硬 `ctx.layout` 在未注入时会抛错）。
+
+**数据链路**：面板不直连上游。`client/src/api.ts → 同源 fetch /dsh-open-design/* → 宿主 webServer → src/status-routes.ts → runtime.call() → 复用 Agent 侧同一条 MCP 连接`。脱敏（env 凭据键 `<redacted>`）、裁剪（skills 240 字符/页 50）与形状兼容都在服务端做，浏览器只拿业务对象。三处取数用 `Promise.allSettled` 各节独立降级——一节挂了不影响其余节。
+
+**渲染体量取舍**：skills 300+ 条上游包约 207KB，服务端先过滤再截断（`?q=` + `limit` + `offset` 分页 + `nextOffset`），客户端按需「加载更多」；未引入虚拟化列表（50 行/页的纯文本行不值得）。目录回填经 `CatalogEntry → 容器层 backfill(nonce) → RunSection 表单` 单向流动，不做跨组件订阅。
+
+**构建例外说明**：AGENTS.md 规定「插件默认禁止构建步骤」，本插件是声明过的例外——**服务端仍 TS 直载无构建**；只有 client 半区必须打包（宿主要求 classic script + cjs bundle + id 注册，`scripts/build-client.ts` 产出 `client/index.js`，包内 `.gitignore` 忽略不入库）。构建断言锁两条红线：bundle 内**不得内联第二份 React**（`external` 交给宿主），Tailwind 产物**必须含 `--dsw-alias-` 宿主语义 token**（样式只走宿主设计变量）。
+
 ## 已知限制
 
 - 上游返回的**图片 / 音频 / resource 块只输出占位文案**，暂不投影成附件（宿主 `dsh-mcp-client` 的图片投影未在本插件复刻）。
@@ -140,3 +156,6 @@
 - 超时类配置（`startupTimeoutMs` / `toolCallTimeoutMs`）改动即时生效但不重建子进程；`command` / `args` / `env` / `cwd` 变化会按配置指纹重建子进程；`serverName` 变化会换装工具命名空间。
 - 极少数情况下（宿主工具注册面自身故障），桥接换装可能在「注销旧工具 → 注册新工具」之间失败，窗口内上游工具面为空；下次同步成功即自愈，可用 `open_design_redetect` 主动触发。
 - 本插件以 TS 源码形态发布，只支持 `link:` 安装（实体安装会因 Node 拒绝 type-stripping 而静默加载失败）。
+- client 产物需先 `build:client`，clone 后直接启动宿主会报 `MissingClientBundleError`。
+- 面板插槽契约（`sidebar.panellist` / `main`）与宿主 client-ui 包随宿主版本演化；面板不出现时先核对宿主版本与 `engines.dsh` 范围。
+- desktop（Electron）壳内同源路由可达性未验证，当前验证面为 web 实例。

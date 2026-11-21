@@ -340,6 +340,19 @@ export class OpenDesignRuntime implements DiagnosticRuntime {
     await this.syncUpstreamTools();
   }
 
+  /**
+   * 对外暴露的上游工具调用口（宿主半区 HTTP 路由用）。
+   *
+   * 复用本 runtime 已有的 MCP 连接（不另起子进程），语义与工具桥接一致：
+   * 先懒刷新配置，再走 callTool；连接不可用时抛可读错误。
+   */
+  async call(
+    name: string,
+    args: Record<string, unknown> = {},
+  ): Promise<unknown> {
+    return await this.callUpstream(name, args);
+  }
+
   /** 调用上游 MCP 工具。 */
   private async callUpstream(
     name: string,

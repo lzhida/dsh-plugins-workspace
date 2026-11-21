@@ -21,12 +21,24 @@ import {
   STATUS_TOOL_NAME,
 } from './diag-tools.ts';
 import { OpenDesignRuntime, type RuntimeDeps } from './runtime.ts';
+import {
+  registerStatusRoutes,
+  ROUTE_PREFIX,
+  type WebRouteLike,
+} from './status-routes.ts';
 
 /** 插件标识（必须与 cordis.patch.yml 的插件行 id 一致）。 */
 export const name = 'dsh-open-design';
 
-/** 依赖注入：需要宿主工具注册面。 */
-export const inject: string[] = ['tools'];
+/**
+ * 依赖注入：宿主工具注册面 + HTTP 路由面。
+ *
+ * cordis.patch.yml 的插件行另声明 inject: [webServer]（行级 inject 与入口
+ * export const inject 是并集，见 dsh-fanqie-novel 同款写法）——两者合并后
+ * 本行在 tools 与 webServer 都就绪时才被 apply，路由注册可直接读
+ * ctx.webServer。
+ */
+export const inject: string[] = ['tools', 'webServer'];
 
 /**
  * 插件装配。
@@ -70,6 +82,32 @@ export function apply(
       return runtime.dispose();
     };
   }, 'dsh-open-design 运行时');
+
+  // 宿主半区同源 HTTP 路由（客户端面板取数入口）。
+  //
+  // webServer 经 cordis.patch.yml 行级 inject 声明：apply 被调用时服务必已
+  // 就绪，可直接读 ctx.webServer（与 dsh-fanqie-novel 同范式）。bind 是必需
+  // 的——register 内部读 this.exact/this.prefixes，裸引用调用会丢 this。
+  ctx.effect(() => {
+    const web = (
+      ctx as unknown as {
+        webServer?: {
+          register?: (route: WebRouteLike) => (() => void) | void;
+        };
+      }
+    ).webServer;
+    if (typeof web?.register !== 'function') {
+      console.log(`[${name}] webServer.register unavailable — routes skipped`);
+      return () => {};
+    }
+    const dispose = registerStatusRoutes(web.register.bind(web), {
+      status: () => runtime.status(),
+      redetect: () => runtime.redetect(),
+      call: (toolName, args) => runtime.call(toolName, args),
+    });
+    console.log(`[${name}] routes registered at ${ROUTE_PREFIX}`);
+    return () => dispose();
+  }, `${name}: http routes`);
 }
 
 export { resolveConfig, Config } from './config.ts';

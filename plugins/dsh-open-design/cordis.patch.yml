@@ -1,8 +1,12 @@
 - insert:
     # 插件行 id 必须与入口导出的 name 一致（dsh-open-design）。
     # 用相对路径 './src/index.ts'，插件行直接从源码装载（link: 安装）。
+    # 行级 inject 与入口 export const inject 是并集（cordis-plugin-loader 在
+    # internal/plugin 里合并两者）：声明 webServer 让 apply 延迟到 HTTP 服务
+    # 就绪后才执行，路由注册可直接读 ctx.webServer。
     - id: dsh-open-design
       name: './src/index.ts'
+      inject: [webServer]
       config:
         autoDetect: true
         source: custom

@@ -1,0 +1,95 @@
+/**
+ * 面板 Tailwind v4 输入：主题层 + 工具层，禁用 preflight。
+ *
+ * 面板嵌在宿主 DOM 内，绝不能引入全局 reset（preflight 会重置宿主页面
+ * 元素），故按 v4 文档 granular import 形态只引入 theme.css 与
+ * utilities.css；`source(none)` 关闭自动内容探测（否则按 git 仓库根扫描，
+ * 会扫到构建产物 client/index.js），再以 @source 锁定 client/src。
+ *
+ * 语义 token 经 `@theme inline` 全部映射宿主 --dsw-alias-* 主题 token：
+ * utility 直接内联 var() 表达式——不在 :root 泄漏自定义属性、不引入
+ * .dark class 策略、明/暗模式跟随宿主切换零延迟。token 缺失时按 CSS var
+ * 规则退回继承色/初始值，不会渲染崩溃。
+ *
+ * 产物由 scripts/build-client.ts 经 @tailwindcss/cli 编译并以
+ * __TAILWIND_CSS__ 字符串注入 bundle（见 theme.ts 的运行时挂载）。
+ */
+
+@layer theme, base, components, utilities;
+@import 'tailwindcss/theme.css' layer(theme) source(none);
+@import 'tailwindcss/utilities.css' layer(utilities) source(none);
+
+@source "./";
+
+@theme inline {
+  --color-background: var(--dsw-alias-bg-layer-1);
+  --color-foreground: var(--dsw-alias-label-primary);
+  --color-surface: var(--dsw-alias-bg-layer-1);
+  --color-primary: var(--dsw-alias-brand-primary);
+  --color-primary-hover: var(--dsw-alias-button-primary-hover);
+  --color-primary-foreground: var(--dsw-alias-label-primary-foreground);
+  --color-secondary: var(--dsw-alias-bg-layer-2);
+  --color-secondary-foreground: var(--dsw-alias-label-primary);
+  --color-muted: var(--dsw-alias-bg-layer-2);
+  --color-muted-foreground: var(--dsw-alias-label-secondary);
+  --color-accent: var(--dsw-alias-interactive-bg-hover);
+  --color-accent-foreground: var(--dsw-alias-label-primary);
+  --color-destructive: var(--dsw-alias-state-error-primary);
+  --color-border: var(--dsw-alias-border-l1);
+  --color-border-strong: var(--dsw-alias-border-l2);
+  --color-input: var(--dsw-alias-border-l2);
+  --color-ring: var(--dsw-alias-brand-primary);
+}
+
+/*
+ * 骨架样式（卡 3 面板的基类，此处先立）：@theme inline 只在被 utility
+ * 使用时才把宿主 token 内联进产物，且 Tailwind v4 会摇掉未被使用的
+ * theme 变量——卡 1 无 UI 类，产物会塌缩到几十字节。这些基类既是卡 3
+ * 面板的真实骨架，也保证产物含宿主主题 token（build-client.ts 断言
+ * 依赖）。
+ */
+.od-surface {
+  color: var(--dsw-alias-label-primary);
+  background-color: var(--dsw-alias-bg-layer-1);
+}
+
+.od-panel-root {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  color: var(--dsw-alias-label-primary);
+  background-color: var(--dsw-alias-bg-layer-1);
+}
+
+.od-panel-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--dsw-alias-label-primary);
+}
+
+.od-panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding: 0.75rem;
+  border: 1px solid var(--dsw-alias-border-l1);
+  border-radius: 0.5rem;
+  background-color: var(--dsw-alias-bg-layer-2);
+}
+
+.od-panel-label {
+  font-size: 0.75rem;
+  color: var(--dsw-alias-label-secondary);
+}
+
+.od-panel-value {
+  font-size: 0.75rem;
+  color: var(--dsw-alias-label-primary);
+  word-break: break-all;
+}
+
+.od-panel-empty {
+  font-size: 0.75rem;
+  color: var(--dsw-alias-label-secondary);
+}
