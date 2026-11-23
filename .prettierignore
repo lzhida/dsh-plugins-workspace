@@ -7,3 +7,12 @@ pnpm-lock.yaml
 # 客户端打包产物（esbuild 生成，见 plugins/*/scripts/build-client.ts）
 plugins/*/web/app.js
 plugins/*/client/index.js
+
+# vendored 上游源码（Apache-2.0，逐字保留，见 plugins/dsh-taskboard/docs/local-changes.md）
+# 只豁免上游原样迁入的文件；本仓自有的 src/local/ 仍受 Prettier 门禁约束
+plugins/dsh-taskboard/src/client/
+plugins/dsh-taskboard/src/host/
+plugins/dsh-taskboard/src/shared/
+plugins/dsh-taskboard/src/index.ts
+plugins/dsh-taskboard/src/invariant.ts
+plugins/dsh-taskboard/docs/upstream-readme.md

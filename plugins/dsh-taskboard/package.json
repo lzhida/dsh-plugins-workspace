@@ -1,0 +1,73 @@
+{
+  "name": "@zhidal/dsh-taskboard",
+  "description": "dsh-taskboard 的 vendored 版本（上游 cloader/dsh-taskboard v0.10.0，Apache-2.0）：宿主权威任务台账 + 十个 taskboard_* agent 工具 + 项目边界认领 + 任务级模型/预设/工作树隔离 + 宿主侧 cron 定时调度 + 官方面板实时看板（SSE）。本仓落仓只做构建与依赖口径适配，行为与上游一致；本地改动清单见 docs/local-changes.md。",
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./invariant": "./dist/invariant.js",
+    "./client": "./dist/client/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "docs",
+    "scripts",
+    "cordis.patch.yml",
+    "LICENSE",
+    "NOTICE.md",
+    "README.md"
+  ],
+  "homepage": "https://github.com/lzhida/dsh-plugins-workspace/tree/main/plugins/dsh-taskboard#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lzhida/dsh-plugins-workspace.git",
+    "directory": "plugins/dsh-taskboard"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.18",
+    "dsh": ">=0.2.2-rc.3"
+  },
+  "scripts": {
+    "build": "node scripts/build.ts",
+    "prepare": "npm run build",
+    "prepack": "npm run build",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.vendored.json"
+  },
+  "dependencies": {
+    "esbuild": "^0.28.2"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.1.0",
+    "@deepseek-ai/dsh-agent": "^0.2.2-rc.5",
+    "@deepseek-ai/dsh-host-webserver": "^0.2.2-rc.5",
+    "@deepseek-ai/dsh-llm": "^0.2.2-rc.5",
+    "@deepseek-ai/dsh-system-prompt": "^0.2.2-rc.5",
+    "@deepseek-ai/dsh-tools": "^0.2.2-rc.5",
+    "@deepseek-ai/dsh-workspace": "^0.2.2-rc.5",
+    "@types/react": "~18.3.1",
+    "@types/react-dom": "~18.3.7"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "slots"
+      ],
+      "platform": "web"
+    },
+    "compatibility": {
+      "dshReleases": {
+        "0.2.0-rc.2": "compatible"
+      }
+    }
+  }
+}

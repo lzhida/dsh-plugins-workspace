@@ -1,0 +1,21 @@
+# @zhidal/dsh-taskboard bundle 层：把 vendored 的 dsh-taskboard 插件行插进
+# profile roster（一次安装即得宿主半区 + 浏览器半区）。
+#
+# 结构（单包单行）：
+#   - 行① dsh-taskboard：插件行，name 用包名（本包 main → dist/index.js，
+#     实体安装可用；TS 源码入口无法实体安装，见仓库 AGENTS.md）。
+#
+# 语义要点：
+#   - 行 id 与上游保持一致（dsh-taskboard）：loader 按 id 去重，bundle 层
+#     覆盖 profile 行，避免同一包出现两套调度器（第二套 SchedulerService
+#     会重复执行定时卡）。
+#   - 相对路径只在 patch 顶层 insert 被锚定（anchorInsertedPluginNames）；
+#     其它配置（preset config.plugins 等）里引用本包必须写包名
+#     @zhidal/dsh-taskboard。
+#   - 浏览器半区由 package.json 的 dsh.client 声明加载（exports "./client"
+#     → dist/client/index.js，宿主以 /plugins/<id>/client.js 提供）。
+#   - profile 侧不要重复 insert 这一行（会双重实例化）。
+
+- insert:
+    - id: dsh-taskboard
+      name: '@zhidal/dsh-taskboard'

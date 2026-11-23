@@ -1,0 +1,65 @@
+{
+  "note": "本仓有意改动的上游（vendored）文件清单。未登记的文件必须与上游逐字一致——逐字性由 docs/upstream-sha256.txt（上游原始哈希，永不改写）+ docs/local-sha256.txt（被改动文件的当前本地哈希）共同守住，见 src/local/package-contract.test.ts。路径相对 src/。",
+  "files": {
+    "host/tools.ts": {
+      "upstreamSha256": "dc58b9a40c067d93ef82b88c56629237d1aaf2c117a48b64477b7954706ad071",
+      "reason": "看板模式系列第 2/6 卡：把建卡（taskboard_create）与改卡（taskboard_update）的实现迁到 src/local/task-writer.ts（唯一实现），本文件改为调用它；错误码与错误类下沉到 src/local/board-errors.ts 供本地层复用（ERR 取值、ToolError 消息形状均不变）。行为、报错文案与 blockedBy 语义（建卡=新增、改卡=替换）零漂移。"
+    },
+    "index.ts": {
+      "upstreamSha256": "f18107cce00bb51e1f6fb2b8d40c3cc8b1d5e0443194ff16a8ce290b362976d1",
+      "reason": "看板模式系列第 2/6 卡：apply 内新增 ctx.provide('dsh-taskboard', boardService)，把板服务暴露给宿主，使模式插件（另一个 dsh 插件包）能以 ctx.get('dsh-taskboard') 软读取板数据并按需建卡/改卡；注销函数走 ctx.effect(() => dispose, 'dsh-taskboard: board service')，与 dsh-anytype 的服务注册模式一致。既有逻辑未改动。看板官方集成系列 1/3 卡：ExecutionService 依赖新增 worktrees/workingDirectory 两个软读取 getter（官方 worktree 服务缺席时返回 undefined，走降级路径，不声明硬 inject）。"
+    },
+    "host/git.ts": {
+      "upstreamSha256": "77689b09c714649e494c0601830f59a0ee703447cd56370f448e947a1f37e761",
+      "reason": "看板官方集成系列 1/3 卡：删除自建 worktree 能力（prepareWorktree / removeWorktree / WORKTREE_DIR / worktreePathOf / WorktreeInfo），检出创建与回收一律交给官方 ctx.worktrees；新增 headOf(cwd)（rev-parse HEAD，fail-soft，用于判断上次检出是否存活）与 removeCheckout(root, path)（git worktree remove + prune，脏检出抛 dirty-worktree）；merge 的豁免路径由 .dsh-worktrees 改为官方池 .agents。证据采集 / 合并 / 删分支等 git 收尾逻辑保持不变。"
+    },
+    "host/isolation.ts": {
+      "upstreamSha256": "28dfcc2cc77f4f6f76cb6574ddcc1bf333de2463a51ec72ec463921837d30f21",
+      "reason": "看板官方集成系列 1/3 卡：整体重写——上游自建的多仓镜像 prepareMirror / removeMirror 删除（官方服务是单仓库服务，无镜像能力），改为 prepareOfficialIsolation(deps, request)：调用官方 ctx.worktrees.create(agent, {name, from})；上次检出仍存活时用 workingDirectory.set 续用；服务缺席或调用失败时返回降级说明，不抛错阻塞。导出 repoMainPath（纯路径映射，供遗留多仓分支记录的合并与删分支使用）。"
+    },
+    "host/execution.ts": {
+      "upstreamSha256": "d886db31a0b4289d32110505fea81f7cdb7f577450477c381d8d38ec1f3bf0c5",
+      "reason": "看板官方集成系列 1/3 卡：隔离准备改到 agent 创建之后（官方 create 需要真实 Agent 实例，并会接管该 Agent 的工作目录）；删除 cleanupMirror / factsFields 与多仓 execution.repos 写入；结算证据改为单检出 git.collect(path, baseCommit)；RunEntry.prepared 改名 isolation；framing 文案改为单检出 + 续用/全新/降级三态；ExecutionDeps 新增软读取 worktrees?() 与 workingDirectory?()。"
+    },
+    "host/routes.ts": {
+      "upstreamSha256": "a1a9b9629b930b7958bb07e6f97f4a2aabe5d9f24436a87a32854be710244292",
+      "reason": "看板官方集成系列 1/3 卡：worktree 作用域校验改用官方池 .agents/worktrees（路径必须落在池内）；gitignore 建议认 .agents；孤儿检出改为按路径枚举（官方池目录名是分支名，不再是任务号）；worktree-remove / worktree-cleanup 改用 git.removeCheckout（脏检出拒绝删除）；purge 清理检出后删分支；合并逻辑（--no-ff、遗留多仓记录逐仓合并）保留不变。"
+    },
+    "host/repos.ts": {
+      "upstreamSha256": "510d0ba278453d7771f61da3817efe598db631742a3f63e218ff59aba091c23a",
+      "reason": "看板官方集成系列 1/3 卡：SKIP_DIRS 增加 .agents——官方 worktree 池在源仓库内，检出目录里的 .git 是文件（伪仓），不跳过会被误判为嵌套仓库。"
+    },
+    "shared/protocol.ts": {
+      "upstreamSha256": "52077738e578aaf98199a7998d1409723ee951c6052a54250314dbb443390a18",
+      "reason": "看板官方集成系列 1/3 卡：协议形状保持向后兼容（老台账仍可解析），但注释改为反映新边界——隔离模式指向官方单仓服务（缺席降级 none + isolationNote），MAX_MIRROR_REPOS / ExecutionRepoEvidence 标注为 0.10.1 起禁用的遗留多仓镜像形状，TaskRecord.branch / branches 说明官方服务无 fallback 命名、branches 仅遗留。"
+    },
+    "shared/api.ts": {
+      "upstreamSha256": "cc5ff8c9fcc2b01bfa1cec657015ef47dda577512560c73fbb10e295169be550",
+      "reason": "看板官方集成系列 1/3 卡：OrphanWorktree 去掉 taskId 字段（官方池目录名是分支名，路径本身即清理句柄），改为 {workspaceId, workspacePath, path}；新增 WorktreeCleanupBody = {workspaceId, path} 供按路径清理孤儿检出。"
+    },
+    "client/api.ts": {
+      "upstreamSha256": "fabb6976d84dd7f77fda63716041a8150a55d1e4e651bbe31830202f93cd5b81",
+      "reason": "看板官方集成系列 1/3 卡：worktreeCleanup 改为按路径提交 {workspaceId, path}（对应官方池的路径语义）；worktreeRemove / mergeBranch 的注释口径同步。"
+    },
+    "client/controller.ts": {
+      "upstreamSha256": "8742d51467519dcdf421a0bb127e0f3e163afb9a97bdd47765c3e94a96894f5e",
+      "reason": "看板官方集成系列 1/3 卡：cleanupOrphan 改为接收 WorktreeCleanupBody（{workspaceId, path}），与新的孤儿检出模型一致；removeWorktree 的注释改为「检出」口径。"
+    },
+    "client/board/TaskBoard.tsx": {
+      "upstreamSha256": "3f8a44f259f77c20e15fbf7c673283b6e607c71402938bde97fccdbd36c75049",
+      "reason": "看板官方集成系列 1/3 卡：⚙ 诊断面板的遗留 worktree 列表按路径展示（官方池目录名是分支名，不再显示任务号），清理按钮按路径提交；gitignore 建议文案由 .dsh-worktrees/ 改为 .agents/（官方池目录）。"
+    },
+    "client/i18n/zh.ts": {
+      "upstreamSha256": "b6a94e57f17939e68451f7fd4fd61af7f328d1633cfb8d046d68fe3454ccb6e7",
+      "reason": "看板官方集成系列 1/3 卡：诊断面板 / 隔离区块 / 任务表单 / 看板设置的中文文案改为「官方 worktree 服务、单仓库、服务缺席自动降级」口径，并说明重跑优先续用存活检出。"
+    },
+    "client/i18n/en.ts": {
+      "upstreamSha256": "6e6367f1b683b01fb50efff8686f943a3e0382edacad2ddc48ebd9f9c465198f",
+      "reason": "看板官方集成系列 1/3 卡：同 zh.ts 的英文文案同步（官方服务、单仓库、缺席降级、重跑优先续用）。"
+    },
+    "client/i18n/ru.ts": {
+      "upstreamSha256": "7dc5a4103c8ac77016d5ef90ea3fedcde170941736662fdb872f193f33fcec55",
+      "reason": "看板官方集成系列 1/3 卡：同 zh.ts 的俄文文案同步（官方服务、单仓库、缺席降级、重跑优先续用）。"
+    }
+  }
+}

@@ -1,0 +1,22 @@
+/*
+ * vendored 上游源码（Apache-2.0，逐字保留）的专用 tsconfig：
+ * 口径对齐上游 tsconfig（strict + noUncheckedIndexedAccess），不启用本仓 base 的
+ * noUnusedLocals / noUnusedParameters——上游源码本身存在未使用的导入与变量，
+ * 改写会破坏与上游的逐字比对。src/local（本仓自有代码）不在此项目内，
+ * 由 tsconfig.json 以严格口径覆盖。
+ */
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"],
+    "allowImportingTsExtensions": true,
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "noUncheckedIndexedAccess": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false
+  },
+  "include": ["src"],
+  "exclude": ["src/local"]
+}
