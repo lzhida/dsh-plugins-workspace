@@ -1,0 +1,21 @@
+# dsh-kanban-mode —— 「看板模式」预设插件
+#
+# 为什么用编程式注册，而不是在 patch 里写声明式预设行：
+#   宿主 `@deepseek-ai/dsh-agent-preset-registry` 的 register() 对重复 id 直接抛
+#   `Duplicate agent preset: <id>`——声明式预设行与编程式注册是同一 id 的两条
+#   互斥路径。本包把预设定义放在 src/preset-def.ts，运行时由插件入口调用
+#   ctx.agentPresets.register() 注册（见 src/index.ts），所以本文件**只插插件行**，
+#   不插预设行。
+#
+# 其它纪律（沿用本仓 dsh-taskboard / dsh-patent 的先例）：
+#   - 行 name 必须写**包名**：实体安装（git/npm/tarball）时宿主按包 main 字段
+#     import dist/index.js；相对路径只在 patch 顶层 insert 会被锚定
+#     （anchorInsertedPluginNames），而 preset 的 config.plugins 里引用本包插件
+#     写相对路径会 "never started"——所以预设内的看板上下文行走包名
+#     '@zhidal/dsh-kanban-mode/board-context'。
+#   - profile 侧不要重复 insert 这一行（会双重实例化）；要改配置用「同 id + config」
+#     覆盖，而不是再插一行。
+#   - 行 id 与包内 `export const name` 保持一致（dsh-kanban-mode）。
+- insert:
+    - id: dsh-kanban-mode
+      name: '@zhidal/dsh-kanban-mode'
