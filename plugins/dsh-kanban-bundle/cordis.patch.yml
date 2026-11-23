@@ -1,0 +1,35 @@
+# @zhidal/dsh-kanban-bundle 聚合补丁：单 insert patch、两行平铺，
+# 分别装载看板基座（@zhidal/dsh-taskboard）与看板模式预设插件
+# （@zhidal/dsh-kanban-mode）。形态对齐包级 bundle patch 约定
+# （顶层数组 of loader patch entries，同 plugins/dsh-taskboard/cordis.patch.yml）。
+#
+# ⚠️ 行 id 必须与两个组件包各自 cordis.patch.yml 的 insert 行 id 一致
+#    （dsh-taskboard / dsh-kanban-mode）：loader 按 id 去重——bundle 层与
+#    组件包层对同一 id 只挂一份，避免同一包出现两套调度器（第二套
+#    SchedulerService 会重复执行定时卡）。
+#
+# ⚠️ 不要把本文件的 insert 行拷贝进 profile 自己的 cordis.patch.yml：
+#    与其他来源重复挂载同一组件可能导致 Settings 无法保存
+#    （官方 dsh-mnemon 同款告警，issue #470；本包场景为不同 id 重复挂载）。
+#
+# 防重复挂载守卫（!!js 表达式，每次挂载决定时求值，参照第三方
+# taskboard-bundle / dsh-better-sidebar 先例）：
+#   若同一组件包已由其他 entry（**id 不同**的行——例如另一个聚合包用别的
+#   id 挂载了同一个包）挂载且未被禁用，则本行自动 disabled，只保留先挂载
+#   的那份。注意：本包两行的 id 与两个组件包各自 cordis.patch.yml 的
+#   insert 行 id 完全相同，故「组件包单独安装 + 本包同时安装」时守卫条件
+#   id !== '...' 恒为假，**守卫不会触发**——真正挡住重复挂载的是 loader 按
+#   id 去重，代价是插件面板里「启用组件 …」开关被禁用（提示「当前 profile
+#   的 patch 无法唯一定位这一项」）、本包总开关形同虚设。详见本包 README
+#   「与组件包同装会怎样」。
+#
+# 已知限制（同第三方先例）：守卫在处理本行时求值，只能看到排在它之前的
+#   entry；因此要让本行被守卫禁用，对方（不同 id 的同包名 entry）必须排在
+#   前面（`dsh plugin add` 追加到列表尾部，即先装的在前）。
+- insert:
+    - id: dsh-taskboard
+      name: '@zhidal/dsh-taskboard'
+      disabled: !!js "[...ctx.loader.entries()].some((e) => e.options.name === '@zhidal/dsh-taskboard' && e.options.id !== 'dsh-taskboard' && !e.disabled)"
+    - id: dsh-kanban-mode
+      name: '@zhidal/dsh-kanban-mode'
+      disabled: !!js "[...ctx.loader.entries()].some((e) => e.options.name === '@zhidal/dsh-kanban-mode' && e.options.id !== 'dsh-kanban-mode' && !e.disabled)"

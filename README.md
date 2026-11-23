@@ -2,7 +2,7 @@
 
 [English](./README.en.md) | 简体中文
 
-[dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)(DeepSeek Harness)插件仓库——TypeScript + cordis 插件 monorepo。当前收录四个包:[@zhidal/dsh-llm-fallback](./plugins/dsh-llm-fallback/README.md)与 [@zhidal/dsh-patent](./plugins/dsh-patent/README.md)(已发布 npm)、[@zhidal/dsh-victauri](./plugins/dsh-victauri/README.md)(构建式发行,首发版本)与内部私有包 [@zhidal/dsh-anytype](./plugins/dsh-anytype/README.md)(private,未发布);三个公开包均为构建式发行,入口为 esbuild 打包的 dist。
+[dsh](https://www.npmjs.com/package/@deepseek-ai/dsh)(DeepSeek Harness)插件仓库——TypeScript + cordis 插件 monorepo。当前收录七个包:[@zhidal/dsh-llm-fallback](./plugins/dsh-llm-fallback/README.md)与 [@zhidal/dsh-patent](./plugins/dsh-patent/README.md)(已发布 npm)、[@zhidal/dsh-victauri](./plugins/dsh-victauri/README.md)(构建式发行,首发版本)、任务看板三件套 [@zhidal/dsh-taskboard](./plugins/dsh-taskboard/README.md) / [@zhidal/dsh-kanban-mode](./plugins/dsh-kanban-mode/README.md) / [@zhidal/dsh-kanban-bundle](./plugins/dsh-kanban-bundle/README.md)(首发版本)与内部私有包 [@zhidal/dsh-anytype](./plugins/dsh-anytype/README.md)(private,未发布);公开包均为构建式发行,入口为 esbuild 打包的 dist。
 
 > **纯 AI 开发**:本仓库的全部代码均由 AI 编码代理生成。
 
@@ -20,6 +20,18 @@ dsh 的「专利交底」预设包:以发明人模式提供交底书撰写工具
 
 dsh 的 Tauri 开发测试环境插件:把 [Victauri](https://github.com/4da-systems/Victauri)(Tauri 应用内嵌的 MCP 服务器)暴露的 **35 个调试/测试工具**全量桥接为 dsh 原生工具,并桥接 `victauri` CLI 能力(check / test / doctor / coverage 等),合计 **39 个 dsh 工具**(含 CLI 桥、CLI 探测、工具发现与 `victauri_doctor` 桥接体检)。主通道 REST 直连 Victauri discovery,辅通道 spawn CLI,连接惰性建立。工具清单、配置与故障排查详见 [plugins/dsh-victauri/README.md](./plugins/dsh-victauri/README.md)。
 
+### @zhidal/dsh-taskboard
+
+dsh 的任务看板板服务(vendored 自上游 cloader/dsh-taskboard v0.10.0):多项目任务卡、认领/门禁(blockedBy 依赖)、评论、验收清单、执行报告与定时调度(scheduler 每分钟 tick),并自带看板 Web 面板(`/dsh-taskboard`)。以 JS 为入口的构建式发行,支持实体安装。已知限制:上游测试不随包、`engines.dsh >= 0.2.2-rc.3`(对齐上游 README 建议,宿主 0.2.1-rc.2 安装会被兼容性守卫拒绝)。详见 [plugins/dsh-taskboard/README.md](./plugins/dsh-taskboard/README.md)。
+
+### @zhidal/dsh-kanban-mode
+
+dsh 的「看板模式」agent 预设包:注册 `kanban-mode` 预设、`kanban-task-create` skill 与三个看板工具(`kanban_ready_cards` / `kanban_plan_check` / `kanban_schedule_run`),让 agent 会话按看板纪律工作。零 `@deepseek-ai/*` 运行时依赖;编程式预设注册,与声明式预设互斥;必须与 dsh-taskboard 同装(缺服务时降级)。详见 [plugins/dsh-kanban-mode/README.md](./plugins/dsh-kanban-mode/README.md)。
+
+### @zhidal/dsh-kanban-bundle
+
+看板三件套的一键 bundle(纯 manifest,无代码):一条 `plugin add` 同时安装 dsh-taskboard 与 dsh-kanban-mode 两个插件行,各带 `!!js` 守卫防同包名不同 id 的双实例双调度器。注意:行 id 必须与组件包一致(loader 按 id 去重);不要把 insert 行拷进 profile patch;组件包与 bundle 同装时面板开关会失效。三个新包均为 0.1.0 首发,按仓库「首发例外」不经 changeset。详见 [plugins/dsh-kanban-bundle/README.md](./plugins/dsh-kanban-bundle/README.md)。
+
 ## 安装
 
 前置:Node ≥ 22、pnpm 11、已安装 dsh。
@@ -33,6 +45,11 @@ dsh plugin add link:<仓库绝对路径>/plugins/dsh-victauri      # 仓库内�
 
 dsh plugin add @zhidal/dsh-patent                             # npm 安装(推荐)
 dsh plugin add link:<仓库绝对路径>/plugins/dsh-patent        # 仓库内开发(link: 必须是绝对路径)
+
+dsh plugin add link:<仓库绝对路径>/plugins/dsh-kanban-bundle # 看板三件套一键安装(bundle,开发期 link:)
+# 组件包单独安装:
+dsh plugin add link:<仓库绝对路径>/plugins/dsh-taskboard
+dsh plugin add link:<仓库绝对路径>/plugins/dsh-kanban-mode
 ```
 
 完整安装方式(npm / link / git / tarball)、`allowBuilds` 放行与安装验证见各包 README([dsh-llm-fallback](./plugins/dsh-llm-fallback/README.md) / [dsh-victauri](./plugins/dsh-victauri/README.md) / [dsh-patent](./plugins/dsh-patent/README.md))。
