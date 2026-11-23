@@ -48,7 +48,7 @@ describe('dsh-kanban-mode 插件入口', () => {
     expect(definition.plugins).toHaveLength(24);
   });
 
-  it('apply 同时注册预设、内嵌 skill 与三工具', async () => {
+  it('apply 同时注册预设、内嵌 skill 与四个工具', async () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const registerPreset = vi.fn().mockResolvedValue(undefined);
@@ -68,8 +68,8 @@ describe('dsh-kanban-mode 插件入口', () => {
     expect(registerSkill.mock.invocationCallOrder[0]).toBeGreaterThan(
       registerPreset.mock.invocationCallOrder[0]!,
     );
-    // 三工具全部注册，注册名与 KANBAN_TOOL_NAMES 一致，且发生在 skill 之后。
-    expect(registerTool).toHaveBeenCalledTimes(3);
+    // 四个工具全部注册，注册名与 KANBAN_TOOL_NAMES 一致，且发生在 skill 之后。
+    expect(registerTool).toHaveBeenCalledTimes(4);
     const toolNames = registerTool.mock.calls.map(
       (call) => (call[0] as { name: string }).name,
     );
@@ -79,7 +79,7 @@ describe('dsh-kanban-mode 插件入口', () => {
     );
   });
 
-  it('三工具全部注册成功时打固定成功日志', async () => {
+  it('四个工具全部注册成功时打固定成功日志', async () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     await apply({
@@ -89,7 +89,7 @@ describe('dsh-kanban-mode 插件入口', () => {
     });
     expect(
       log.mock.calls.some((call) =>
-        String(call[0]).includes('registered 3 kanban tools'),
+        String(call[0]).includes('registered 4 kanban tools'),
       ),
     ).toBe(true);
   });
@@ -107,7 +107,7 @@ describe('dsh-kanban-mode 插件入口', () => {
     ).resolves.toBeUndefined();
     expect(String(warn.mock.calls[0]![0])).toContain('agentPresets');
     expect(registerSkill).toHaveBeenCalledTimes(1);
-    expect(registerTool).toHaveBeenCalledTimes(3);
+    expect(registerTool).toHaveBeenCalledTimes(4);
     expect(warn).toHaveBeenCalledTimes(1);
   });
 
@@ -123,7 +123,7 @@ describe('dsh-kanban-mode 插件入口', () => {
       }),
     ).resolves.toBeUndefined();
     expect(registerPreset).toHaveBeenCalledTimes(1);
-    expect(registerTool).toHaveBeenCalledTimes(3);
+    expect(registerTool).toHaveBeenCalledTimes(4);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0]![0])).toContain('skills');
   });
@@ -176,7 +176,7 @@ describe('dsh-kanban-mode 插件入口', () => {
       ),
     ).toBe(true);
     expect(registerSkill).toHaveBeenCalledTimes(1);
-    expect(registerTool).toHaveBeenCalledTimes(3);
+    expect(registerTool).toHaveBeenCalledTimes(4);
     expect(warn).toHaveBeenCalledTimes(1);
   });
 });

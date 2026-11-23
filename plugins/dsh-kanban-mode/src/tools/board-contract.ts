@@ -32,6 +32,25 @@ export interface BoardExecutionLite {
   readonly nextRunAt?: number;
 }
 
+/**
+ * 单次执行记录面（照上游 ExecutionRecord，只声明收割需要的字段）。
+ *
+ * 收割要知道「任务分支 / 检出路径 / 基线提交」——这些只存在于执行记录里
+ * （台账任务本身只存 baseCommit 与 branch 覆盖，见上游 protocol.ts:920-945）。
+ */
+export interface BoardExecutionEvidence {
+  readonly outcome?: string;
+  readonly isolation?: string;
+  readonly isolationNote?: string;
+  readonly branch?: string;
+  readonly worktreePath?: string;
+  readonly baseCommit?: string;
+  readonly headCommit?: string;
+  readonly diffStat?: string;
+  readonly changedFiles?: number;
+  readonly dirtyFiles?: readonly string[];
+}
+
 /** 板任务完整记录面（照上游 TaskRecord，只声明本卡读取的字段）。 */
 export interface BoardTaskRecord {
   readonly blockedBy?: readonly string[];
@@ -45,6 +64,12 @@ export interface BoardTaskRecord {
   readonly execution: BoardExecutionLite;
   readonly presetId?: string;
   readonly version: number;
+  /** 显式任务分支（上游 issue #98：首建 worktree 时固定）。 */
+  readonly branch?: string;
+  /** 代码隔离方式（'worktree' | 'none'）。 */
+  readonly isolation?: string;
+  /** 执行记录（收割目标解析的数据来源）。 */
+  readonly executions?: readonly BoardExecutionEvidence[];
 }
 
 /** 板任务列表摘要面（照上游 TaskSummary，只声明本卡读取的字段）。 */
@@ -58,11 +83,50 @@ export interface BoardTaskSummary {
   readonly claimOwner?: string;
   readonly trashed?: boolean;
   readonly version: number;
+  /**
+   * 建卡时强制隔离的说明（上游建卡强制 worktree 时才出现）。
+   * 不声明这两个字段，消费方在类型面上就看不到「已强制 worktree」的通知。
+   */
+  readonly isolationForced?: boolean;
+  readonly isolationNote?: string;
 }
 
 /** 台账面（照上游 TaskLedger，只声明本卡读取的字段）。 */
 export interface BoardLedger {
   readonly tasks: readonly BoardTaskRecord[];
+  /** 台账修订号（上游 store.mutate 每次写入 +1；watcher 靠它感知变更）。 */
+  readonly revision?: number;
+}
+
+/** 评论记录面（照上游 CommentRecord，只声明本包读取的字段）。 */
+export interface BoardCommentRecord {
+  readonly id: string;
+  readonly body: string;
+  readonly version: number;
+  readonly createdAt: number;
+  readonly threadId?: string;
+  readonly systemKey?: string;
+}
+
+/** 评论写通道输入面（照上游 addTaskComment）。 */
+export interface BoardAddTaskCommentInput {
+  readonly taskId: string;
+  readonly body: string;
+  /** 来源标记（缺省由上游写通道取系统默认）。 */
+  readonly source?: string;
+  /** 幂等键（同一键重复写入不产生重复评论）。 */
+  readonly idempotencyKey?: string;
+}
+
+/** 评论写通道结果面（照上游 addTaskComment 的结构化返回）。 */
+export interface BoardAddTaskCommentResult {
+  readonly ok: boolean;
+  readonly comment?: BoardCommentRecord;
+  readonly taskId?: string;
+  readonly taskVersion?: number;
+  /** 命中幂等键（未新增评论）。 */
+  readonly duplicate?: boolean;
+  readonly error?: { readonly code: string; readonly message: string };
 }
 
 /** 建卡输入的 execution 面（照上游 normalizeExecution 的 raw 输入形状）。 */
@@ -108,6 +172,15 @@ export interface BoardServiceContract {
   dependencyBlock(taskId: string): string | undefined;
   /** 建卡（上游走 store.mutate('task-created') 事件流）。 */
   createTask(input: BoardCreateTaskInput): Promise<BoardTaskSummary>;
+  /**
+   * 评论写通道（上游 src/local/task-writer.ts 的 addTaskComment）。
+   *
+   * 声明为可选：旧版板服务实例没有该方法时，调用方需自行降级
+   * （不得因「方法不存在」抛穿整个调用链）。
+   */
+  addTaskComment?(
+    input: BoardAddTaskCommentInput,
+  ): Promise<BoardAddTaskCommentResult>;
 }
 
 /** 软读取板服务的宿主服务名。 */

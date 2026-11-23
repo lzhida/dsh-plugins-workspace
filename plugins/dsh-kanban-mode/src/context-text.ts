@@ -1,5 +1,5 @@
 /**
- * 看板模式工作法（七段）的纯文本渲染。
+ * 看板模式工作法（八段）的纯文本渲染。
  *
  * 本模块只做一件事：把「看板模式」的工作纪律渲染成一段可注入系统提示的纯文本。
  * 它不读全局状态、不 import 宿主运行时包、没有任何副作用，因此可以被单测
@@ -8,7 +8,7 @@
  * @module dsh-kanban-mode/context-text
  */
 
-/** 看板模式工作法的七段标题（顺序即注入顺序，也是单测的形状锁）。 */
+/** 看板模式工作法的八段标题（顺序即注入顺序，也是单测的形状锁）。 */
 export const CONTEXT_SECTION_TITLES = [
   '总纪律',
   '拆卡',
@@ -17,9 +17,10 @@ export const CONTEXT_SECTION_TITLES = [
   '定时',
   '验收',
   'Git 收尾与变更请求',
+  '收割',
 ] as const;
 
-/** 七段标题之一。 */
+/** 八段标题之一。 */
 export type ContextSectionTitle = (typeof CONTEXT_SECTION_TITLES)[number];
 
 /** 工作法单段：一组并列的纪律条目。 */
@@ -34,10 +35,11 @@ export interface ContextSection {
 export const CONTEXT_TITLE = '【看板模式工作法】';
 
 /**
- * 七段的固定内容。顺序与 {@link CONTEXT_SECTION_TITLES} 一一对应。
+ * 八段的固定内容。顺序与 {@link CONTEXT_SECTION_TITLES} 一一对应。
  *
  * 内容口径来自 DSH 任务看板（taskboard）的执行纪律：
- * 先查板 → 先读后动 → 先认领 → 版本冲突只重试一次 → 验收交接 → 完成须用户确认。
+ * 先查板 → 先读后动 → 先认领 → 版本冲突只重试一次 → 验收交接 → 完成须用户确认；
+ * 「收割」段的口径来自仓库根 docs/harvest-design.md（§5–§10 定稿设计）。
  */
 export const CONTEXT_SECTIONS: readonly ContextSection[] = [
   {
@@ -105,11 +107,26 @@ export const CONTEXT_SECTIONS: readonly ContextSection[] = [
       '官方边界如实声明：forge 仅支持 GitHub/github.com 一个 provider（无 GitLab）；任务卡与变更请求之间没有官方双向绑定，靠 PR URL 回写搭桥。',
     ],
   },
+  {
+    title: '收割',
+    bullets: [
+      "收割（把任务分支合回目标分支）只在前置任务 status==='done' 之后执行：依赖门禁把 in_review 也算「前置已满足」，所以收割前必须 taskboard_get 显式确认被收割卡的 status 确为 done，否则停手并报告，不得抢跑。",
+      '目标分支默认 = 收割时主区当前分支；需要指定时传 targetBranch（必须是本地已有分支，且 ≠ 任务分支，否则工具直接拒绝）。',
+      '变基优先：默认在任务检出内 rebase 目标分支，再在主区 merge --no-ff；任务分支已有 upstream 且已推送 → 拒绝变基（不改写已推送历史），降级为 --no-ff 合并并置 degraded=true，notes 写明「拒绝变基」。',
+      '主区脏不擅动：主区有未提交改动 → 工具拒绝收割并报脏文件清单，绝不替人 stash / clean / reset。',
+      '全程本地操作、永不 push；push 与一切远端操作一律交用户。',
+      '冲突先给结构化清单再问人：从 taskboard_harvest 输出的 conflict.files（冲突文件清单）与 suggestions（冲突类型 + 两侧摘要）先列清单，再用 ask_user_question 问「AI 解决 / 手动解决」——不许跳过清单直接动手。',
+      'AI 解决：在任务检出内逐文件解决（编辑 + git add）→ 再调 taskboard_harvest(mode=apply) 续跑（工具检测到进行中的 rebase / merge 会走 --continue 收尾）。',
+      '手动解决：工具保留冲突现场（rebase / merge 进行中，不 abort、不清理），并输出「手动收割指引」（分支名、目标分支、检出路径、建议命令序列）；人在检出内解决后 git add，再跑一次 apply 续跑。',
+      '二次冲突最多再问一轮：AI 解决后仍冲突 → 至多再问一轮，仍冲突就停手交人。',
+      "收割卡模板（agent 直接抄）：blockedBy=[被收割的任务卡 id]、presetId=kanban-mode、execution 用 claim（人认领）或 cron（定时）、prompt 显式写「先 taskboard_get 确认前置 status==='done'，否则停手」并调用 taskboard_harvest(mode=apply)。",
+    ],
+  },
 ];
 
 /**
  * 渲染看板上下文纯文本。
- * @returns 标题 + 七段小节构成的纯文本（末尾无多余空行）。
+ * @returns 标题 + 八段小节构成的纯文本（末尾无多余空行）。
  */
 export function buildContext(): string {
   const lines: string[] = [CONTEXT_TITLE, ''];

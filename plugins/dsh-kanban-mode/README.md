@@ -14,17 +14,18 @@
   （codex / claude-code 子代理，未安装提供方时零影响，见
   [docs/official-subagent.md](docs/official-subagent.md)）
 
-看板上下文入口会向系统提示注册一个 `order=185` 的段落，内容是**看板模式工作法七段**：
+看板上下文入口会向系统提示注册一个 `order=185` 的段落，内容是**看板模式工作法八段**：
 
-| 段落               | 要点                                                                                                                                 |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------ |
-| 总纪律             | 先查板 → 先读后动 → 先认领；版本冲突只重试一次；验收交接；完成须用户确认；backlog = 未授权                                           |
-| 拆卡               | 复杂需求先拆成多卡，**拆分表先给用户确认**再落卡；一张卡 = 一个可独立验收的功能点                                                    |
-| 前置               | 有真实先后依赖时用 `blockedBy` 落机器门禁；只是建议顺序就只写文字，不设门禁                                                          |
-| 并行               | 没有前置关系的卡可以并行；**被前置阻塞的卡必须等前置完成，否则立即停止**；官方进程外子代理是可选工位                                 |
-| 定时               | 定时卡用于无人值守 / 套餐非高峰期 / 套餐重置后的时间窗口；定时卡默认按看板模式执行                                                   |
-| 验收               | 自验 → `execution_report` → 评论归档 → 置为待验收；**任务永不自行置完成，完成由用户确认**                                            |
-| Git 收尾与变更请求 | 条件增强：启用官方 forge 后开 PR 且 **PR URL 回写 execution_report 与评论**（不回写则验收链断点）；未启用按仓库常规 git 纪律，不阻塞 |
+| 段落               | 要点                                                                                                                                                                               |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 总纪律             | 先查板 → 先读后动 → 先认领；版本冲突只重试一次；验收交接；完成须用户确认；backlog = 未授权                                                                                         |
+| 拆卡               | 复杂需求先拆成多卡，**拆分表先给用户确认**再落卡；一张卡 = 一个可独立验收的功能点                                                                                                  |
+| 前置               | 有真实先后依赖时用 `blockedBy` 落机器门禁；只是建议顺序就只写文字，不设门禁                                                                                                        |
+| 并行               | 没有前置关系的卡可以并行；**被前置阻塞的卡必须等前置完成，否则立即停止**；官方进程外子代理是可选工位                                                                               |
+| 定时               | 定时卡用于无人值守 / 套餐非高峰期 / 套餐重置后的时间窗口；定时卡默认按看板模式执行                                                                                                 |
+| 验收               | 自验 → `execution_report` → 评论归档 → 置为待验收；**任务永不自行置完成，完成由用户确认**                                                                                          |
+| Git 收尾与变更请求 | 条件增强：启用官方 forge 后开 PR 且 **PR URL 回写 execution_report 与评论**（不回写则验收链断点）；未启用按仓库常规 git 纪律，不阻塞                                               |
+| 收割               | 验收 `done` 后把任务分支合回目标分支：**必须先 `taskboard_get` 确认前置 `status==='done'`**（in_review 不算）；冲突先列结构化清单再问人；永不 push、主区脏不擅动、不改写已推送历史 |
 
 ## 官方能力集成（三件套，条件增强）
 
@@ -70,10 +71,10 @@ skill，看板模式预设会话无需额外配置即可获得建卡方法论：
 - **优先级**：看板模式会话内以本内联版为准；用户级副本可保留但建议停用以免两份漂移。
 - **降级**：宿主 `skills` 服务缺失或注册失败时只 `console.warn`，不影响预设注册。
 
-## 看板模式三工具
+## 看板模式四工具
 
-插件在根层向宿主 `tools` 注册表（`ctx.tools.register`）注册三个工具，让看板模式会话能
-**在不挂 dsh-taskboard 行的前提下**盘点、校验与调度任务卡。板服务经
+插件在根层向宿主 `tools` 注册表（`ctx.tools.register`）注册四个工具，让看板模式会话能
+**在不挂 dsh-taskboard 行的前提下**盘点、校验、调度任务卡并执行收割。板服务经
 `ctx.get('dsh-taskboard')` 运行时软读取（对齐 dsh-anytype wiki 先例，不声明 inject）；
 服务缺失时工具抛可操作错误：`dsh-taskboard 服务不可用：请安装并启用 @zhidal/dsh-taskboard 插件后重试`。
 工具规格（name/description/参数 schema/output.render/execute）照 vendored sdk 垫片机制
@@ -158,6 +159,88 @@ todo/in_progress 或 dependency_blocked（**前置未满足则立即停止**，`
   为普通 claim 卡，**不补跑**——无人值守场景建议优先使用周期 cron；
 - 执行会话永远不能把任务移到 done，完成由用户确认。
 
+## 收割（Harvest）：验收后的变基与合并
+
+任务卡验收通过（`status=done`）后，把任务分支合回目标分支的闭环。
+
+**分工边界**：管线的十步、状态机、冲突分叉与红线以仓库根
+[docs/harvest-design.md](../../docs/harvest-design.md)（定稿设计文档）为准——**本节不重复
+叙述管线细节**，只写「怎么用」与「已知坑」；可复制的卡片模板与冲突处理脚本见
+[docs/harvest-workflow.md](docs/harvest-workflow.md)。
+
+工具：`taskboard_harvest`（`plan` / `apply` 两态，幂等续跑）。
+
+| 参数           | 类型                             | 说明                                                         |
+| -------------- | -------------------------------- | ------------------------------------------------------------ |
+| `taskId`       | string（必填）                   | 被收割的任务卡 id                                            |
+| `mode`         | `plan` \| `apply`（默认 `plan`） | `plan` 只读审查与预检；`apply` 执行变基 + 合并               |
+| `targetBranch` | string（可选）                   | 合并目标分支；缺省 = **收割时主区当前分支**；必须 ≠ 任务分支 |
+| `deleteBranch` | boolean（默认 `true`）           | 合并成功后是否删任务分支（`branch -d`，非强制）              |
+| `keepWorktree` | boolean（默认 `false`）          | 合并后是否保留检出（默认删除，脏则拒删并报告）               |
+
+### 三种触发方式
+
+| 触发              | 机制                                                                     | 自动化程度                       |
+| ----------------- | ------------------------------------------------------------------------ | -------------------------------- |
+| **T1 会话内直呼** | 在项目会话里直接调 `taskboard_harvest`（先 `plan` 看清差异，再 `apply`） | 半自动（人发起）                 |
+| **T2 下游收割卡** | 任务卡 done → 收割卡 `blockedBy` 满足 → 认领或 cron 触发 → prompt 调工具 | 近自动（依赖门禁 + 调度器 tick） |
+| **T3 done 钩子**  | 验收联动 watcher（进程内轮询台账 `revision`，done → 直合 / 建收割卡）    | 自动（**已落地**）               |
+
+- **T1**：最省事的一条。`plan` 只读出差异摘要、base 是否前进、预检到的冲突文件；
+  确认无误再 `apply`。
+- **T2**：把「收割」本身做成一张下游卡（`blockedBy` 指向被收割的卡）。前置卡 `done`
+  后门禁放行，卡被认领或 cron 到点触发，prompt 里调工具——近自动，但**靠 prompt 里的
+  纪律兜底**（见下方已知坑第 1 条）。
+- **T3**（**已落地**）：验收联动 watcher——进程内轮询台账 `revision`，发现卡片**进入**
+  `done` 就自动收割：无冲突直合并并删检出 + 删分支，有冲突则先留痕冲突清单再自动建
+  收割卡交人；`canceled` 则先留痕分支 tip 与脏文件清单，再强制删除检出与分支
+  （不可逆）。可用 `DSH_HARVEST_WATCH=off|0|false` 关闭、用
+  `DSH_HARVEST_WATCH_INTERVAL_MS` 调整轮询间隔（默认 800ms）。
+
+### 收割卡模板（T2 直接抄）
+
+```json
+{
+  "title": "收割：<被收割任务标题>",
+  "workspaceId": "<项目 id>",
+  "urgency": "normal",
+  "blockedBy": ["<被收割的任务卡 id>"],
+  "presetId": "kanban-mode",
+  "execution": { "mode": "claim" },
+  "prompt": "先 taskboard_get 确认前置任务 <被收割的任务卡 id> 的 status==='done'，否则停手并报告（依赖门禁把 in_review 也算满足，不能只信门禁）。确认 done 后调用 taskboard_harvest(taskId='<被收割的任务卡 id>', mode='apply')；遇冲突先列 conflict.files 与 suggestions 的结构化清单，再用 ask_user_question 问「AI 解决 / 手动解决」。自验 → taskboard_execution_report → 评论留痕 → 置 in_review，永不自行置 done。"
+}
+```
+
+`execution` 两种取法：
+
+- `{"mode":"claim"}`——**人认领**触发（默认，适合验收后顺手收尾）；
+- `{"mode":"scheduled","cron":"..."}`——**定时**触发（无人值守窗口）。
+
+`presetId` 写死 `kanban-mode`：收割执行会话必须按看板模式纪律跑（先读后动、依赖门禁、
+禁止自行置 done），不依赖部署默认预设。
+
+### 已知坑
+
+1. **依赖门禁把 `in_review` 也算「前置已满足」**：T2 收割卡会在前置还停在待验收时
+   就被放行。所以 prompt **必须**显式要求先 `taskboard_get` 确认前置 `status==='done'`，
+   否则停手——这是纪律，不能指望门禁。
+2. **主区脏 → 拒绝，不擅动**：主区有未提交改动时工具直接拒绝收割并列出脏文件，
+   绝不替人 `stash` / `clean` / `reset`。自己收拾干净再重试。
+3. **已推送的分支不改写历史**：任务分支已有 upstream 且已推送 → 拒绝变基，降级为
+   `--no-ff` 合并并置 `degraded=true`（notes 写明「拒绝变基」）。收割全程本地操作，**永不 push**。
+4. **检出可能已被官方回收**：官方回收挂会话归档，冷会话回落 `retained`——分支还在、
+   检出没了。工具会在官方池 `<repo>/.agents/worktrees/<branch>` 临时检出，**不要**自造
+   第二套池路径。
+5. **冲突必须先列清单再问人**：不许直接动手改冲突。先用 `conflict.files` +
+   `suggestions` 给结构化清单（文件 + 冲突类型 + 两侧摘要），再 `ask_user_question` 问
+   「AI 解决 / 手动解决」；AI 解决后仍冲突，最多再问一轮，仍冲突就停手交人。
+6. **目标分支默认 = 收割时主区当前分支**：要合到别的分支必须显式传 `targetBranch`
+   （且 ≠ 任务分支）；主区处于 detached HEAD 时工具会直接拒绝，要显式指定。
+7. **不要在预设里挂 dsh-taskboard 插件行**：收割工具与本包另外三个工具一样经
+   `ctx.get('dsh-taskboard')` **软读**板服务，缺席时报可操作错误（提示安装
+   `@zhidal/dsh-taskboard`）而非静默失败；预设里再挂 dsh-taskboard 行会重复注册同名
+   工具并实例化第二套 SchedulerService（见「限制与红线」第 1 条）。
+
 ## 安装
 
 本包是**构建式发行**（`main` 指向 `dist/index.js`）：实体安装（git/npm/tarball）时插件落在
@@ -181,7 +264,7 @@ pnpm dsh plugin --profile test add link:<仓库绝对路径>/plugins/dsh-kanban-
    → 定时卡被重复执行。单测与构建脚本都对这条红线做了断言。
 2. **服务缺失时降级不崩。** `agentPresets` / `systemPrompt` / `tools` 服务缺失时插件只
    `console.warn` 后返回/跳过对应注册，不抛异常影响宿主启动；三块注册互不连累。
-   dsh-taskboard 板服务缺失时三工具抛可操作错误（提示安装 @zhidal/dsh-taskboard）。
+   dsh-taskboard 板服务缺失时四个工具抛可操作错误（提示安装 @zhidal/dsh-taskboard）。
 3. **编程式注册与声明式预设行互斥。** 宿主注册表对重复 id 直接抛 `Duplicate agent preset: <id>`，
    所以 `cordis.patch.yml` 里**只插插件行，不插预设行**。
 4. **宿主服务用本地窄接口声明**，不 import 宿主 `@deepseek-ai/*` 运行时包——构建产物零
@@ -199,11 +282,11 @@ pnpm dsh plugin --profile test add link:<仓库绝对路径>/plugins/dsh-kanban-
 
 ## 验证状态（如实记录）
 
-- **单元/契约层**：`npx vitest run plugins/dsh-kanban-mode` 全绿（预设形状、七段工作法、
-  skill 锚点、三工具契约、板服务判定矩阵），`tsc --noEmit` / `eslint` / `prettier` /
+- **单元/契约层**：`npx vitest run plugins/dsh-kanban-mode` 全绿（预设形状、八段工作法、
+  skill 锚点、四工具契约、板服务判定矩阵、收割管线与 watcher），`tsc --noEmit` / `eslint` / `prettier` /
   `scripts/build.ts`（含产物断言）全过。
 - **实机装载层**：系列收官卡 6/6 在独立隔离 profile（`kanban-smoke`，独立 DSH_HOME）完成了
-  一次 bundle 安装链路 e2e——加载级三断言、`kanban-mode` 预设注册、三工具注册、
+  一次 bundle 安装链路 e2e——加载级三断言、`kanban-mode` 预设注册、四工具注册、
   `blockedBy` 依赖门禁链（`dependency_blocked` 拒绝 → 前置 `in_review` → 解锁）、定时卡
   `presetId='kanban-mode'` 持久化与前置未满足自动跳过，全部通过。该验证实例已退出，
   仓内证据为当时的运行期日志与 HTTP API 取证记录。
@@ -221,19 +304,29 @@ plugins/dsh-kanban-mode/
 │   ├── skill-vs-user-skill.md      # 内嵌 skill 与用户级 dsh-task-create 的差异对照
 │   ├── official-integration.md     # 官方能力集成三件套（forge / worktree / subagent）与看板验收链
 │   ├── official-subagent.md        # 官方进程外子代理（codex / claude-code）可选接入指南
+│   ├── harvest-workflow.md         # 收割工作法：触发三法 / 收割卡模板 / 冲突剧本 / 已知坑
 │   └── upstream-alignment.md       # 照上游源码搬运的两处来源登记（判定口径 / 工具规格机制）
 ├── scripts/build.ts            # esbuild 双产物 + 构建断言
 ├── src/
-│   ├── context-text.ts         # 看板工作法七段（纯函数）
+│   ├── context-text.ts         # 看板工作法八段（纯函数）
 │   ├── entries/board-context.ts# 包子路径入口（systemPrompt 段落）
-│   ├── index.ts                # 插件入口（注册预设 + 内嵌 skill + 三工具）
+│   ├── index.ts                # 插件入口（注册预设 + 内嵌 skill + 四工具）
 │   ├── preset-def.ts           # 预设定义（standard 逐行复刻）
 │   ├── skill/
 │   │   ├── skill-content.ts    # 内嵌建卡 skill 正文（SKILL_NAME/SKILL_CONTENT）
 │   │   └── register.ts         # ctx.skills 注册封装（降级容错）
+│   ├── harvest/
+│   │   ├── git-runner.ts       # git 进程封装（capture/captureOrThrow/版本守卫）
+│   │   ├── inspect.ts          # 只读审查（diffStat/log/changedFiles/baseAdvanced/冲突预检）
+│   │   ├── conflict-plan.ts    # 冲突结构化清单（冲突类型 + 两侧摘要 + 建议）
+│   │   ├── resolve.ts          # 变基/合并续跑现场探测与恢复动作
+│   │   ├── task-target.ts      # 收割目标解析（项目目录 / 任务分支 / 收割卡标记）
+│   │   ├── pipeline.ts         # 收割管线（plan/apply/冲突续跑/discard + 仓库级互斥）
+│   │   └── watcher.ts          # T3 done 钩子（轮询 revision → 收割/丢弃/留痕）
 │   └── tools/
 │       ├── board-contract.ts   # BoardServiceContract 窄接口 + 软读取 + 依赖判定（照上游口径）
 │       ├── define-tool.ts      # 本地工具规格垫片（照 vendored sdk 结构兼容重实现）
+│       ├── harvest.ts          # taskboard_harvest（收割工具）
 │       ├── ready-cards.ts      # kanban_ready_cards（只读盘点）
 │       ├── plan-check.ts       # kanban_plan_check（只读五类校验）
 │       ├── schedule-run.ts     # kanban_schedule_run（写：生成定时执行卡）

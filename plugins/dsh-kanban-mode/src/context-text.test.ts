@@ -8,7 +8,7 @@ import {
 } from './context-text.ts';
 
 describe('dsh-kanban-mode 看板工作法文案', () => {
-  it('七段标题齐全且顺序固定', () => {
+  it('八段标题齐全且顺序固定', () => {
     expect([...CONTEXT_SECTION_TITLES]).toEqual([
       '总纪律',
       '拆卡',
@@ -17,6 +17,7 @@ describe('dsh-kanban-mode 看板工作法文案', () => {
       '定时',
       '验收',
       'Git 收尾与变更请求',
+      '收割',
     ]);
     expect(CONTEXT_SECTIONS).toHaveLength(CONTEXT_SECTION_TITLES.length);
     expect(CONTEXT_SECTIONS.map((section) => section.title)).toEqual([
@@ -32,7 +33,7 @@ describe('dsh-kanban-mode 看板工作法文案', () => {
     }
   });
 
-  it('七段的关键纪律都写进文案', () => {
+  it('八段的关键纪律都写进文案', () => {
     const text = buildContext();
     expect(text).toContain('先查板');
     expect(text).toContain('先读后动');
@@ -98,5 +99,84 @@ describe('dsh-kanban-mode 看板工作法文案', () => {
     expect(text).not.toContain('必须安装');
     expect(text).toContain('GitHub');
     expect(text).toContain('双向绑定');
+  });
+
+  it('收割段写明 done 门禁：in_review 不算已满足', () => {
+    const harvest = CONTEXT_SECTIONS.find(
+      (section) => section.title === '收割',
+    );
+    if (harvest === undefined) {
+      throw new Error('收割段缺失');
+    }
+    const text = harvest.bullets.join('\n');
+    // 硬门禁：必须显式确认前置 status==='done'，否则停手。
+    expect(text).toContain("status==='done'");
+    expect(text).toContain('taskboard_get');
+    expect(text).toContain('停手');
+    // 依赖门禁把 in_review 也算满足——必须写明这一坑。
+    expect(text).toContain('in_review');
+    expect(text).toContain('前置已满足');
+  });
+
+  it('收割段写明冲突先列结构化清单再问人，且分叉与二轮上限齐全', () => {
+    const harvest = CONTEXT_SECTIONS.find(
+      (section) => section.title === '收割',
+    );
+    if (harvest === undefined) {
+      throw new Error('收割段缺失');
+    }
+    const text = harvest.bullets.join('\n');
+    // 清单来源与问询动作。
+    expect(text).toContain('conflict.files');
+    expect(text).toContain('suggestions');
+    expect(text).toContain('ask_user_question');
+    expect(text).toContain('AI 解决');
+    expect(text).toContain('手动解决');
+    // 两条分叉路径。
+    expect(text).toContain('git add');
+    expect(text).toContain('mode=apply');
+    expect(text).toContain('abort');
+    expect(text).toContain('手动收割指引');
+    // 二次冲突上限。
+    expect(text).toContain('二次冲突');
+    expect(text).toContain('最多再问一轮');
+  });
+
+  it('收割段写明三条红线：永不 push / 不改写已推送历史 / 主区脏不擅动', () => {
+    const harvest = CONTEXT_SECTIONS.find(
+      (section) => section.title === '收割',
+    );
+    if (harvest === undefined) {
+      throw new Error('收割段缺失');
+    }
+    const text = harvest.bullets.join('\n');
+    expect(text).toContain('永不 push');
+    expect(text).toContain('不改写已推送历史');
+    expect(text).toContain('拒绝变基');
+    expect(text).toContain('merge --no-ff');
+    expect(text).toContain('主区脏不擅动');
+    expect(text).toContain('脏文件');
+    expect(text).not.toContain('自动 stash');
+    expect(text).not.toContain('自动 clean');
+  });
+
+  it('收割段给出可复制的收割卡模板与目标分支口径', () => {
+    const harvest = CONTEXT_SECTIONS.find(
+      (section) => section.title === '收割',
+    );
+    if (harvest === undefined) {
+      throw new Error('收割段缺失');
+    }
+    const text = harvest.bullets.join('\n');
+    // 卡片模板四段。
+    expect(text).toContain('blockedBy=');
+    expect(text).toContain('presetId=kanban-mode');
+    expect(text).toContain('claim');
+    expect(text).toContain('cron');
+    expect(text).toContain('prompt');
+    // 目标分支语义。
+    expect(text).toContain('主区当前分支');
+    expect(text).toContain('targetBranch');
+    expect(text).toContain('≠ 任务分支');
   });
 });

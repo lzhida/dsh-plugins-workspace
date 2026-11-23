@@ -2,7 +2,7 @@
  * 看板上下文子路径入口（独立产物 dist/board-context.js）。
  *
  * 预设行 `'@zhidal/dsh-kanban-mode/board-context'` 指向本入口：预设挂载时，
- * 它向系统提示注册一个 order=185 的段落，内容是看板模式工作法七段。
+ * 它向系统提示注册一个 order=185 的段落，内容是看板模式工作法八段。
  *
  * order 取 185 而不是上游 taskboard 的 180（PROTOCOL_SECTION_ORDER）：两段
  * 顺序固定，看板工作法排在任务协议段之后，读起来是「先讲怎么用看板，再讲

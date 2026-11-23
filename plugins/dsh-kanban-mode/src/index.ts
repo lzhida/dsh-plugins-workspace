@@ -31,6 +31,7 @@ import {
 import type { SkillsService } from './skill/register.ts';
 import { registerKanbanTools } from './tools/register.ts';
 import type { ToolsService } from './tools/register.ts';
+import { createHarvestWatcher } from './harvest/watcher.ts';
 
 /** 插件名（宿主 loader 依赖的标识）。 */
 export const name = 'dsh-kanban-mode';
@@ -54,6 +55,13 @@ export interface KanbanModeContext {
   tools?: ToolsService;
   /** cordis Context 的服务软读取（工具 execute 时惰性取板服务用）。 */
   get?(name: string): unknown;
+  /**
+   * cordis 副作用注册（验收联动 watcher 的启停走这条路径）。
+   *
+   * 回调立即执行，返回的清理函数在插件卸载时被 cordis 自动调用——
+   * watcher 的停表就挂在这里。
+   */
+  effect?(fn: () => (() => void) | void): void;
 }
 
 /**
@@ -94,6 +102,34 @@ export async function apply(ctx: KanbanModeContext): Promise<void> {
   // 看板模式三工具注册：独立于预设 / skill 注册成败；工具 execute 时才
   // 惰性软读取 dsh-taskboard 板服务，注册期不解析（见 tools/board-contract.ts）。
   registerKanbanTools(ctx);
+  // 验收联动 watcher：任务状态「进入」done → 自动收割；「进入」canceled →
+  // 自动丢弃。板服务在轮询时软读取（注册期不解析），服务缺席时静默降级。
+  startHarvestWatcher(ctx);
+}
+
+/**
+ * 接线验收联动 watcher（启动 / 停止）。
+ *
+ * 为什么挂 ctx.effect：cordis 会在插件卸载时自动调用返回的清理函数，
+ * 停表不必手写卸载钩子（对齐仓库既有 ctx.effect 用法）。
+ *
+ * 板服务与项目注册表都在 watcher 的**轮询时**软读取——注册期解析会让
+ * watcher 在板服务尚未就绪时直接报废。
+ */
+function startHarvestWatcher(ctx: KanbanModeContext): void {
+  try {
+    const watcher = createHarvestWatcher({ context: ctx });
+    ctx.effect?.(() => {
+      watcher.start();
+      return () => {
+        watcher.stop();
+      };
+    });
+  } catch (error) {
+    console.warn(
+      `[${name}] 验收联动 watcher 启动失败：${describeError(error)}`,
+    );
+  }
 }
 
 export {

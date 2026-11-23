@@ -1,6 +1,6 @@
 {
   "name": "@zhidal/dsh-kanban-mode",
-  "description": "「看板模式」agent 预设插件：在宿主 agentPresets 注册表里编程式注册 id=kanban-mode 的预设（逐行复刻官方 standard 预设行集 + 追加看板上下文入口行），以 board-context 子路径插件向系统提示注入看板模式工作法七段，在根层注册内嵌建卡 skill kanban-task-create，并注册看板模式三工具（kanban_ready_cards 只读盘点并行波次 / kanban_plan_check 只读五类拆卡校验 / kanban_schedule_run 生成 presetId=kanban-mode 的定时执行卡，板服务经 ctx.get('dsh-taskboard') 运行时软读取）。构建式发行（esbuild → dist/index.js），宿主服务一律用本地窄接口声明，零运行时 @deepseek-ai 依赖。",
+  "description": "「看板模式」agent 预设插件：在宿主 agentPresets 注册表里编程式注册 id=kanban-mode 的预设（逐行复刻官方 standard 预设行集 + 追加看板上下文入口行），以 board-context 子路径插件向系统提示注入看板模式工作法八段，在根层注册内嵌建卡 skill kanban-task-create，并注册看板模式四工具（kanban_ready_cards 只读盘点并行波次 / kanban_plan_check 只读五类拆卡校验 / kanban_schedule_run 生成 presetId=kanban-mode 的定时执行卡 / taskboard_harvest 收割任务分支并合并回主区，板服务经 ctx.get('dsh-taskboard') 运行时软读取）。构建式发行（esbuild → dist/index.js），宿主服务一律用本地窄接口声明，零运行时 @deepseek-ai 依赖。",
   "version": "0.1.0",
   "private": true,
   "license": "MIT",

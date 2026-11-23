@@ -11,11 +11,12 @@ afterEach(() => {
 });
 
 describe('dsh-kanban-mode tools：注册入口', () => {
-  it('KANBAN_TOOL_NAMES 与三工具一一对应', () => {
+  it('KANBAN_TOOL_NAMES 与四个工具一一对应', () => {
     expect([...KANBAN_TOOL_NAMES]).toEqual([
       'kanban_ready_cards',
       'kanban_plan_check',
       'kanban_schedule_run',
+      'taskboard_harvest',
     ]);
   });
 
@@ -30,19 +31,19 @@ describe('dsh-kanban-mode tools：注册入口', () => {
     ).toBe(false);
   });
 
-  it('三工具逐个注册到宿主 tools 注册表并打固定成功日志', () => {
+  it('四个工具逐个注册到宿主 tools 注册表并打固定成功日志', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const register = vi.fn();
     registerKanbanTools({ tools: { register } });
-    expect(register).toHaveBeenCalledTimes(3);
+    expect(register).toHaveBeenCalledTimes(4);
     const names = register.mock.calls.map(
       (call) => (call[0] as { name: string }).name,
     );
     expect(names).toEqual([...KANBAN_TOOL_NAMES]);
     expect(
       log.mock.calls.some((call) =>
-        String(call[0]).includes('[dsh-kanban-mode] registered 3 kanban tools'),
+        String(call[0]).includes('[dsh-kanban-mode] registered 4 kanban tools'),
       ),
     ).toBe(true);
   });
@@ -86,7 +87,7 @@ describe('dsh-kanban-mode tools：注册入口', () => {
     expect(String(warn.mock.calls[0]![0])).toContain('duplicate tool');
     expect(
       log.mock.calls.some((call) =>
-        String(call[0]).includes('[dsh-kanban-mode] registered 2 kanban tools'),
+        String(call[0]).includes('[dsh-kanban-mode] registered 3 kanban tools'),
       ),
     ).toBe(true);
   });
