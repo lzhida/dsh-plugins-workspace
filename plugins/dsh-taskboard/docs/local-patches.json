@@ -23,7 +23,7 @@
     },
     "host/routes.ts": {
       "upstreamSha256": "a1a9b9629b930b7958bb07e6f97f4a2aabe5d9f24436a87a32854be710244292",
-      "reason": "看板官方集成系列 1/3 卡：worktree 作用域校验改用官方池 .agents/worktrees（路径必须落在池内）；gitignore 建议认 .agents；孤儿检出改为按路径枚举（官方池目录名是分支名，不再是任务号）；worktree-remove / worktree-cleanup 改用 git.removeCheckout（脏检出拒绝删除）；purge 清理检出后删分支；合并逻辑（--no-ff、遗留多仓记录逐仓合并）保留不变。"
+      "reason": "看板官方集成系列 1/3 卡：worktree 作用域校验改用官方池 .agents/worktrees（路径必须落在池内）；gitignore 建议认 .agents；孤儿检出改为按路径枚举（官方池目录名是分支名，不再是任务号）；worktree-remove / worktree-cleanup 改用 git.removeCheckout（脏检出拒绝删除）；purge 清理检出后删分支；合并逻辑（--no-ff、遗留多仓记录逐仓合并）保留不变。验收联动系列 1/4 卡：建卡入口 POST /dsh-taskboard/tasks 的隔离归一化接入本地真源 resolveIsolation——建卡一律 worktree，显式 isolation=none 被强制覆盖并在响应中带「已强制 worktree」注明；该入口此前独立归一化 isolation（未走本地写手），故必须显式接入真源。"
     },
     "host/repos.ts": {
       "upstreamSha256": "510d0ba278453d7771f61da3817efe598db631742a3f63e218ff59aba091c23a",

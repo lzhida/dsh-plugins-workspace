@@ -47,6 +47,7 @@ import {
   type SystemCommentRow,
 } from '../shared/protocol.ts'
 import { OFFICIAL_POOL_DIR } from '../local/official-worktree.ts'
+import { resolveIsolation } from '../local/task-writer.ts'
 import { type GitFace } from './git.ts'
 import { repoMainPath } from './isolation.ts'
 import { createRepoScanner, type RepoScanner } from './repos.ts'
@@ -787,10 +788,16 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           const modelRaw = body.model === undefined ? settings?.defaultModel : body.model
           const model = modelRaw == null ? undefined : checkModel(modelRaw, options.modelProviders)
           const isolationRaw = str(body, 'isolation')
-          // 0.5.0: an omitted isolation is MATERIALIZED from the board
-          // setting (看板设置) at creation, so later setting changes never
-          // rewrite existing tasks.
-          const isolation = isolationRaw === null ? defaultIsolationOf(store.snapshot().settings) : asIsolation(isolationRaw)
+          // 验收联动系列 1/4: a new task is ALWAYS created with worktree
+          // isolation. The request and the board default are both ignored;
+          // resolveIsolation is the single source of truth shared with the
+          // agent tool and the board service, so an explicit 'none' is
+          // overridden and the response notes it.
+          const isolationResolution = resolveIsolation(
+            isolationRaw === null ? undefined : isolationRaw,
+            defaultIsolationOf(store.snapshot().settings),
+          )
+          const isolation = isolationResolution.isolation
           // Issue #98: an explicit task branch. Fail-soft — garbage input
           // falls back to the board naming preset (no override stored).
           const branchRaw = str(body, 'branch')
@@ -836,7 +843,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             ledger.tasks.push(task)
             return [task]
           })
-          json(res, { ok: true, value: summarize(task) }, 201)
+          json(res, { ok: true, value: { ...summarize(task), ...(isolationResolution.forced ? { isolationForced: true, isolationNote: isolationResolution.note } : {}) } }, 201)
         } catch (error) {
           const f = toFail(error)
           json(res, f.res, f.status)

@@ -17,7 +17,7 @@ import type { LedgerStore } from './task-writer.ts';
 /** 变更事件记录。 */
 export interface FakeStoreEvent {
   /** 事件类型（与上游 store.mutate 的 kind 同名）。 */
-  kind: 'task-created' | 'task-updated';
+  kind: 'task-created' | 'task-updated' | 'comment-added';
   /** 本次变更涉及的任务 id。 */
   ids: string[];
 }

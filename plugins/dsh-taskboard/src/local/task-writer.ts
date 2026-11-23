@@ -12,6 +12,7 @@
  *   ../shared/dependencies.ts，不复制第二份逻辑，也不改写其报错原文。
  */
 
+import { createHash } from 'node:crypto';
 import {
   asIsolation,
   asPermission,
@@ -20,7 +21,9 @@ import {
   checklistFromTexts,
   defaultIsolationOf,
   defaultPermissionOf,
+  newCommentId,
   newTaskId,
+  normalizeBody,
   normalizeExecution,
   normalizeModel,
   normalizePrompt,
@@ -29,6 +32,8 @@ import {
   summarize,
   type Actor,
   type BoardSettings,
+  type CommentRecord,
+  type IsolationMode,
   type TaskLedger,
   type TaskModel,
   type TaskRecord,
@@ -36,7 +41,7 @@ import {
 } from '../shared/protocol.ts';
 import { validateDependencies } from '../shared/dependencies.ts';
 import { applyHumanWaitingPatch } from '../shared/human-wait.ts';
-import { BoardError, ERR } from './board-errors.ts';
+import { BoardError, ERR, type BoardErrorCode } from './board-errors.ts';
 
 /**
  * 台账写入面（本地窄接口；与 host/store.ts 的 TaskStore 结构兼容）。
@@ -53,7 +58,7 @@ export interface LedgerStore {
    * 串行队列内的台账变更：mutator 收到新鲜草稿，返回 undefined 表示放弃写入。
    */
   mutate(
-    kind: 'task-created' | 'task-updated',
+    kind: 'task-created' | 'task-updated' | 'comment-added',
     mutator: (ledger: TaskLedger) => TaskRecord[] | undefined,
   ): Promise<{ ledger: TaskLedger; changed: readonly TaskRecord[] }>;
 }
@@ -110,6 +115,72 @@ export interface CreateTaskInput {
   checklist?: string[];
   /** 前置任务 id（新建语义：直接挂上这些前置）。 */
   blockedBy?: string[];
+}
+
+/**
+ * 建卡时强制生效的隔离模式（验收联动系列 1/4 起）。
+ *
+ * 建卡入口共三条且**各自独立归一化** isolation：工具入口与板服务入口汇聚到
+ * 本文件的 createTask，GUI 入口走 host/routes.ts 的 POST /tasks。两处都必须
+ * 走 {@link resolveIsolation}（下方单一真源），否则 GUI 建卡会绕过强制。
+ */
+export const FORCED_ISOLATION: IsolationMode = 'worktree';
+
+/** 强制覆盖时写进建卡结果的注明文案。 */
+export const FORCED_ISOLATION_NOTE = '已强制 worktree 隔离';
+
+/** 建卡隔离归一化的结果。 */
+export interface IsolationResolution {
+  /** 最终生效的隔离模式（恒为 {@link FORCED_ISOLATION}）。 */
+  isolation: IsolationMode;
+  /** 是否发生了强制覆盖（入参或看板默认与强制值不一致）。 */
+  forced: boolean;
+  /** 覆盖注明（forced 为 true 时存在）。 */
+  note?: string;
+}
+
+/**
+ * 建卡隔离归一化的**单一真源**：工具 / 板服务 / GUI 三条建卡入口共用。
+ *
+ * 语义：
+ * - 显式 `worktree`（或看板默认即为 worktree）→ 原样生效，不算覆盖；
+ * - 显式 `none` → 强制改为 worktree 并注明；入参非法值仍按上游口径报错
+ *   （`isolation must be 'worktree' or 'none'`），校验不被绕过；
+ * - 未指定 → 取看板默认（缺省为上游 DEFAULT_ISOLATION='none'），同样强制
+ *   为 worktree 并注明。
+ */
+export function resolveIsolation(
+  raw: string | undefined,
+  boardDefault: IsolationMode | undefined,
+): IsolationResolution {
+  const requested = raw === undefined ? boardDefault : asIsolation(raw);
+  if (requested === FORCED_ISOLATION) {
+    return { isolation: FORCED_ISOLATION, forced: false };
+  }
+  const source =
+    raw !== undefined
+      ? '显式请求 none'
+      : boardDefault === 'none'
+        ? '看板默认隔离为 none'
+        : '未指定隔离（上游缺省为 none）';
+  return {
+    isolation: FORCED_ISOLATION,
+    forced: true,
+    note: `${FORCED_ISOLATION_NOTE}（原值：${source}）`,
+  };
+}
+
+/**
+ * 建卡结果（TaskSummary 的本地扩展）。
+ *
+ * 强制覆盖建卡隔离时附带注记字段；上游 TaskSummary 是 vendored 类型（禁改），
+ * 故用本地扩展承载附加信息——结构兼容，上游调用方（工具 / GUI / 板服务）无感。
+ */
+export interface CreateTaskResult extends TaskSummary {
+  /** 隔离被强制覆盖（仅覆盖时存在）。 */
+  isolationForced?: boolean;
+  /** 隔离强制覆盖的注明（仅覆盖时存在）。 */
+  isolationNote?: string;
 }
 
 /** 改卡输入（与上游 taskboard_update 的参数同构）。 */
@@ -201,7 +272,7 @@ export async function createTask(
   input: CreateTaskInput,
   actor: Actor,
   deps: TaskWriterDeps,
-): Promise<TaskSummary> {
+): Promise<CreateTaskResult> {
   const title = normalizeTitle(input.title);
   const workspaceId = await resolveWorkspaceId(input.workspaceId, deps);
   const urgency = asUrgency(input.urgency);
@@ -219,11 +290,13 @@ export async function createTask(
     modelRaw !== undefined
       ? (deps.checkModel ?? normalizeModel)(modelRaw)
       : undefined;
-  // 0.5.0：省略 isolation 时把当时的看板默认值固化到任务上，后续改设置不改旧卡。
-  const isolation =
-    input.isolation === undefined
-      ? defaultIsolationOf(deps.settings())
-      : asIsolation(input.isolation);
+  // 验收联动系列 1/4：建卡一律强制 worktree 隔离——无视入参与看板默认值；
+  // 显式 'none' 被覆盖时在结果里注明「已强制 worktree」。
+  const isolationResolution = resolveIsolation(
+    input.isolation,
+    defaultIsolationOf(deps.settings()),
+  );
+  const isolation = isolationResolution.isolation;
   // Issue #98：显式任务分支；垃圾/空输入不写覆盖（首次执行时套用看板命名预设）。
   const branchOverride =
     input.branch === undefined
@@ -280,7 +353,12 @@ export async function createTask(
     ledger.tasks.push(task);
     return [task];
   });
-  return summarize(task);
+  return {
+    ...summarize(task),
+    ...(isolationResolution.forced
+      ? { isolationForced: true, isolationNote: isolationResolution.note }
+      : {}),
+  };
 }
 
 /**
@@ -330,4 +408,172 @@ export async function updateTask(
     return [next];
   });
   return summarize(next!);
+}
+
+// ------------------------------------------------------------- 评论写通道
+// 验收联动系列 2/4：板服务 addTaskComment 的实现。上游 host/tools.ts 的
+// taskboard_comment（agent 会话评论）与 GUI 的用户评论各有自己的写入口，
+// 这里是第三条：供模式插件（收割 watcher 等）以系统身份留痕，不新增
+// host 工具、不改既有评论读路径。
+
+/** 系统评论的默认来源标记（上游约定：无会话的 host 系统评论用稳定来源标签）。 */
+export const SYSTEM_COMMENT_SOURCE = 'host';
+
+/** 系统评论正文前缀（与上游 scheduler 的 '[系统]' 同风格，便于 UI 与审计一眼分辨）。 */
+export const SYSTEM_COMMENT_BODY_PREFIX = '[系统] ';
+
+/** 评论写通道输入。 */
+export interface AddTaskCommentInput {
+  /** 目标任务 id。 */
+  taskId: string;
+  /** 评论正文（1..4000 字符；系统前缀自动补齐，已带则不重复叠加）。 */
+  body: string;
+  /** 来源标记（写入 threadId；缺省 {@link SYSTEM_COMMENT_SOURCE}）。 */
+  source?: string;
+  /**
+   * 幂等键：同一 (taskId, idempotencyKey) 只留一条评论——重复写入不推进任务
+   * 版本、不重复留痕，返回 duplicate=true。键经 sha256 派生确定性评论 id，
+   * 进程重启与台账导入 / 导出都不丢失幂等性（导入规范化只保留上游已知字段，
+   * 自定义字段会被丢弃，故幂等必须落在 id 上）。
+   */
+  idempotencyKey?: string;
+}
+
+/** 评论写通道结果：失败不抛穿调用方，折叠为结构化 ok/error。 */
+export type AddTaskCommentResult =
+  | {
+      ok: true;
+      /** 写入（或幂等命中）的评论。 */
+      comment: CommentRecord;
+      /** 目标任务 id。 */
+      taskId: string;
+      /** 写入后的任务版本（幂等命中时为当前版本，不推进）。 */
+      taskVersion: number;
+      /** true = 幂等键命中已有评论，本次未重复写入。 */
+      duplicate: boolean;
+    }
+  | {
+      ok: false;
+      /** 稳定错误码（ERR 码表）与原文详情。 */
+      error: { code: BoardErrorCode; message: string };
+    };
+
+/** 由幂等键派生确定性评论 id（`c-` + 16 位 hex；与上游时间随机 id 形状不冲突）。 */
+function commentIdFor(taskId: string, idempotencyKey: string): string {
+  const digest = createHash('sha256')
+    .update(`${taskId}\u0000${idempotencyKey}`)
+    .digest('hex')
+    .slice(0, 16);
+  return `c-${digest}`;
+}
+
+/**
+ * 是否系统评论：threadId 等于约定来源标记。与用户评论（无 threadId）、
+ * agent 会话评论（threadId 为会话 id）三者互斥可分。
+ */
+export function isSystemComment(
+  comment: CommentRecord,
+  source: string = SYSTEM_COMMENT_SOURCE,
+): boolean {
+  return comment.threadId === source;
+}
+
+/**
+ * 评论写通道：正文归一化 → 系统前缀补齐 → 幂等键派生 id → 走
+ * store.mutate('comment-added') 事件流追加（append-only、无 ifVersion，
+ * 与上游 taskboard_comment 同口径）。
+ *
+ * 失败不抛穿：任务不存在（not_found）、已归档（invalid_transition）、正文
+ * 非法（invalid_input）、台账写失败（taskboard_not_ready）一律折叠为
+ * ok:false + 稳定错误码，调用方拿结果自行决策。
+ */
+export async function addTaskComment(
+  input: AddTaskCommentInput,
+  deps: TaskWriterDeps,
+): Promise<AddTaskCommentResult> {
+  const source = input.source?.trim() || SYSTEM_COMMENT_SOURCE;
+  let body: string;
+  try {
+    body = normalizeBody(input.body);
+  } catch (error) {
+    return {
+      ok: false,
+      error: { code: ERR.invalidInput, message: (error as Error).message },
+    };
+  }
+  if (!body.startsWith(SYSTEM_COMMENT_BODY_PREFIX)) {
+    body = `${SYSTEM_COMMENT_BODY_PREFIX}${body}`;
+  }
+  if (body.length > 4000) {
+    return {
+      ok: false,
+      error: {
+        code: ERR.invalidInput,
+        message: 'comment body must be 1..4000 characters',
+      },
+    };
+  }
+  const commentId =
+    input.idempotencyKey === undefined
+      ? newCommentId()
+      : commentIdFor(input.taskId, input.idempotencyKey);
+  let comment: CommentRecord | undefined;
+  let taskVersion = 0;
+  let duplicate = false;
+  try {
+    // R1：查找 + 幂等判定 + 追加都在串行队列交给我们的新鲜草稿上完成——
+    // 幂等键命中已有评论即放弃写入（mutator 返回 undefined），不推进版本。
+    await deps.store.mutate('comment-added', (ledger) => {
+      const { index, task } = liveTaskAt(ledger, input.taskId);
+      if (task.status === 'archived') {
+        throw new BoardError(
+          ERR.invalidTransition,
+          'archived tasks are immutable',
+        );
+      }
+      const existing = task.comments.find((c) => c.id === commentId);
+      if (existing !== undefined) {
+        duplicate = true;
+        comment = existing;
+        taskVersion = task.version;
+        return undefined;
+      }
+      const next = structuredClone(task);
+      const record: CommentRecord = {
+        id: commentId,
+        body,
+        version: 1,
+        createdAt: deps.now(),
+        threadId: source,
+      };
+      next.comments.push(record);
+      next.version = task.version + 1;
+      next.updatedAt = deps.now();
+      ledger.tasks[index] = next;
+      comment = record;
+      taskVersion = next.version;
+      return [next];
+    });
+  } catch (error) {
+    if (error instanceof BoardError) {
+      return {
+        ok: false,
+        error: { code: error.code as BoardErrorCode, message: error.detail },
+      };
+    }
+    return {
+      ok: false,
+      error: {
+        code: ERR.notReady,
+        message: error instanceof Error ? error.message : String(error),
+      },
+    };
+  }
+  return {
+    ok: true,
+    comment: comment!,
+    taskId: input.taskId,
+    taskVersion,
+    duplicate,
+  };
 }

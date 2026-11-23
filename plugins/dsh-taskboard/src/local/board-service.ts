@@ -24,9 +24,13 @@ import {
   type Urgency,
 } from '../shared/protocol.ts';
 import {
+  addTaskComment as writeAddTaskComment,
   createTask as writeCreateTask,
   updateTask as writeUpdateTask,
+  type AddTaskCommentInput,
+  type AddTaskCommentResult,
   type CreateTaskInput,
+  type CreateTaskResult,
   type LedgerStore,
   type TaskWriterDeps,
   type UpdateTaskInput,
@@ -86,10 +90,23 @@ export interface BoardService {
   dependencyBlock(taskId: string): string | undefined;
   /** 依赖门禁是否开启。 */
   dependencyGateEnabled(gate: DependencyGate): boolean;
-  /** 建卡（走 store.mutate('task-created') 事件流）。 */
-  createTask(input: BoardCreateTaskInput): Promise<TaskSummary>;
+  /**
+   * 建卡（走 store.mutate('task-created') 事件流）。
+   *
+   * 返回类型带 isolationForced/isolationNote：建卡一律强制 worktree 隔离，
+   * 显式请求被覆盖时消费方要能看到「已强制」说明（否则类型面把说明擦掉了）。
+   */
+  createTask(input: BoardCreateTaskInput): Promise<CreateTaskResult>;
   /** 改卡（走 store.mutate('task-updated') 事件流；ifVersion 乐观锁）。 */
   updateTask(input: BoardUpdateTaskInput): Promise<TaskSummary>;
+  /**
+   * 评论写通道（走 store.mutate('comment-added') 事件流）。
+   *
+   * 供模式插件（收割 watcher 等）以系统身份留痕：系统评论带来源标记
+   * threadId 与 '[系统] ' 前缀、幂等键去重；失败不抛穿，返回结构化
+   * ok/error（详见 task-writer.ts 的 addTaskComment）。
+   */
+  addTaskComment(input: AddTaskCommentInput): Promise<AddTaskCommentResult>;
 }
 
 /** 板服务的构造参数。 */
@@ -186,5 +203,6 @@ export function createBoardService(options: BoardServiceOptions): BoardService {
       const { actor, ...rest } = input;
       return writeUpdateTask(rest, actor ?? defaultActor, writerDeps);
     },
+    addTaskComment: (input) => writeAddTaskComment(input, writerDeps),
   };
 }

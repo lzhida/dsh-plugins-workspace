@@ -27,7 +27,7 @@ function writerFor(store: ReturnType<typeof createFakeStore>): TaskWriterDeps {
 
 describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
   describe('建卡参数归一化', () => {
-    it('缺省参数落到上游默认值：状态 todo、执行方式 claim、隔离 none、权限 workspace-write', async () => {
+    it('缺省参数落到归一化后的默认值：状态 todo、执行方式 claim、隔离强制 worktree、权限 workspace-write', async () => {
       const store = createFakeStore();
       const summary = await createTask(
         { title: '  摸鱼摸鱼  ', workspaceId: 'ws-1', urgency: 'normal' },
@@ -42,7 +42,7 @@ describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
       expect(summary.executionMode).toBe('claim');
       expect(task?.title).toBe('摸鱼摸鱼');
       expect(task?.description).toBe('');
-      expect(task?.isolation).toBe('none');
+      expect(task?.isolation).toBe('worktree');
       expect(task?.permission).toBe('workspace-write');
       expect(task?.presetId).toBeUndefined();
       expect(task?.checklist).toBeUndefined();
@@ -51,10 +51,10 @@ describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
       expect(task?.updatedAt).toBe(NOW);
     });
 
-    it('按看板设置固化默认隔离方式、权限与预设 id', async () => {
+    it('按看板设置固化默认权限与预设 id（隔离不随之变化：一律强制 worktree）', async () => {
       const store = createFakeStore({
         settings: {
-          defaultIsolation: 'worktree',
+          defaultIsolation: 'none',
           defaultPermission: 'danger-full-access',
           defaultPresetId: 'preset-a',
         },
@@ -67,11 +67,12 @@ describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
       const task = store.get(summary.id);
 
       expect(task?.isolation).toBe('worktree');
+      expect(summary.isolationForced).toBe(true);
       expect(task?.permission).toBe('danger-full-access');
       expect(task?.presetId).toBe('preset-a');
     });
 
-    it('显式参数覆盖看板默认值', async () => {
+    it('显式参数覆盖看板默认值（隔离除外：强制 worktree 并注明）', async () => {
       const store = createFakeStore({
         settings: {
           defaultIsolation: 'worktree',
@@ -93,7 +94,9 @@ describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
       );
       const task = store.get(summary.id);
 
-      expect(task?.isolation).toBe('none');
+      expect(task?.isolation).toBe('worktree');
+      expect(summary.isolationForced).toBe(true);
+      expect(summary.isolationNote).toContain('已强制 worktree');
       expect(task?.permission).toBe('workspace-write');
       expect(task?.presetId).toBeUndefined();
     });
