@@ -24,7 +24,7 @@ const pkgRoot = new URL('../../', import.meta.url);
  * 故在此钉死：任何改动都必须显式更新本常量（说明为什么上游清单变了）。
  */
 const UPSTREAM_MANIFEST_SHA256 =
-  'af564ba2125bf8e8fa4d5cce094e251409b734d75d79409441749c88285360c2';
+  'd8026c62efc6fff281c65b7090b199146487060e58adf12402f268068bce9854';
 
 /** 产物路径。 */
 const distIndex = fileURLToPath(new URL('dist/index.js', pkgRoot));
