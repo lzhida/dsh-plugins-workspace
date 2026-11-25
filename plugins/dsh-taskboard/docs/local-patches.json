@@ -60,6 +60,10 @@
     "client/i18n/ru.ts": {
       "upstreamSha256": "7dc5a4103c8ac77016d5ef90ea3fedcde170941736662fdb872f193f33fcec55",
       "reason": "看板官方集成系列 1/3 卡：同 zh.ts 的俄文文案同步（官方服务、单仓库、缺席降级、重跑优先续用）。"
+    },
+    "shared/dependencies.ts": {
+      "upstreamSha256": "807c1ddff576c309b3b68a1165c964a1bb99ccdd52690d8668d9beb71857ea73",
+      "reason": "上游同步系列 2/6 卡：dependenciesEnabled 的缺省值由上游的 false 改为本地的 true（未显式配置即视为开启）。本仓工作流依赖机器门禁——建卡 skill 的依赖门禁约定、定时卡锁定目标卡、收割卡挂 blockedBy——跟随上游缺省关闭会让这些门禁静默失效。用户在看板设置里显式关闭（dependenciesEnabled: false）时行为与上游一致。上游哈希取自上游 0.10.1 的 shared/dependencies.ts。"
     }
   }
 }

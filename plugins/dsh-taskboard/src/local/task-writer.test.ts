@@ -28,9 +28,10 @@ function writerFor(store: ReturnType<typeof createFakeStore>): TaskWriterDeps {
 /**
  * 依赖相关用例专用的台账：**显式打开依赖总开关**。
  *
- * 上游 0.10.1 起新增依赖总开关 `dependenciesEnabled`（默认关闭），关闭时
- * 建卡/改卡不再挂前置、门禁与校验全部不生效。依赖行为用例必须显式打开，
- * 否则断言的是「开关关闭」而非依赖语义本身。
+ * 上游 0.10.1 新增依赖总开关 `dependenciesEnabled`（上游缺省关闭）；本仓自
+ * 上游同步系列 2/6 起把缺省钉为开启。依赖行为用例仍显式打开，使断言不依赖
+ * 缺省值——缺省行为由专门的「缺省」用例覆盖，显式关闭由 `createFakeStore()`
+ * + `setSettings({ dependenciesEnabled: false })` 覆盖。
  */
 function createDependencyStore(): ReturnType<typeof createFakeStore> {
   const store = createFakeStore();
@@ -376,8 +377,30 @@ describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
       expect(store.get(created.id)?.blockedBy).toEqual([prior.id]);
     });
 
-    it('依赖总开关关闭时建卡不挂前置（上游 0.10.1 语义）', async () => {
+    it('未配置依赖总开关时建卡照常挂前置（本地缺省开启）', async () => {
       const store = createFakeStore();
+      const prior = await createTask(
+        { title: '前置', workspaceId: 'ws-1', urgency: 'normal' },
+        actor,
+        writerFor(store),
+      );
+      const created = await createTask(
+        {
+          title: '后继',
+          workspaceId: 'ws-1',
+          urgency: 'normal',
+          blockedBy: [prior.id],
+        },
+        actor,
+        writerFor(store),
+      );
+
+      expect(store.get(created.id)?.blockedBy).toEqual([prior.id]);
+    });
+
+    it('显式关闭依赖总开关时建卡不挂前置（上游 0.10.1 关闭态语义保留）', async () => {
+      const store = createFakeStore();
+      store.setSettings({ dependenciesEnabled: false });
       const prior = await createTask(
         { title: '前置', workspaceId: 'ws-1', urgency: 'normal' },
         actor,
@@ -397,8 +420,9 @@ describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
       expect(store.get(created.id)?.blockedBy).toBeUndefined();
     });
 
-    it('依赖总开关关闭时建卡完全忽略入参里的非法前置（不校验不报错）', async () => {
+    it('显式关闭依赖总开关时建卡完全忽略入参里的非法前置（不校验不报错）', async () => {
       const store = createFakeStore();
+      store.setSettings({ dependenciesEnabled: false });
       const created = await createTask(
         {
           title: '后继',
@@ -422,6 +446,33 @@ describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
       );
 
       expect(store.get(created.id)?.blockedBy).toEqual([]);
+    });
+
+    it('未配置依赖总开关时建卡不传 blockedBy 则前置为空数组', async () => {
+      const store = createFakeStore();
+      const created = await createTask(
+        { title: '后继', workspaceId: 'ws-1', urgency: 'normal' },
+        actor,
+        writerFor(store),
+      );
+
+      expect(store.get(created.id)?.blockedBy).toEqual([]);
+    });
+
+    it('未配置依赖总开关时建卡传非法前置照常报错（缺省开启即校验生效）', async () => {
+      const store = createFakeStore();
+      await expect(
+        createTask(
+          {
+            title: '后继',
+            workspaceId: 'ws-1',
+            urgency: 'normal',
+            blockedBy: ['t-not-exist'],
+          },
+          actor,
+          writerFor(store),
+        ),
+      ).rejects.toThrow('dependency not found: t-not-exist');
     });
   });
 
@@ -520,6 +571,52 @@ describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
         writerFor(store),
       );
       expect(store.get(target.id)?.blockedBy).toEqual([second.id]);
+    });
+
+    it('未配置依赖总开关时改卡传 blockedBy 触发替换与校验', async () => {
+      const store = createFakeStore();
+      const first = await createTask(
+        { title: '第一前置', workspaceId: 'ws-1', urgency: 'normal' },
+        actor,
+        writerFor(store),
+      );
+      const second = await createTask(
+        { title: '第二前置', workspaceId: 'ws-1', urgency: 'normal' },
+        actor,
+        writerFor(store),
+      );
+      const target = await createTask(
+        {
+          title: '目标',
+          workspaceId: 'ws-1',
+          urgency: 'normal',
+          blockedBy: [first.id],
+        },
+        actor,
+        writerFor(store),
+      );
+
+      // 合法替换
+      await updateTask(
+        { id: target.id, ifVersion: target.version, blockedBy: [second.id] },
+        actor,
+        writerFor(store),
+      );
+      expect(store.get(target.id)?.blockedBy).toEqual([second.id]);
+
+      // 非法替换报错
+      const current = store.get(target.id)!;
+      await expect(
+        updateTask(
+          {
+            id: target.id,
+            ifVersion: current.version,
+            blockedBy: ['t-not-exist'],
+          },
+          actor,
+          writerFor(store),
+        ),
+      ).rejects.toThrow('dependency not found: t-not-exist');
     });
 
     it('依赖总开关关闭时改卡忽略 blockedBy 并保留原值（上游 0.10.1 语义）', async () => {

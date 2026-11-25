@@ -148,10 +148,11 @@ describe('dsh-taskboard 板服务', () => {
     ]);
   });
 
-  it('未开启依赖总开关时依赖读面默认按「无依赖」回答（上游缺省关闭）', async () => {
+  it('未显式配置依赖总开关时依赖读面按开启回答（本地缺省开启）', async () => {
     const store = createFakeStore();
     const service = createBoardService({ store });
 
+    // 本地口径（上游同步系列 2/6）：缺省即开启 → 建卡时前置照常挂上，读面照常判定。
     const prior = await service.createTask({
       title: '前置',
       workspaceId: 'ws-1',
@@ -162,26 +163,33 @@ describe('dsh-taskboard 板服务', () => {
       blockedBy: [prior.id],
     });
 
-    // 建卡时开关关闭 → 前置根本没挂上；读面同样判定为无依赖。
-    expect(service.getTask(target.id)?.blockedBy).toBeUndefined();
-    expect(service.dependencies(target.id)).toEqual([]);
-    expect(service.dependencyBlock(target.id)).toBeUndefined();
-    expect(service.listTasks({ blockedOnly: true })).toEqual([]);
+    expect(service.getTask(target.id)?.blockedBy).toEqual([prior.id]);
+    expect(service.dependencies(target.id)).toEqual([
+      { id: prior.id, title: '前置', status: 'todo', satisfied: false },
+    ]);
+    expect(service.dependencyBlock(target.id)).toContain('dependency_blocked:');
+    expect(service.listTasks({ blockedOnly: true }).map((t) => t.id)).toEqual([
+      target.id,
+    ]);
   });
 
-  it('依赖门禁按看板设置开关（依赖总开关默认关闭）', () => {
+  it('依赖门禁按看板设置开关（本地缺省开启，显式关闭即全关）', () => {
     const store = createFakeStore();
     const service = createBoardService({ store });
 
-    // 上游 0.10.1 起：依赖总开关默认关闭 → 四类门禁全部不生效。
-    expect(service.dependencyGateEnabled('agent')).toBe(false);
-    expect(service.dependencyGateEnabled('review')).toBe(false);
-
-    // 打开总开关后：门禁按 dependencyGates 逐项生效。
-    store.setSettings({ dependenciesEnabled: true });
+    // 本地口径（上游同步系列 2/6）：未配置 → 总开关缺省开启，门禁按逐项缺省（开）生效。
     expect(service.dependencyGateEnabled('agent')).toBe(true);
     expect(service.dependencyGateEnabled('review')).toBe(true);
 
+    // 显式关闭总开关：即便逐项开关为开也一律关停（与上游关闭态一致）。
+    store.setSettings({
+      dependenciesEnabled: false,
+      dependencyGates: { agent: true, review: true },
+    });
+    expect(service.dependencyGateEnabled('agent')).toBe(false);
+    expect(service.dependencyGateEnabled('review')).toBe(false);
+
+    // 总开关开启时逐项门禁开关各自生效。
     store.setSettings({
       dependenciesEnabled: true,
       dependencyGates: { agent: false },

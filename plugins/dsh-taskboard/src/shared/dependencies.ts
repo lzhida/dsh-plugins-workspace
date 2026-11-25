@@ -2,7 +2,9 @@ import { normalizeBlockedBy, type BoardSettings, type TaskLedger, type TaskRecor
 
 export type DependencyGate = 'agent' | 'manual' | 'scheduled' | 'review'
 export function dependenciesEnabled(settings: BoardSettings | undefined): boolean {
-  return settings?.dependenciesEnabled ?? false
+  // 本地偏离（上游同步系列 2/6，登记见 docs/local-patches.json）：上游缺省关闭，
+  // 本仓缺省开启——工作流的机器门禁（定时卡、收割卡的 blockedBy）依赖它；显式 false 仍可关闭。
+  return settings?.dependenciesEnabled ?? true
 }
 export function gateEnabled(settings: BoardSettings | undefined, gate: DependencyGate): boolean {
   return dependenciesEnabled(settings) && (settings?.dependencyGates?.[gate] ?? true)

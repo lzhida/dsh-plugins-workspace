@@ -2,7 +2,8 @@
  * 依赖总开关（上游 0.10.1 新增 `dependenciesEnabled`）的语义契约测试。
  *
  * 覆盖四件事：
- * 1. 缺省语义——上游缺省**关闭**（`settings?.dependenciesEnabled ?? false`）；
+ * 1. 缺省语义——上游缺省**关闭**（`?? false`），本仓自上游同步系列 2/6 起钉为
+ *    **开启**（`?? true`）；显式 false 仍关闭；
  * 2. 四类门禁（agent / manual / scheduled / review）随总开关一起关停；
  * 3. `assertNotReferenced`（删除 / 归档被引用任务时的保护）随总开关早退；
  * 4. `asBoardSettings` 对 `dependenciesEnabled` 的布尔校验。
@@ -40,12 +41,12 @@ function writerFor(store: ReturnType<typeof createFakeStore>): TaskWriterDeps {
 
 describe('dsh-taskboard 依赖总开关（上游 0.10.1）', () => {
   describe('缺省语义', () => {
-    it('未设置看板设置时视为关闭', () => {
-      expect(dependenciesEnabled(undefined)).toBe(false);
+    it('未设置看板设置时视为开启（本地缺省）', () => {
+      expect(dependenciesEnabled(undefined)).toBe(true);
     });
 
-    it('看板设置里没有 dependenciesEnabled 字段时视为关闭', () => {
-      expect(dependenciesEnabled({})).toBe(false);
+    it('看板设置里没有 dependenciesEnabled 字段时视为开启（本地缺省）', () => {
+      expect(dependenciesEnabled({})).toBe(true);
     });
 
     it('显式关（false）与显式开（true）按值透传', () => {
@@ -81,9 +82,41 @@ describe('dsh-taskboard 依赖总开关（上游 0.10.1）', () => {
       expect(gateEnabled(settings, 'scheduled')).toBe(true);
       expect(gateEnabled(settings, 'review')).toBe(true);
     });
+
+    it('未配置依赖总开关时四类门禁逐项缺省开启', () => {
+      for (const settings of [undefined, {}]) {
+        expect(gateEnabled(settings, 'agent')).toBe(true);
+        expect(gateEnabled(settings, 'manual')).toBe(true);
+        expect(gateEnabled(settings, 'scheduled')).toBe(true);
+        expect(gateEnabled(settings, 'review')).toBe(true);
+      }
+    });
   });
 
   describe('被引用任务的删除 / 归档保护随总开关早退', () => {
+    it('未配置依赖总开关时删除被引用的前置任务仍被保护', async () => {
+      const store = createFakeStore();
+      const prior = await createTask(
+        { title: '前置', workspaceId: 'ws-1', urgency: 'normal' },
+        actor,
+        writerFor(store),
+      );
+      const target = await createTask(
+        {
+          title: '后继',
+          workspaceId: 'ws-1',
+          urgency: 'normal',
+          blockedBy: [prior.id],
+        },
+        actor,
+        writerFor(store),
+      );
+
+      expect(() => assertNotReferenced(store.snapshot(), prior.id)).toThrow(
+        `task is referenced by: 后继 (${target.id})`,
+      );
+    });
+
     it('总开关关闭时允许删除被引用的前置任务', async () => {
       const store = createFakeStore();
       store.setSettings({ dependenciesEnabled: true });
@@ -144,9 +177,9 @@ describe('dsh-taskboard 依赖总开关（上游 0.10.1）', () => {
       ).toBe(false);
     });
 
-    it('缺省时不写入该字段（落到 dependenciesEnabled 的缺省关闭语义）', () => {
+    it('缺省时不写入该字段（落到 dependenciesEnabled 的本地缺省开启语义）', () => {
       expect(asBoardSettings({}).dependenciesEnabled).toBeUndefined();
-      expect(dependenciesEnabled(asBoardSettings({}))).toBe(false);
+      expect(dependenciesEnabled(asBoardSettings({}))).toBe(true);
     });
 
     it('非布尔值报 dependenciesEnabled must be a boolean', () => {
