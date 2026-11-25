@@ -1,6 +1,6 @@
 import type { SessionArchiveResult } from '../shared/api.ts'
 import { archiveTaskSessions } from './archive-sessions.ts'
-import { assertNotReferenced, dependencyError, dependencyState, gateEnabled, referencingTasks } from '../shared/dependencies.ts'
+import { assertNotReferenced, dependenciesEnabled, dependencyError, dependencyState, gateEnabled, referencingTasks } from '../shared/dependencies.ts'
 import { humanWaiting } from '../shared/human-wait.ts'
 /**
  * The ten `taskboard_*` agent tools. All writes require a calling agent
@@ -458,7 +458,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           && (a.urgency === undefined || t.urgency === a.urgency)
           && (a.includeTrashed === true || t.trashedAt === undefined))
         const snapshot = store.snapshot()
-        return json({ revision: snapshot.revision, tasks: tasks.map(t => ({ ...summarize(t), dependencies: dependencyState(snapshot.tasks, t) })) })
+        return json({ revision: snapshot.revision, tasks: tasks.map(t => ({ ...summarize(t), ...(dependenciesEnabled(snapshot.settings) ? { dependencies: dependencyState(snapshot.tasks, t) } : {}) })) })
       } catch (error) { fail(error) }
     },
   })) as () => void)
@@ -484,7 +484,8 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
         const { id } = args
         const task = store.get(id)
         if (task === undefined || task.trashedAt !== undefined) throw new ToolError(ERR.notFound, `no task ${id}`)
-        return json({ task: { ...task, dependencies: dependencyState(store.snapshot().tasks, task), effectivePrompt: effectivePrompt(task) } })
+        const snapshot = store.snapshot()
+        return json({ task: { ...task, ...(dependenciesEnabled(snapshot.settings) ? { dependencies: dependencyState(snapshot.tasks, task) } : {}), effectivePrompt: effectivePrompt(task) } })
       } catch (error) { fail(error) }
     },
   })) as () => void)
@@ -686,7 +687,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           const { index, task } = liveTaskAt(ledger, args.id)
           versionGuard(task, args.ifVersion)
           beforeTask = task
-          if (to === 'canceled' || to === 'archived') affectedDependents = referencingTasks(ledger.tasks, task.id).map(({ id, title }) => ({ id, title }))
+          if (dependenciesEnabled(ledger.settings) && (to === 'canceled' || to === 'archived')) affectedDependents = referencingTasks(ledger.tasks, task.id).map(({ id, title }) => ({ id, title }))
 
           // Code-level gate: agents never complete a task.
           if (to === 'done') {

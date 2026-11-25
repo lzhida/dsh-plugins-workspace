@@ -39,7 +39,10 @@ import {
   type TaskRecord,
   type TaskSummary,
 } from '../shared/protocol.ts';
-import { validateDependencies } from '../shared/dependencies.ts';
+import {
+  dependenciesEnabled,
+  validateDependencies,
+} from '../shared/dependencies.ts';
 import { applyHumanWaitingPatch } from '../shared/human-wait.ts';
 import { BoardError, ERR, type BoardErrorCode } from './board-errors.ts';
 
@@ -345,11 +348,14 @@ export async function createTask(
     executions: [],
   };
   await deps.store.mutate('task-created', (ledger) => {
-    task.blockedBy = validateDependencies(
-      ledger.tasks,
-      task,
-      input.blockedBy ?? [],
-    );
+    // 上游 0.10.1 起：依赖总开关关闭时不挂前置（开关语义见 shared/dependencies.ts）。
+    if (dependenciesEnabled(ledger.settings)) {
+      task.blockedBy = validateDependencies(
+        ledger.tasks,
+        task,
+        input.blockedBy ?? [],
+      );
+    }
     ledger.tasks.push(task);
     return [task];
   });
@@ -391,7 +397,7 @@ export async function updateTask(
     if (input.prompt !== undefined) next.prompt = normalizePrompt(input.prompt);
     if (input.urgency !== undefined) next.urgency = asUrgency(input.urgency);
     if (input.blocked !== undefined) next.blocked = input.blocked;
-    if (input.blockedBy !== undefined) {
+    if (dependenciesEnabled(ledger.settings) && input.blockedBy !== undefined) {
       next.blockedBy = validateDependencies(
         ledger.tasks,
         next,

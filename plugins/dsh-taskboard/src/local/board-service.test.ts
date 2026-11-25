@@ -79,6 +79,7 @@ describe('dsh-taskboard 板服务', () => {
 
   it('依赖判定复用 shared/dependencies.ts 的满足口径', async () => {
     const store = createFakeStore();
+    store.setSettings({ dependenciesEnabled: true });
     const service = createBoardService({ store });
 
     const prior = await service.createTask({
@@ -118,13 +119,73 @@ describe('dsh-taskboard 板服务', () => {
     expect(service.listTasks({ blockedOnly: true })).toHaveLength(0);
   });
 
-  it('依赖门禁按看板设置开关', () => {
+  it('依赖总开关关闭时依赖读面一律按「无依赖」回答（上游 0.10.1 语义）', async () => {
+    const store = createFakeStore();
+    store.setSettings({ dependenciesEnabled: true });
+    const service = createBoardService({ store });
+
+    // 开关开启时挂上前置，再关掉开关：已有关系保留，但读面不再判定。
+    const prior = await service.createTask({
+      title: '前置',
+      workspaceId: 'ws-1',
+    });
+    const target = await service.createTask({
+      title: '后继',
+      workspaceId: 'ws-1',
+      blockedBy: [prior.id],
+    });
+    expect(service.dependencyBlock(target.id)).toContain('dependency_blocked:');
+    store.setSettings({ dependenciesEnabled: false });
+
+    expect(service.getTask(target.id)?.blockedBy).toEqual([prior.id]);
+    expect(service.dependencies(target.id)).toEqual([]);
+    expect(service.dependencyBlock(target.id)).toBeUndefined();
+    expect(service.listTasks({ blockedOnly: true })).toEqual([]);
+    // 不过滤时列表照常返回：关闭只停用「依赖」概念，不隐藏任务本身。
+    expect(service.listTasks().map((task) => task.id)).toEqual([
+      prior.id,
+      target.id,
+    ]);
+  });
+
+  it('未开启依赖总开关时依赖读面默认按「无依赖」回答（上游缺省关闭）', async () => {
     const store = createFakeStore();
     const service = createBoardService({ store });
+
+    const prior = await service.createTask({
+      title: '前置',
+      workspaceId: 'ws-1',
+    });
+    const target = await service.createTask({
+      title: '后继',
+      workspaceId: 'ws-1',
+      blockedBy: [prior.id],
+    });
+
+    // 建卡时开关关闭 → 前置根本没挂上；读面同样判定为无依赖。
+    expect(service.getTask(target.id)?.blockedBy).toBeUndefined();
+    expect(service.dependencies(target.id)).toEqual([]);
+    expect(service.dependencyBlock(target.id)).toBeUndefined();
+    expect(service.listTasks({ blockedOnly: true })).toEqual([]);
+  });
+
+  it('依赖门禁按看板设置开关（依赖总开关默认关闭）', () => {
+    const store = createFakeStore();
+    const service = createBoardService({ store });
+
+    // 上游 0.10.1 起：依赖总开关默认关闭 → 四类门禁全部不生效。
+    expect(service.dependencyGateEnabled('agent')).toBe(false);
+    expect(service.dependencyGateEnabled('review')).toBe(false);
+
+    // 打开总开关后：门禁按 dependencyGates 逐项生效。
+    store.setSettings({ dependenciesEnabled: true });
     expect(service.dependencyGateEnabled('agent')).toBe(true);
     expect(service.dependencyGateEnabled('review')).toBe(true);
 
-    store.setSettings({ dependencyGates: { agent: false } });
+    store.setSettings({
+      dependenciesEnabled: true,
+      dependencyGates: { agent: false },
+    });
     expect(service.dependencyGateEnabled('agent')).toBe(false);
     expect(service.dependencyGateEnabled('review')).toBe(true);
   });
@@ -159,6 +220,7 @@ describe('dsh-taskboard 板服务', () => {
 
   it('改卡时前置任务为替换语义', async () => {
     const store = createFakeStore();
+    store.setSettings({ dependenciesEnabled: true });
     const service = createBoardService({ store });
 
     const first = await service.createTask({

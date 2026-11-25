@@ -25,6 +25,19 @@ function writerFor(store: ReturnType<typeof createFakeStore>): TaskWriterDeps {
   };
 }
 
+/**
+ * 依赖相关用例专用的台账：**显式打开依赖总开关**。
+ *
+ * 上游 0.10.1 起新增依赖总开关 `dependenciesEnabled`（默认关闭），关闭时
+ * 建卡/改卡不再挂前置、门禁与校验全部不生效。依赖行为用例必须显式打开，
+ * 否则断言的是「开关关闭」而非依赖语义本身。
+ */
+function createDependencyStore(): ReturnType<typeof createFakeStore> {
+  const store = createFakeStore();
+  store.setSettings({ dependenciesEnabled: true });
+  return store;
+}
+
 describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
   describe('建卡参数归一化', () => {
     it('缺省参数落到归一化后的默认值：状态 todo、执行方式 claim、隔离强制 worktree、权限 workspace-write', async () => {
@@ -255,7 +268,7 @@ describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
 
   describe('前置任务校验（报错原文逐字）', () => {
     it('拒绝自引用', async () => {
-      const store = createFakeStore();
+      const store = createDependencyStore();
       const created = await createTask(
         { title: '本体', workspaceId: 'ws-1', urgency: 'normal' },
         actor,
@@ -275,7 +288,7 @@ describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
     });
 
     it('拒绝不存在的前置任务', async () => {
-      const store = createFakeStore();
+      const store = createDependencyStore();
       await expect(
         createTask(
           {
@@ -291,7 +304,7 @@ describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
     });
 
     it('拒绝跨项目的前置任务', async () => {
-      const store = createFakeStore();
+      const store = createDependencyStore();
       const prior = await createTask(
         { title: '别的项目', workspaceId: 'ws-other', urgency: 'normal' },
         actor,
@@ -314,7 +327,7 @@ describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
     });
 
     it('拒绝循环前置任务', async () => {
-      const store = createFakeStore();
+      const store = createDependencyStore();
       const first = await createTask(
         { title: '甲', workspaceId: 'ws-1', urgency: 'normal' },
         actor,
@@ -344,7 +357,7 @@ describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
     });
 
     it('建卡时 blockedBy 是新增语义：挂上前置并落盘', async () => {
-      const store = createFakeStore();
+      const store = createDependencyStore();
       const prior = await createTask(
         { title: '前置', workspaceId: 'ws-1', urgency: 'normal' },
         actor,
@@ -361,6 +374,54 @@ describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
         writerFor(store),
       );
       expect(store.get(created.id)?.blockedBy).toEqual([prior.id]);
+    });
+
+    it('依赖总开关关闭时建卡不挂前置（上游 0.10.1 语义）', async () => {
+      const store = createFakeStore();
+      const prior = await createTask(
+        { title: '前置', workspaceId: 'ws-1', urgency: 'normal' },
+        actor,
+        writerFor(store),
+      );
+      const created = await createTask(
+        {
+          title: '后继',
+          workspaceId: 'ws-1',
+          urgency: 'normal',
+          blockedBy: [prior.id],
+        },
+        actor,
+        writerFor(store),
+      );
+
+      expect(store.get(created.id)?.blockedBy).toBeUndefined();
+    });
+
+    it('依赖总开关关闭时建卡完全忽略入参里的非法前置（不校验不报错）', async () => {
+      const store = createFakeStore();
+      const created = await createTask(
+        {
+          title: '后继',
+          workspaceId: 'ws-1',
+          urgency: 'normal',
+          blockedBy: ['t-not-exist'],
+        },
+        actor,
+        writerFor(store),
+      );
+
+      expect(store.get(created.id)?.blockedBy).toBeUndefined();
+    });
+
+    it('依赖总开关开启时建卡不传 blockedBy 则前置为空数组', async () => {
+      const store = createDependencyStore();
+      const created = await createTask(
+        { title: '后继', workspaceId: 'ws-1', urgency: 'normal' },
+        actor,
+        writerFor(store),
+      );
+
+      expect(store.get(created.id)?.blockedBy).toEqual([]);
     });
   });
 
@@ -431,7 +492,7 @@ describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
     });
 
     it('改卡时 blockedBy 是替换语义：整体替换已有前置', async () => {
-      const store = createFakeStore();
+      const store = createDependencyStore();
       const first = await createTask(
         { title: '前置一', workspaceId: 'ws-1', urgency: 'normal' },
         actor,
@@ -459,6 +520,69 @@ describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
         writerFor(store),
       );
       expect(store.get(target.id)?.blockedBy).toEqual([second.id]);
+    });
+
+    it('依赖总开关关闭时改卡忽略 blockedBy 并保留原值（上游 0.10.1 语义）', async () => {
+      const store = createDependencyStore();
+      const prior = await createTask(
+        { title: '前置', workspaceId: 'ws-1', urgency: 'normal' },
+        actor,
+        writerFor(store),
+      );
+      const target = await createTask(
+        {
+          title: '后继',
+          workspaceId: 'ws-1',
+          urgency: 'normal',
+          blockedBy: [prior.id],
+        },
+        actor,
+        writerFor(store),
+      );
+
+      // 关掉开关后：入参里的非法前置既不校验也不落盘，已有前置原样保留。
+      store.setSettings({ dependenciesEnabled: false });
+      const updated = await updateTask(
+        {
+          id: target.id,
+          ifVersion: target.version,
+          title: '改名',
+          blockedBy: ['t-not-exist'],
+        },
+        actor,
+        writerFor(store),
+      );
+
+      expect(updated.title).toBe('改名');
+      expect(store.get(target.id)?.blockedBy).toEqual([prior.id]);
+    });
+
+    it('依赖总开关开启时改卡不传 blockedBy 则保留原前置（不重校验）', async () => {
+      const store = createDependencyStore();
+      const prior = await createTask(
+        { title: '前置', workspaceId: 'ws-1', urgency: 'normal' },
+        actor,
+        writerFor(store),
+      );
+      const target = await createTask(
+        {
+          title: '后继',
+          workspaceId: 'ws-1',
+          urgency: 'normal',
+          blockedBy: [prior.id],
+        },
+        actor,
+        writerFor(store),
+      );
+
+      await updateTask(
+        { id: target.id, ifVersion: target.version, title: '改名' },
+        actor,
+        writerFor(store),
+      );
+
+      expect(store.get(target.id)?.title).toBe('改名');
+      expect(store.get(target.id)?.blockedBy).toEqual([prior.id]);
     });
 
     it('已归档任务不可改', async () => {
@@ -516,7 +640,7 @@ describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
     });
 
     it('依赖校验失败时不落盘（事件流不留痕）', async () => {
-      const store = createFakeStore();
+      const store = createDependencyStore();
       await expect(
         createTask(
           {

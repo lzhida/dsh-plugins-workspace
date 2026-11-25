@@ -9,6 +9,7 @@
  */
 
 import {
+  dependenciesEnabled,
   dependencyError,
   dependencyState,
   gateEnabled,
@@ -58,7 +59,10 @@ export interface TaskFilter {
   urgency?: Urgency;
   /** true = 只看未删除；false = 只看已删除；缺省 = 都看。 */
   trashed?: boolean;
-  /** true = 只看被未满足前置阻塞的任务。 */
+  /**
+   * true = 只看被未满足前置阻塞的任务。
+   * 依赖总开关关闭时不判定依赖，恒返回空列表（上游 0.10.1 语义）。
+   */
   blockedOnly?: boolean;
 }
 
@@ -84,9 +88,16 @@ export interface BoardService {
   getTask(id: string): TaskRecord | undefined;
   /** 任务列表（可过滤，返回摘要视图）。 */
   listTasks(filter?: TaskFilter): TaskSummary[];
-  /** 某任务的前置满足情况（任务不存在返回空数组）。 */
+  /**
+   * 某任务的前置满足情况（任务不存在返回空数组）。
+   * 依赖总开关关闭时不判定依赖，一律返回空数组（与上游 taskboard_list /
+   * taskboard_get 关闭时不输出 dependencies 字段同口径）。
+   */
   dependencies(taskId: string): TaskDependencyView[];
-  /** 某任务是否被未满足的前置阻塞（返回阻塞详情，未阻塞返回 undefined）。 */
+  /**
+   * 某任务是否被未满足的前置阻塞（返回阻塞详情，未阻塞返回 undefined）。
+   * 依赖总开关关闭时不判定依赖，一律返回 undefined。
+   */
   dependencyBlock(taskId: string): string | undefined;
   /** 依赖门禁是否开启。 */
   dependencyGateEnabled(gate: DependencyGate): boolean;
@@ -124,6 +135,7 @@ function matchesFilter(
   all: readonly TaskRecord[],
   task: TaskRecord,
   filter: TaskFilter | undefined,
+  depsEnabled: boolean,
 ): boolean {
   if (filter === undefined) return true;
   if (
@@ -143,7 +155,11 @@ function matchesFilter(
   if (filter.trashed !== undefined) {
     if ((task.trashedAt !== undefined) !== filter.trashed) return false;
   }
-  if (filter.blockedOnly === true && dependencyError(all, task) === undefined) {
+  // 依赖总开关关闭时不判定依赖：没有任何任务算「被阻塞」。
+  if (
+    filter.blockedOnly === true &&
+    (!depsEnabled || dependencyError(all, task) === undefined)
+  ) {
     return false;
   }
   return true;
@@ -165,14 +181,21 @@ export function createBoardService(options: BoardServiceOptions): BoardService {
     settings: () => store.snapshot().settings,
   };
   const allTasks = (): readonly TaskRecord[] => store.snapshot().tasks;
+  // 依赖总开关（上游 0.10.1 起）：关闭时依赖读面一律按「无依赖」回答，
+  // 与写路径「关闭时不挂前置、不校验」保持同一口径。
+  const depsEnabled = (): boolean =>
+    dependenciesEnabled(store.snapshot().settings);
   return {
     snapshot: () => store.snapshot(),
     getTask: (id) => store.get(id),
-    listTasks: (filter) =>
-      allTasks()
-        .filter((task) => matchesFilter(allTasks(), task, filter))
-        .map((task) => summarize(task)),
+    listTasks: (filter) => {
+      const enabled = depsEnabled();
+      return allTasks()
+        .filter((task) => matchesFilter(allTasks(), task, filter, enabled))
+        .map((task) => summarize(task));
+    },
     dependencies: (taskId) => {
+      if (!depsEnabled()) return [];
       const all = allTasks();
       const task = all.find((t) => t.id === taskId);
       if (task === undefined) return [];
@@ -184,6 +207,7 @@ export function createBoardService(options: BoardServiceOptions): BoardService {
       }));
     },
     dependencyBlock: (taskId) => {
+      if (!depsEnabled()) return undefined;
       const all = allTasks();
       const task = all.find((t) => t.id === taskId);
       if (task === undefined) return undefined;
