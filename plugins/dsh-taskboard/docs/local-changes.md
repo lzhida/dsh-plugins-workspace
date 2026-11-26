@@ -1,13 +1,19 @@
 # 本地改动清单（vendored dsh-taskboard）
 
-上游：[cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard) **v0.10.0**
-（取自本机 npm 安装包 `dsh-taskboard@0.10.0` 的 `src/`，Apache-2.0，Copyright 2026 cloader）。
+上游：[cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard) **v0.10.1**
+（取自本机 npm 安装包 `dsh-taskboard@0.10.1` 的 `src/`，Apache-2.0，Copyright 2026 cloader）。
 
-`src/` 下 63 个 `.ts`/`.tsx` 文件中，**48 个与上游逐字一致**（未做行为改写、未做风格改写）；
-**15 个**因看板模式系列第 2/6 张卡与**看板官方集成系列 1/3 张卡**（worktree 隔离改用官方
-worktree 服务）**有意改动**，改动范围、理由与哈希登记在 `docs/local-patches.json` /
-`docs/local-sha256.txt`（见下文「逐字一致性机制」）。其余本地改动全部集中在包外层
-（清单 / 构建 / 依赖口径 / 文档）与新增的 `src/local/`。
+`src/` 下 63 个 `.ts`/`.tsx` 文件中，**47 个与上游逐字一致**（未做行为改写、未做风格改写）；
+**16 个**因看板模式系列第 2/6 张卡、**看板官方集成系列 1/3 张卡**（worktree 隔离改用官方
+worktree 服务）与**上游同步系列 2/6 张卡**（依赖总开关缺省开启）**有意改动**，改动范围、理由与
+哈希登记在 `docs/local-patches.json` / `docs/local-sha256.txt`（见下文「逐字一致性机制」）。
+其余本地改动全部集中在包外层（清单 / 构建 / 依赖口径 / 文档）与新增的 `src/local/`。
+
+> **版本口径注记**：本仓 vendored 副本的 `src/shared/version.ts` 里 `PLUGIN_VERSION` 跟随
+> **上游**版本号（当前 `0.10.1`）；本包自身的 npm 版本号是 `0.1.0`（本仓 changeset 口径），
+> 两者不是同一套编号。本文档与源码注释里出现的「0.10.1 起……」若描述的是**本仓本地改造**
+> （如 worktree 改用官方服务），指的是本仓改造口径，**不是**上游 0.10.1 的发布内容——
+> 上游 0.10.1 的唯一新增功能是「任务依赖总开关」（见下文「上游同步系列」小节）。
 
 | #   | 位置                               | 改动                                                                                                                                                                                                                                                                                                                                                           | 理由                                                                                                                                                                                                                                                                                                                                                 |
 | --- | ---------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -38,7 +44,7 @@ worktree 服务）**有意改动**，改动范围、理由与哈希登记在 `do
 | 20  | `src/local/board-service.ts`（新增）                                                                    | 板服务实现：只读 `snapshot` / `getTask` / `listTasks(filter)` / `dependencies` / `dependencyBlock` / `dependencyGateEnabled`；写路径 `createTask` / `updateTask`（走 `store.mutate` 事件流，`updateTask` 支持 ifVersion 乐观锁）                                                          | 模式插件的软依赖入口；依赖判定口径以 `shared/dependencies.ts` 为唯一真源，写路径不绕过事件流直改台账                                                                                                                  |
 | 21  | `src/local/fake-store.ts` + `src/local/task-writer.test.ts` + `src/local/board-service.test.ts`（新增） | 内存台账替身与 34 条单测：参数归一化（默认值 + 非法值）、前置任务四类报错**逐字原文**、ifVersion 冲突、事件流落地                                                                                                                                                                         | 本地层的可验证性；上游未随 npm 包发布测试（见「已知缺口」），行为回归只能靠本地测试 + 卡 6/6 实机 e2e                                                                                                                 |
 | 22  | `docs/local-patches.json`（新增）                                                                       | 被有意改动的上游文件清单：相对 `src/` 的路径 + **上游原始 sha256** + 改动理由                                                                                                                                                                                                             | 逐字一致性机制的「例外登记表」：改动必须显式登记，否则契约测试立刻失败                                                                                                                                                |
-| 23  | `docs/local-sha256.txt`（新增）                                                                         | 被改动文件的**当前本地哈希**（`sha256sum` 同款格式，路径相对 `src/`）                                                                                                                                                                                                                     | 与 `docs/local-patches.json` 配对：登记了改动还得同步当前哈希，杜绝「登记后偷改」                                                                                                                                     |
+| 23  | `docs/local-sha256.txt`（新增）                                                                         | 被改动文件的**当前本地哈希**（`sha256sum` 同款格式，路径相对 `src/`）                                                                                                                                                                                                                     | 与 `docs/local-patches.json` 配对：登记了改动还得同步当前哈希——能防「改代码忘改清单」，但**防不住「改代码 + 同步改清单」**（该清单没有自锁哈希，见「已知缺口」）                                                      |
 | 24  | `src/local/package-contract.test.ts`                                                                    | 「逐字一致」断言改为三段式：未登记文件仍逐字比对上游清单 / 被登记文件校验「上游哈希仍与清单一致」+「当前哈希与 `docs/local-sha256.txt` 一致」+「必须在 `local-patches.json` 内」/ 清单与本地哈希清单双向一致；新增 `docs/upstream-sha256.txt` 自身的 sha256 钉桩断言                      | 卡 2/6 打破了「63 个文件逐字一致」的不变量，不能简单删掉断言——改为「例外可登记、但必须可核验」，任何对 vendored 文件的**额外**改动仍被立刻捕获（实测：改 `src/shared/protocol.ts` 或 `src/host/tools.ts` 均立即失败） |
 
 ### 看板官方集成系列 1/3 张卡：worktree 隔离改用官方 worktree 服务
@@ -52,7 +58,7 @@ worktree 服务）**有意改动**，改动范围、理由与哈希登记在 `do
 | 29  | `src/index.ts`（上游文件，**有意改动**）                                                                                                        | `ExecutionService` 依赖新增 `worktrees: () => readWorktreeService(agentCtx)` 与 `workingDirectory: () => readWorkingDirectory(agentCtx)`（**软读取**，取不到即降级，不声明硬 `inject`）                                                                                                                                                                              | 官方服务由官方 bundle 提供，可能缺席；硬依赖会让插件在无官方服务的宿主上直接加载失败（与「不得报错阻塞」冲突）                                                                                                 |
 | 30  | `src/local/official-worktree.ts`（新增）                                                                                                        | 官方服务的**结构类型适配层**（不含任何 `@deepseek-ai/*` 运行时 import）：`OfficialWorktreeService` / `WorkingDirectoryService` / `readWorktreeService` / `readWorkingDirectory`（形状校验 fail-soft）、失败分类 `classifyOfficialFailure` 与降级文案 `officialDegradeNote`、官方池常量 `.agents/worktrees`                                                           | 宿主半区产物**零 `@deepseek-ai` 运行时引用**（构建断言硬约束），故只能用结构类型软适配；降级文案集中一处，三类 i18n 与 README 共用同一口径                                                                     |
 | 31  | `src/host/repos.ts`（上游文件，**有意改动**）                                                                                                   | `SKIP_DIRS` 增加 `.agents`（官方池目录不扫描：检出目录内的 `.git` 是文件，会被误判为嵌套仓库）                                                                                                                                                                                                                                                                       | 官方池在源仓库内，不跳过会把检出目录当成子仓库                                                                                                                                                                 |
-| 32  | `src/shared/protocol.ts`（上游文件，**有意改动**）                                                                                              | `IsolationMode` / `MAX_MIRROR_REPOS` / `ExecutionRepoEvidence` / `TaskRecord.branch` / `branches` 的注释改为「官方单仓 + 遗留多仓形状（0.10.1 起禁用镜像）」                                                                                                                                                                                                         | 协议形状保留兼容（老台账仍可解析），但语义注释必须反映新边界                                                                                                                                                   |
+| 32  | `src/shared/protocol.ts`（上游文件，**有意改动**）                                                                                              | `IsolationMode` / `MAX_MIRROR_REPOS` / `ExecutionRepoEvidence` / `TaskRecord.branch` / `branches` 的注释改为「官方单仓 + 遗留多仓形状（0.10.1 起禁用镜像）」。注意：注释里的「0.10.1」指**本仓本地改造口径**，不是上游 0.10.1 的发布内容——上游 0.10.1 仍含多仓镜像能力，停用镜像是本仓的决定                                                                         | 协议形状保留兼容（老台账仍可解析），但语义注释必须反映新边界                                                                                                                                                   |
 | 33  | `src/shared/api.ts`（上游文件，**有意改动**）                                                                                                   | `OrphanWorktree` 去掉 `taskId`（官方池目录名是分支名，不是任务号）→ `{workspaceId, workspacePath, path}`；新增 `WorktreeCleanupBody = { workspaceId, path }`                                                                                                                                                                                                         | 清理入口改为**按路径**，与官方池的目录形状一致                                                                                                                                                                 |
 | 34  | `src/client/api.ts` / `src/client/controller.ts` / `src/client/board/TaskBoard.tsx` / `src/client/i18n/{zh,en,ru}.ts`（上游文件，**有意改动**） | 客户端：孤儿检出按路径展示与清理（`cleanupOrphan({workspaceId, path})`）；gitignore 建议文案改为 `.agents/`；诊断/隔离/表单/设置的中英俄文案改为「官方服务、单仓库、缺席降级」口径；`detail.action.reuseTitle` 说明重跑优先续用                                                                                                                                      | UI 必须如实反映新的隔离链路与降级行为；文案与 README / 降级提示同源口径                                                                                                                                        |
 | 35  | `docs/official-worktree-spike.md`（新增）                                                                                                       | 官方服务行为的**实测记录**：(a) 执行序与 cwd 冲突（attachSession / 侧栏分组 / 沙箱边界）、(b) 分支名与 `from` 的传参映射、(c) 回收衔接（官方回收挂会话归档）——每问附实测命令与原始输出                                                                                                                                                                               | 卡面要求先落盘再改实现；也作为后续维护者的边界依据                                                                                                                                                             |
@@ -73,12 +79,54 @@ worktree 服务）**有意改动**，改动范围、理由与哈希登记在 `do
 | 40  | `src/local/board-service.ts`（本地层）                                                                            | `BoardService` 接口新增 `addTaskComment` 并接线同一写手——`ctx.provide('dsh-taskboard')` 的实例自动携带，`src/index.ts` 零改动                                                                                                                                                                                                                                                                                                                              | 模式插件经 `ctx.get('dsh-taskboard')` 软读取即可写系统评论；与建卡 / 改卡共用同一 store.mutate 事件流，两条写路径不漂移                                                                     |
 | 41  | `src/local/task-comment.test.ts`（新增）+ `src/local/fake-store.ts`（`FakeStoreEvent.kind` 扩 `'comment-added'`） | 6 例：系统 / 用户评论可区分（threadId 来源标记 + 前缀 + `isSystemComment`）、事件流落地与版本推进、幂等键去重（同键重放不留痕不推进版本 / 异键正常追加）、三类失败折叠（not_found / invalid_input / invalid_transition）、台账写失败折叠 taskboard_not_ready、index.ts 源接线契约                                                                                                                                                                          | 上游未随 npm 包发布测试，行为回归只能靠本地单测 + 验收联动 4/4 的全链路 e2e                                                                                                                 |
 
-## 逐字一致性机制（卡片 2/6 调整）
+### 上游同步系列：同步上游 0.10.1（vendored 副本跟随上游）
+
+vendored 副本从上游 **0.10.0 同步到 0.10.1**（npm `dsh-taskboard@0.10.1`，gitHead
+`f509349e`；该 commit 即 v0.10.1 release 是由 tarball `gitHead` 字段推断的离线结论，
+待上游同步系列 6/6 联网复核）。上游 0.10.1 的
+**唯一新增功能**是「任务依赖总开关」`dependenciesEnabled`（上游缺省**关闭**），其余是兼容
+版本号更新与上游 README 文案。
+
+**同步范围（上游改动的 13 个文件，全部落地）**：`src/client/board/SettingsModal.tsx`、
+`src/client/board/TaskCard.tsx`、`src/client/board/TaskDetail.tsx`、
+`src/client/board/TaskFormModal.tsx`、`src/client/i18n/{en,ru,zh}.ts`、
+`src/host/{routes,tools}.ts`、`src/shared/{api,dependencies,protocol,version}.ts`。其中 7 个
+文件与本地已登记的改动重叠；三方合并（本地 × 上游 0.10.0 × 上游 0.10.1）结果为 12 个文件
+CLEAN、仅 `src/host/tools.ts` 3 处冲突，冲突解算固定为「把上游的 `dependenciesEnabled` guard
+从 `src/host/tools.ts` 下移到 `src/local/task-writer.ts`（建卡 / 改卡两处）」——语义等价，
+不改上游语义。
+
+**本地偏离（`docs/local-patches.json` 第 16 条登记：依赖总开关缺省开启）**：`src/shared/dependencies.ts` 的
+`dependenciesEnabled(settings)` 缺省值由上游的 `?? false` 改为本地的 `?? true`（用户在看板
+设置里显式置 `false` 时，行为与上游完全一致）。
+
+- **理由**：本仓工作流依赖机器门禁——建卡 skill 4.11 整节 40+ 处依赖门禁约定、
+  `plugins/dsh-kanban-mode/src/tools/schedule-run.ts:172` 定时卡锁定目标卡、
+  `plugins/dsh-kanban-mode/src/harvest/watcher.ts:706` 收割卡挂 `blockedBy`——跟随上游缺省
+  关闭会让这些门禁**静默失效**；且本仓本就是「vendored + 本地改动」模式，多钉 1 处偏离的
+  边际成本≈0（反过来每个新板都要人工勾一次开关，忘了就集体失灵）。
+- **代价（已知并接受）**：将来再同步上游 0.10.2 时 `src/shared/dependencies.ts` 该行会冲突，
+  属预期成本；存量台账可能残留用户显式关闭依赖总开关期间写下的悬空前置，处理办法见「已知缺口」。
+
+| #   | 位置                                                                                                      | 改动                                                                                                                                                                                                                                                                             | 理由                                                                                            |
+| --- | --------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| 42  | `src/shared/version.ts`（上游文件，逐字同步）                                                             | `PLUGIN_VERSION` 随上游由 `0.10.0` 改为 `0.10.1`（看板顶部工具栏右端的版本号，见 `src/client/board/TaskBoard.tsx:363`）                                                                                                                                                          | 面板展示的版本与 vendored 的上游版本一致                                                        |
+| 43  | `package.json`（包外层元数据）                                                                            | `description` 里的上游版本号 v0.10.0 → v0.10.1；上游同版本删除的惰性元数据 `dsh.compatibility.dshReleases` 一并删除；`engines.dsh` 保持 `">=0.2.2-rc.3"`（上游追平本地，本地补充项未被覆盖）                                                                                     | 包元数据与 vendored 上游版本对齐；`engines.dsh` 是本地第 4 条登记项，上游追平后**不得**删本地项 |
+| 44  | `src/shared/protocol.ts`（上游文件，**有意改动**）                                                        | 上游新增 `BoardSettings.dependenciesEnabled` 与 `asBoardSettings` 的布尔校验，与本地既有的隔离注释补丁合并                                                                                                                                                                       | 上游 0.10.1 新增功能的协议面                                                                    |
+| 45  | `src/shared/dependencies.ts`（上游文件，**有意改动** = `docs/local-patches.json` 第 16 条登记偏离）       | `dependenciesEnabled(settings)` 缺省值 `?? false` → `?? true`；`gateEnabled` / `assertNotReferenced` 以它为唯一真源                                                                                                                                                              | 见上「本地偏离」                                                                                |
+| 46  | `src/host/tools.ts`（上游文件，**有意改动**）                                                             | 上游的 `dependenciesEnabled` guard（建卡 / 改卡写 `blockedBy`）从本文件**下移**到 `src/local/task-writer.ts`（本地建卡 / 改卡的唯一实现）；上游非冲突 hunk（`taskboard_list` / `taskboard_get` 的 dependencies 条件输出、`taskboard_move` 的 `affectedDependents` 守卫）自动并入 | 保持「建卡 / 改卡只有一份实现」；解冲突只允许这一种形态，不得改上游语义                         |
+| 47  | `src/host/routes.ts`（上游文件，**有意改动**）                                                            | 上游 5 处守卫全部并入（`POST /tasks` 与 `PATCH /tasks/:id` 写 `blockedBy`、`excludeDone` 的 referenced 集、台账导入 `validateDependencies` 循环）；本地 `resolveIsolation` 强制 worktree 补丁完好                                                                                | 上游 0.10.1 新增功能的宿主面                                                                    |
+| 48  | `src/client/board/{SettingsModal,TaskCard,TaskDetail,TaskFormModal}.tsx`、`src/client/i18n/{en,ru,zh}.ts` | 设置弹窗新增「启用任务依赖」勾选框（开启后才显示四类门禁）；表单在关闭时隐藏前置任务字段并新增可移除的「依赖失效」项；卡片 / 详情在关闭时不计算、不显示依赖等待标记；三语新增 `dependency.enable` / `dependency.enableHint` / `dependency.unavailable`                           | 上游 0.10.1 新增功能的客户端面                                                                  |
+| 49  | `src/local/board-service.ts`（本地层）                                                                    | 依赖读面接总开关：关闭时 `dependencies()` → `[]`、`dependencyBlock()` → `undefined`、`blockedOnly` 过滤为空                                                                                                                                                                      | 与上游「关闭即不判定依赖」同口径，避免板服务与工具层的读面口径漂移                              |
+| 50  | `docs/upstream-sha256.txt` / `docs/local-sha256.txt` / `docs/local-patches.json`                          | 哈希基线重置为上游 0.10.1（63 条）；例外登记扩到 16 条（新增 `shared/dependencies.ts`）；本地哈希补该文件                                                                                                                                                                        | 同步后「逐字一致性机制」继续成立                                                                |
+| 51  | `docs/upstream-readme.md`                                                                                 | 重拷上游 0.10.1 README 原文（逐字，SHA256 与 npm 包内 README 一致）                                                                                                                                                                                                              | 上游文档镜像随上游更新，不自行润色                                                              |
+
+## 逐字一致性机制（看板模式系列 2/6 调整，上游同步系列 3/6 重置基线）
 
 第 1/6 张卡建立了「63 个 vendored 文件与上游逐字一致」的内容级不变量。第 2/6 张卡
 必须改上游 `src/host/tools.ts` 与 `src/index.ts`，该不变量随之调整为**三段式**；
 看板官方集成系列 1/3 张卡（worktree 改用官方服务）沿用同一套三段式登记，只是例外
-从 2 个文件扩大到 15 个。
+从 2 个文件扩大到 16 个（上游同步系列 2/6 张卡新增 `shared/dependencies.ts`）。
 
 1. **`docs/upstream-sha256.txt`**：永远是上游原始哈希，一个字节都不许改写；
    其自身的 sha256 被契约测试钉死（`UPSTREAM_MANIFEST_SHA256`），被改写即失败。
@@ -99,6 +147,15 @@ worktree 服务）**有意改动**，改动范围、理由与哈希登记在 `do
 
 ## 已知缺口
 
+- **本地哈希清单没有自锁哈希**：`docs/local-sha256.txt` 只与实际文件摘要比对（契约测试
+  `src/local/package-contract.test.ts`），不像 `docs/upstream-sha256.txt` 那样被
+  `UPSTREAM_MANIFEST_SHA256` 钉死——「改代码 + 同步改清单」可以让 16 项契约测试全绿。基线
+  只能防「改代码忘改清单」，**两份清单的 diff 是唯一评审面**（上游同步系列 3/6 张卡登记，
+  本系列只登记不修机制）。
+- **存量台账的悬空 `blockedBy`**：本仓从未以依赖总开关缺省关闭发布过，但用户可在看板设置
+  显式关闭总开关；关闭期间写下的 `blockedBy` 不会被门禁拦截校验，重新开启后这些前置会重新
+  参与判定。上线前建议扫描存量台账，对已删除 / 已取消 / 跨项目的前置，用 `taskboard_update`
+  传 `blockedBy: []` 或删前置解锁。
 - **上游测试未随 npm 包发布**（`files` 不含 `*.test.ts`，上游仓库另有 60 个
   `tests/*.spec.ts`）。本卡未联网从 GitHub 拉取，vendored 副本**零上游测试**；
   行为回归由本仓 `src/local/` 契约测试 + 卡 6/6 的实机 e2e 覆盖。

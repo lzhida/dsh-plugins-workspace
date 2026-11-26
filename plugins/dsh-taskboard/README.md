@@ -1,6 +1,6 @@
 # @zhidal/dsh-taskboard
 
-vendored 版 **dsh-taskboard**（上游 [cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard) v0.10.0，Apache-2.0）——把第三方任务看板插件收进本 monorepo，与「看板模式」插件（`@zhidal/dsh-kanban-mode`）用 bundle 组合发布。
+vendored 版 **dsh-taskboard**（上游 [cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard) v0.10.1，Apache-2.0）——把第三方任务看板插件收进本 monorepo，与「看板模式」插件（`@zhidal/dsh-kanban-mode`）用 bundle 组合发布。
 
 ## 它是什么
 
@@ -10,14 +10,15 @@ vendored 版 **dsh-taskboard**（上游 [cloader/dsh-taskboard](https://github.c
 - **十个工具**：`taskboard_list` / `taskboard_get` / `taskboard_create` / `taskboard_update` / `taskboard_move` / `taskboard_comment_add` / `taskboard_comments` / `taskboard_delete` / `taskboard_checklist` / `taskboard_execution_report`。
 - **项目边界**：认领与写入按 workspace（项目）划界，跨项目前置引用会被拒绝（`dependency must belong to the same project: <id>`）。
 - **依赖门禁**（上游 0.10.0 新增）：卡可声明 `blockedBy` 前置；前置满足口径 = 同项目 ∧ 未删 ∧ 状态 ∈ {`in_review`, `done`}`；四类门禁（agent / manual / scheduled / review）可在看板设置里逐项关闭。
+- **依赖总开关**（上游 0.10.1 新增「启用任务依赖」）：**上游缺省关闭，本仓把缺省钉为开启**（`docs/local-patches.json` 第 16 条登记偏离，见 [`docs/local-changes.md`](./docs/local-changes.md)）——依赖门禁在本仓默认生效；在看板设置里显式关闭后行为与上游一致。
 - **执行面**：任务级模型、任务级 agent 预设（`presetId`）、任务级权限、**官方 worktree 隔离**（软依赖 `@deepseek-ai/dsh-experimental-worktree` 的 `ctx.worktrees` 服务；默认分支 `task/<标题>+<任务ID>`）。
 - **定时调度**：宿主侧 cron；错过窗口不补跑（一次性卡回退为认领模式，周期卡保留后续窗口）；并发上限默认 3。
 
 ## 与上游的差异
 
-上游 `src/` 下共 63 个文件，**48 个逐字一致**（`docs/upstream-sha256.txt` 存有逐文件 SHA256 清单，契约测试逐项核对），本地扩展集中在 `src/local/`。**自 0.10.1 起本包有意改动了 15 个上游文件**——worktree 隔离改用官方服务（见下节），所有改动逐条登记在 [`docs/local-patches.json`](./docs/local-patches.json)（文件 + 上游原始 sha256 + 理由），当前本地哈希见 [`docs/local-sha256.txt`](./docs/local-sha256.txt)，逐条说明见 [`docs/local-changes.md`](./docs/local-changes.md)；许可与署名见 [`NOTICE.md`](./NOTICE.md) 与 [`LICENSE`](./LICENSE)。
+上游 `src/` 下共 63 个文件，**47 个逐字一致**（`docs/upstream-sha256.txt` 存有逐文件 SHA256 清单，契约测试逐项核对），本地扩展集中在 `src/local/`。**本包有意改动了 16 个上游文件**——worktree 隔离改用官方服务（见下节）、依赖总开关缺省开启（见「依赖总开关」条），所有改动逐条登记在 [`docs/local-patches.json`](./docs/local-patches.json)（文件 + 上游原始 sha256 + 理由），当前本地哈希见 [`docs/local-sha256.txt`](./docs/local-sha256.txt)，逐条说明见 [`docs/local-changes.md`](./docs/local-changes.md)；许可与署名见 [`NOTICE.md`](./NOTICE.md) 与 [`LICENSE`](./LICENSE)。
 
-## Worktree 隔离：改用官方服务（0.10.1）
+## Worktree 隔离：改用官方服务（本仓本地改造）
 
 本包**不再自建 worktree 能力**（上游的 `prepareWorktree` / `removeWorktree` / 多仓镜像 `prepareMirror` 已全部移除），隔离层改为**软依赖**官方插件 `@deepseek-ai/dsh-experimental-worktree`（由官方 bundle `@deepseek-ai/dsh-experimental-forge-bundle` 提供，服务名 `ctx.worktrees`）：
 
