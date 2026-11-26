@@ -36,7 +36,7 @@
 3. 目标分支：默认「合并时主区当前分支」（与 GUI 一键合并同语义），可参数指定；
 4. kanban-mode 工作法新增「收割段」纪律（`plugins/dsh-kanban-mode/src/context-text.ts`）；
 5. 编排：支持「下游收割卡」（`blockedBy` + `presetId='kanban-mode'`）与「会话内直接调用」两种触发；
-6. **验收联动自动化（2026-11-23 新增，§13）**：每卡强制 worktree 隔离；验收 done → 自动合并（无冲突直合 / 冲突自动建收割执行卡）；验收 canceled → 自动丢弃（删检出+删分支，删前评论留痕）。
+6. **验收联动自动化（2026-11-23 新增，§13）**：每卡强制 worktree 隔离；验收 done → 自动合并（无冲突直合 / 冲突只留痕评论交人，`DSH_HARVEST_CONFLICT_CARD=on` 可恢复自动建收割执行卡）；验收 canceled → 自动丢弃（删检出+删分支，删前评论留痕）。
 
 **不做（本期）**
 
@@ -297,9 +297,12 @@ plan ──► apply ──► (冲突) ──► 冲突态检出保留 ──�
 - **done → 收割管线 apply**：
   - 无冲突 ∧ 主区干净 ∧ base 检查通过 → 直接合并 → 删检出 + 删分支（`-d` 安全删）→ 经板服务
     评论写通道留痕（mergeCommit、diffStat、结果）；
-  - 冲突 / 主区脏 / 其他拒绝态 → **不动手**，自动建「收割执行卡」（`presetId='kanban-mode'`、
-    `isolation='worktree'` 服从强制；prompt 内置冲突解决纪律：在目标任务检出内解决冲突后
-    `taskboard_harvest apply` 续跑；会话用 `git -C` 绝对路径操作主仓）；
+  - 冲突 / 主区脏 / 其他拒绝态 → **不动手**，默认只在本卡写结构化留痕评论（冲突文件 /
+    类型 / 建议 / 主区绝对路径与 `taskboard_harvest apply` 续跑指引），由人在原卡会话或
+    任意会话接手（`DSH_HARVEST_CONFLICT_CARD=on` 恢复旧行为：自动建「收割执行卡」，
+    `presetId='kanban-mode'`、`isolation='worktree'` 服从强制；prompt 内置冲突解决纪律：
+    在目标任务检出内解决冲突后 `taskboard_harvest apply` 续跑；会话用 `git -C` 绝对路径
+    操作主仓）；
   - 幂等：分支不存在 → noop；同一卡重复 done 事件安全；异常（服务缺席/无分支）→ 评论留痕，
     不阻塞队列；
 - **canceled → 丢弃（管线 discard 模式）**：
@@ -312,7 +315,7 @@ plan ──► apply ──► (冲突) ──► 冲突态检出保留 ──�
 ### 13.3 与收割系列的协同
 
 - 收割 2/6 管线新增 **discard 模式**（canceled 联动的执行体）；
-- 收割 5/6 e2e 增加联动场景（done 自动合并、冲突建卡、canceled 丢弃、强制隔离生效）；
+- 收割 5/6 e2e 增加联动场景（done 自动合并、冲突留痕与接手、canceled 丢弃、强制隔离生效）；
 - 收割 6/6 收官改为同时等待联动 e2e；
 - 事件桥（`store.subscribe` → `ctx.provide('dsh-taskboard-events')` 装配桥，需动已登记 `index.ts`）
   为 P3 备选升级路径；本期轮询零契约。

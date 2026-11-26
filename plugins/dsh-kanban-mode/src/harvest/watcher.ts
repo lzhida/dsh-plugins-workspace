@@ -9,7 +9,9 @@
  *   否则插件一启动就会把历史上已验收的卡全部收割一遍（首轮只建基线）。
  * - 队列：所有事件进同一条串行队列逐个处理；同一张卡绝不并发跑 git。
  * - done：解析收割目标 → 管线 apply（无冲突直合并 + 删检出 + 删分支 -d）→
- *   板服务评论留痕；冲突 / 主区脏等拒绝态 → **不动 git**，自动建「收割执行卡」交人。
+ *   板服务评论留痕；冲突 / 主区脏等拒绝态 → **不动 git**，默认只在本卡写
+ *   结构化留痕评论（含续跑指引）等待人工/会话接手；`DSH_HARVEST_CONFLICT_CARD=on`
+ *   时恢复自动建「收割执行卡」交人（旧行为）。
  * - canceled：先只读采集「分支 tip + 检出脏文件清单」并评论留痕 → 再 discard
  *   （删检出，脏也删；删分支 -D）。**留痕严格先于删除**。
  *
@@ -21,6 +23,9 @@
  * - `DSH_HARVEST_WATCH`：取 `off` / `0` / `false` 时**不启动** watcher；
  *   其余值（含未设置）启动。e2e 用它在「工具直呼」场景关掉自动收割，
  *   避免与手动 `taskboard_harvest` 调用抢同一张卡。
+ * - `DSH_HARVEST_CONFLICT_CARD`：取 `on` / `1` / `true` 时，done 冲突/拒绝
+ *   自动建「收割执行卡」派发 agent；**默认关闭**——只在本卡写结构化留痕
+ *   评论（含续跑指引），由人在原卡会话/任意会话里让 agent 续跑或手动处理。
  *
  * @module dsh-kanban-mode/harvest/watcher
  */
@@ -67,6 +72,14 @@ export const WATCH_INTERVAL_ENV = 'DSH_HARVEST_WATCH_INTERVAL_MS';
 export const WATCH_ENABLE_ENV = 'DSH_HARVEST_WATCH';
 
 /**
+ * 环境变量：done 冲突/拒绝时是否自动建「收割执行卡」。
+ *
+ * 默认**关闭**（只留痕评论，等待人工/会话接手）；取 `on` / `1` / `true`
+ * 恢复自动建卡（旧行为）。
+ */
+export const CONFLICT_CARD_ENV = 'DSH_HARVEST_CONFLICT_CARD';
+
+/**
  * 续跑用的收割工具名。
  *
  * 与工具直呼面同名（`src/tools/harvest.ts`）；工具名若调整，这里要同步，
@@ -95,6 +108,11 @@ export interface HarvestWatcherOptions {
   readonly context: HarvestWatcherContext;
   /** 轮询间隔（毫秒）；缺省读环境变量，再缺省 800。 */
   readonly intervalMs?: number;
+  /**
+   * done 冲突/拒绝时是否自动建「收割执行卡」；
+   * 缺省读 `DSH_HARVEST_CONFLICT_CARD`，再缺省**关闭**（只留痕评论）。
+   */
+  readonly conflictCard?: boolean;
   /** 收割管线（缺省新建真实管线；单测注入 fake）。 */
   readonly pipeline?: HarvestPipeline;
   /** git 执行器（丢弃前只读采集用；单测注入 fake）。 */
@@ -243,6 +261,20 @@ export function resolveWatchEnabled(
   const raw = env[WATCH_ENABLE_ENV]?.trim().toLowerCase();
   if (raw === undefined || raw.length === 0) return true;
   return !(raw === 'off' || raw === '0' || raw === 'false');
+}
+
+/**
+ * done 冲突/拒绝时是否自动建「收割执行卡」：
+ * 默认**关闭**——只在本卡写结构化留痕评论（含续跑指引），由人在原卡会话
+ * 或任意会话里让 agent 跑 `taskboard_harvest apply` 续跑，或手动按指引处理；
+ * 环境变量取 `on` / `1` / `true` 时恢复自动建卡（旧行为）。
+ */
+export function resolveConflictCardEnabled(
+  env: Readonly<Record<string, string | undefined>>,
+): boolean {
+  const raw = env[CONFLICT_CARD_ENV]?.trim().toLowerCase();
+  if (raw === undefined || raw.length === 0) return false;
+  return raw === 'on' || raw === '1' || raw === 'true';
 }
 
 /** 起一个不阻塞进程退出的定时器（宿主正常退出时不因 watcher 挂着）。 */
@@ -417,7 +449,7 @@ export function buildMergedBody(result: HarvestResult): string {
 /** 未完成收割（冲突 / 拒绝）的留痕正文。 */
 export function buildUnmergedBody(result: HarvestResult): string {
   const lines: string[] = [
-    '【验收联动】自动收割未完成：已转人工处理',
+    '【验收联动】自动收割未完成：已留痕，等待接手',
     `- 结果：${result.result}`,
     `- 任务分支：${result.branch}`,
     `- 目标分支：${result.targetBranch || '(未知)'}`,
@@ -434,6 +466,13 @@ export function buildUnmergedBody(result: HarvestResult): string {
     lines.push(...formatList('主区脏文件', result.dirtyFiles));
   }
   lines.push(...formatList('备注', result.notes));
+  lines.push(
+    '',
+    '## 如何续跑',
+    `- 仓库主区：${result.repo}（所有 git 操作请用绝对路径：\`git -C "${result.repo}" ...\`）`,
+    `- 让任意会话执行工具 ${HARVEST_TOOL_NAME}（taskId=${result.taskId}，mode=apply）续跑收割：管线自带续跑状态机（变基冲突 → 检出内 rebase --continue；主区合并冲突 → commit --no-edit）`,
+    '- 也可手动处理：按上方冲突现场与文件清单解决冲突并 git add，再跑一次 apply 完成合并与清理。',
+  );
   return lines.join('\n');
 }
 
@@ -577,6 +616,7 @@ export function createHarvestWatcher(
   const runner = options.runner ?? createGitRunner();
   const intervalMs = resolveWatchIntervalMs(options.intervalMs, env);
   const enabled = resolveWatchEnabled(env);
+  const conflictCard = options.conflictCard ?? resolveConflictCardEnabled(env);
 
   /** 定时器句柄（停表时清）。 */
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -790,6 +830,13 @@ export function createHarvestWatcher(
         if (!isActionableRejection(result)) {
           log(
             `${LOG_PREFIX} 收割无事可做：${card.id}：${result.reason ?? result.result}`,
+          );
+          break;
+        }
+        if (!conflictCard) {
+          // 默认只留痕不建卡：等人在原卡会话/任意会话里按续跑指引接手。
+          log(
+            `${LOG_PREFIX} 冲突已留痕，等待接手（自动建卡已关闭）：${card.id}`,
           );
           break;
         }

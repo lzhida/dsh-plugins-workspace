@@ -71,8 +71,10 @@
 ### T3 done 钩子（自动，**已落地**）
 
 **已落地**（验收联动系列 3/4）：进程内 watcher 轮询台账 `revision`，发现卡片**进入**
-`done` 就自动收割：无冲突直合并、无冲突时删检出 + 删分支并留痕；有冲突则先留痕
-冲突清单，再自动建一张收割执行卡交人。卡片进入 `canceled` 时走丢弃路径（先留痕
+`done` 就自动收割：无冲突直合并、无冲突时删检出 + 删分支并留痕；有冲突则**不动 git**，
+只在本卡写结构化留痕评论（冲突文件 / 类型 / 建议 / 续跑命令与主区绝对路径），由人在
+原卡会话或任意会话里让 agent 跑 `taskboard_harvest apply` 续跑，或手动按指引处理——
+**默认不自动建收割执行卡**。卡片进入 `canceled` 时走丢弃路径（先留痕
 分支 tip 与脏文件清单，再删检出 + `branch -D`）。
 
 - 实现：`src/harvest/watcher.ts`（`createHarvestWatcher`），由 `src/index.ts` 在
@@ -82,7 +84,9 @@
 - 环境开关（默认值保持「开」）：
   - `DSH_HARVEST_WATCH=off|0|false` → 不启动 watcher（工具直呼场景用，避免自动
     收割与手动 `taskboard_harvest` 抢同一张卡）；
-  - `DSH_HARVEST_WATCH_INTERVAL_MS=<毫秒>` → 轮询间隔（默认 800）。
+  - `DSH_HARVEST_WATCH_INTERVAL_MS=<毫秒>` → 轮询间隔（默认 800）；
+  - `DSH_HARVEST_CONFLICT_CARD=on|1|true` → 恢复「冲突自动建收割执行卡」的旧行为
+    （默认关闭：只留痕评论，等待人工/会话接手）。
 
 **不可逆提示**：`canceled` 路径会强制删除检出并 `git branch -D`（脏检出也删），
 该动作**不可回滚**；分支上的提交只留在 reflog 里，回收前须确认已无价值。

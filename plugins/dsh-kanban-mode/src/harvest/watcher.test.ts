@@ -761,7 +761,7 @@ describe('dsh-kanban-mode harvest:watcher 感知与队列', () => {
     expect(board.comments[0].body).toContain('该卡没有任务分支');
   });
 
-  it('冲突时自动建收割执行卡并内置 git -C 纪律', async () => {
+  it('冲突时自动建收割执行卡并内置 git -C 纪律（开关显式打开）', async () => {
     const trace: Trace = [];
     const board = new FakeBoard(
       {
@@ -787,7 +787,7 @@ describe('dsh-kanban-mode harvest:watcher 感知与队列', () => {
       }),
       pipeline,
       runner: new FakeRunner(),
-      env: {},
+      env: { DSH_HARVEST_CONFLICT_CARD: 'on' },
       log: () => {},
       warn: () => {},
     });
@@ -814,6 +814,46 @@ describe('dsh-kanban-mode harvest:watcher 感知与队列', () => {
     expect(board.comments[0].body).toContain('自动收割未完成');
   });
 
+  it('冲突时默认只留痕不建卡：评论带续跑指引', async () => {
+    const trace: Trace = [];
+    const board = new FakeBoard(
+      {
+        tasks: [makeTask({ id: 't-1', status: 'in_progress', branch: 'task' })],
+      },
+      trace,
+    );
+    board.enableComments();
+    const pipeline = new FakePipeline(trace, async (request) =>
+      conflictResult(request),
+    );
+    const watcher = createHarvestWatcher({
+      context: makeContext({
+        'dsh-taskboard': board,
+        workspaceRegistry: makeRegistry({ 'ws-1': '/repo' }),
+      }),
+      pipeline,
+      runner: new FakeRunner(),
+      env: {},
+      log: () => {},
+      warn: () => {},
+    });
+
+    await watcher.poll();
+    board.tasks = [makeTask({ id: 't-1', status: 'done', branch: 'task' })];
+    board.revision = 2;
+    await watcher.poll();
+
+    // 默认不建卡，只在本卡写结构化留痕评论。
+    expect(board.created).toHaveLength(0);
+    expect(board.comments).toHaveLength(1);
+    const body = board.comments[0]?.body ?? '';
+    expect(body).toContain('已留痕，等待接手');
+    expect(body).toContain('如何续跑');
+    expect(body).toContain('git -C "/repo"');
+    expect(body).toContain('taskboard_harvest');
+    expect(body).toContain('mode=apply');
+  });
+
   it('主区脏被拒时同样建收割执行卡', async () => {
     const trace: Trace = [];
     const board = new FakeBoard(
@@ -833,7 +873,7 @@ describe('dsh-kanban-mode harvest:watcher 感知与队列', () => {
       }),
       pipeline,
       runner: new FakeRunner(),
-      env: {},
+      env: { DSH_HARVEST_CONFLICT_CARD: 'on' },
       log: () => {},
       warn: () => {},
     });
