@@ -12,6 +12,7 @@ import {
   buildScheduleRunValue,
   buildScheduleDescription,
   SCHEDULE_PRESET_ID,
+  SCHEDULE_RUN_TOOL_DESCRIPTION,
 } from './schedule-run.ts';
 
 /** 构造一张目标卡记录。 */
@@ -154,6 +155,22 @@ describe('dsh-kanban-mode tools：kanban_schedule_run 生成卡契约', () => {
     expect(description).toContain('无人值守');
     expect(description).toContain('不补跑');
     expect(description).toContain('建议优先使用周期 cron');
+  });
+
+  it('工具描述与生成卡描述声明依赖总开关前提（0.10.1 两态口径）', async () => {
+    // 工具描述：blockedBy 锁定只在总开关开启时生效，关闭期间静默不生效。
+    expect(SCHEDULE_RUN_TOOL_DESCRIPTION).toContain('依赖总开关');
+    expect(SCHEDULE_RUN_TOOL_DESCRIPTION).toContain('静默不生效');
+    expect(SCHEDULE_RUN_TOOL_DESCRIPTION).toContain('0.10.1');
+    // 生成卡 description：如实声明「关闭期间锁定不生效，prompt 纪律兜底」。
+    const description = buildScheduleDescription('t-target');
+    expect(description).toContain('依赖总开关');
+    expect(description).toContain('唯一兜底');
+    const { board, createTask } = fakeBoardWithCreate([makeTarget({})]);
+    await buildScheduleRunValue(board, { ...CRON_ARGS });
+    expect(
+      (createTask.mock.calls[0]![0] as BoardCreateTaskInput).description,
+    ).toContain('依赖总开关');
   });
 
   it('title 缺省为「定时执行：<目标卡 title>」，显式 title 优先生效', async () => {

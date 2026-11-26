@@ -3,14 +3,20 @@
  *
  * 写路径只走 boardService.createTask（上游 task-writer 的唯一建卡实现），
  * 本工具不复制第二份建卡逻辑；上游负责 execution 归一化、blockedBy 同项目
- * 校验、成环与缺失前置拒绝。
+ * 校验、成环与缺失前置拒绝。插件 0.10.1 起依赖受看板设置「启用任务依赖」
+ * 总开关（dependenciesEnabled）门控：上游缺省关闭，本仓 vendored 版缺省钉为
+ * 开启（local-patches.json 第 16 条）；总开关被用户显式关闭期间，blockedBy
+ * 会被静默丢弃、定时门禁不拦，顺序兜底完全靠生成卡 prompt 内置的
+ * 「先查目标卡」纪律（见下），本工具的描述文案对此如实声明。
  *
  * 生成卡契约：
  *   - status='todo'、urgency='normal'；
  *   - execution={mode:'scheduled', cron|runAt}（cron 与 runAt 恰好一个）；
  *   - presetId='kanban-mode' 写死——部署默认预设不可控，定时卡的执行会话
  *     必须显式拿到看板模式工作法，不能赌部署默认；
- *   - blockedBy=[targetTaskId]（目标卡交付前本卡不会被调度执行）；
+ *   - blockedBy=[targetTaskId]（目标卡交付前本卡不会被调度执行；依赖总开关
+ *     开启时生效，看板设置关闭总开关期间该锁定静默不生效——prompt 第 2 步
+ *     纪律是唯一兜底）；
  *   - checklist 留空（验收项由目标卡自身携带）；
  *   - prompt 内置无人值守纪律模板（先查目标卡 → 前置未满足则立即停止并
  *     comment_add → 可执行才按目标卡 prompt 执行 → 自验 → execution_report
@@ -33,7 +39,7 @@ export const SCHEDULE_RUN_TOOL_NAME = 'kanban_schedule_run';
 
 /** 工具描述。 */
 export const SCHEDULE_RUN_TOOL_DESCRIPTION =
-  '为一张目标卡生成「看板模式定时执行卡」（写操作）：新卡 presetId 固定 kanban-mode、blockedBy 锁定目标卡、execution 为 scheduled（cron 定期或 runAt 一次性二选一）。用于无人值守 / 非高峰期自动执行看板任务的场景；触发时执行会话先检查目标卡状态，前置未满足则立即停止。需要 dsh-taskboard 插件提供的板服务。';
+  '为一张目标卡生成「看板模式定时执行卡」（写操作）：新卡 presetId 固定 kanban-mode、blockedBy 锁定目标卡、execution 为 scheduled（cron 定期或 runAt 一次性二选一）。用于无人值守 / 非高峰期自动执行看板任务的场景；触发时执行会话先检查目标卡状态，前置未满足则立即停止。blockedBy 锁定只在依赖总开关开启时生效（dsh-taskboard 0.10.1 起，本仓 vendored 版缺省开启；看板设置被用户显式关闭期间锁定静默不生效，顺序由生成卡 prompt 内置纪律兜底）。需要 dsh-taskboard 插件提供的板服务。';
 
 /** 入参形状。 */
 export interface ScheduleRunArgs {
@@ -77,7 +83,7 @@ export function buildScheduleDescription(
 ): string {
   const lines = [
     '【看板模式定时执行卡】本卡由 kanban_schedule_run 生成，负责在触发时执行目标卡 ' +
-      `${targetTaskId}（blockedBy 已锁定该前置：目标卡未交付前本卡不会被调度执行）。`,
+      `${targetTaskId}（blockedBy 已锁定该前置：目标卡未交付前本卡不会被调度执行。锁定只在依赖总开关开启时生效；若看板设置的总开关被关闭，本锁定静默不生效，下方纪律为唯一兜底）。`,
     '用途：无人值守执行 / 非高峰期窗口（如凌晨、周末）等不需要人在场的场景。',
     '已知限制：一次性 runAt 错过触发窗口（宿主离线超过 scheduleMissedAfterMinutes，默认 5 分钟）会回退为普通 claim 卡，不补跑；建议优先使用周期 cron。宿主 scheduler 全局并发默认 maxConcurrent=3、每分钟 tick。',
   ];

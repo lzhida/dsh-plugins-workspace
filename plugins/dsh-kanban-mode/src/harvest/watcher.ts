@@ -703,6 +703,10 @@ export function createHarvestWatcher(
       presetId: HARVEST_CARD_PRESET_ID,
       description: buildHarvestCardDescription(card, result),
       prompt: buildHarvestCardPrompt(card, result),
+      // 机器门禁：目标卡交付前收割执行卡不应被认领。注意（dsh-taskboard 0.10.1
+      // 起）该门禁只在依赖总开关开启时生效——上游缺省关闭，本仓 vendored 版缺省
+      // 钉为开启（local-patches.json 第 16 条）；总开关被用户显式关闭期间这里传
+      // 参会被静默丢弃，顺序兜底完全靠收割 prompt 里的「显式确认 done」纪律。
       blockedBy: [card.id],
       execution: { mode: 'claim' },
     };

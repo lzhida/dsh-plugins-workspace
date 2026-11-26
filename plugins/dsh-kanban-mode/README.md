@@ -20,7 +20,7 @@
 | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 总纪律             | 先查板 → 先读后动 → 先认领；版本冲突只重试一次；验收交接；完成须用户确认；backlog = 未授权                                                                                         |
 | 拆卡               | 复杂需求先拆成多卡，**拆分表先给用户确认**再落卡；一张卡 = 一个可独立验收的功能点                                                                                                  |
-| 前置               | 有真实先后依赖时用 `blockedBy` 落机器门禁；只是建议顺序就只写文字，不设门禁                                                                                                        |
+| 前置               | 有真实先后依赖时用 `blockedBy` 落机器门禁（依赖总开关开启时生效，dsh-taskboard 0.10.1 起看板设置可关，关闭期间门禁不拦、顺序靠卡内文字）；只是建议顺序就只写文字，不设门禁         |
 | 并行               | 没有前置关系的卡可以并行；**被前置阻塞的卡必须等前置完成，否则立即停止**；官方进程外子代理是可选工位                                                                               |
 | 定时               | 定时卡用于无人值守 / 套餐非高峰期 / 套餐重置后的时间窗口；定时卡默认按看板模式执行                                                                                                 |
 | 验收               | 自验 → `execution_report` → 评论归档 → 置为待验收；**任务永不自行置完成，完成由用户确认**                                                                                          |
@@ -103,6 +103,14 @@ skill，看板模式预设会话无需额外配置即可获得建卡方法论：
 status ∈ {in_review, done}`（前置不存在视为不满足，status 报 `missing`）。来源登记见
 [docs/upstream-alignment.md](docs/upstream-alignment.md)。
 
+**记录面 vs 门禁面（dsh-taskboard 0.10.1 起）**：上游 0.10.1 给看板设置加了「启用任务依赖」
+总开关（`dependenciesEnabled`，上游缺省关闭、本仓 vendored 版缺省钉为开启）。本工具的
+`ready[]/blocked[]` 判定吃台账**原始记录**（`task.blockedBy`），不看总开关——总开关被用户
+显式关闭期间，板服务门禁面（认领拦截、`dependencyBlock()`）停用，但本工具仍按记录报
+「等待前置」，与门禁面表现不同。需要门禁面结论时以 `taskboard_get` / 认领报错为准；
+机制详见 vendored `plugins/dsh-taskboard/docs/local-changes.md` 的「上游同步系列」小节，
+以及本仓 `src/skill/skill-content.ts` 的 4.11.0 节（两层探测判据与关闭态处置）。
+
 ### kanban_plan_check（只读）
 
 对一份结构化拆卡方案（`{series?: {theme, total}, cards[]}`，每卡
@@ -136,9 +144,10 @@ dsh-taskboard 2/6 定稿的 task-writer），**绝不复制第二份建卡逻辑
 | workspaceId  | string（可选）  | 缺省取目标卡所属项目；显式传入必须与之一致（blockedBy 前置同项目） |
 
 生成卡固定形状：`status='todo'`、`urgency='normal'`、`execution={mode:'scheduled', cron|runAt}`、
-`presetId='kanban-mode'`（**写死**）、`blockedBy=[targetTaskId]`、checklist 留空；
-description 写明「这是看板模式定时执行卡，负责在触发时执行目标卡 <id>」+ 无人值守/非高峰期
-用途说明 + 已知限制；返回生成卡的 `{id, title, status, execution, presetId, blockedBy}`。
+`presetId='kanban-mode'`（**写死**）、`blockedBy=[targetTaskId]`（依赖总开关开启时生效，
+dsh-taskboard 0.10.1 起看板设置可关；关闭期间传参被静默丢弃，顺序兜底靠下方 prompt 纪律）、
+checklist 留空；description 写明「这是看板模式定时执行卡，负责在触发时执行目标卡 <id>」+
+无人值守/非高峰期用途说明 + 已知限制；返回生成卡的 `{id, title, status, execution, presetId, blockedBy}`。
 
 prompt 内置执行纪律模板（写死在工具内）：执行会话先 `taskboard_get` 目标卡 → 目标卡不在
 todo/in_progress 或 dependency_blocked（**前置未满足则立即停止**，`taskboard_comment_add`
@@ -180,17 +189,17 @@ todo/in_progress 或 dependency_blocked（**前置未满足则立即停止**，`
 
 ### 三种触发方式
 
-| 触发              | 机制                                                                     | 自动化程度                       |
-| ----------------- | ------------------------------------------------------------------------ | -------------------------------- |
-| **T1 会话内直呼** | 在项目会话里直接调 `taskboard_harvest`（先 `plan` 看清差异，再 `apply`） | 半自动（人发起）                 |
-| **T2 下游收割卡** | 任务卡 done → 收割卡 `blockedBy` 满足 → 认领或 cron 触发 → prompt 调工具 | 近自动（依赖门禁 + 调度器 tick） |
-| **T3 done 钩子**  | 验收联动 watcher（进程内轮询台账 `revision`，done → 直合 / 建收割卡）    | 自动（**已落地**）               |
+| 触发              | 机制                                                                     | 自动化程度                                                   |
+| ----------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------ |
+| **T1 会话内直呼** | 在项目会话里直接调 `taskboard_harvest`（先 `plan` 看清差异，再 `apply`） | 半自动（人发起）                                             |
+| **T2 下游收割卡** | 任务卡 done → 收割卡 `blockedBy` 满足 → 认领或 cron 触发 → prompt 调工具 | 近自动（依赖门禁 + 调度器 tick；依赖总开关开启时门禁才生效） |
+| **T3 done 钩子**  | 验收联动 watcher（进程内轮询台账 `revision`，done → 直合 / 建收割卡）    | 自动（**已落地**）                                           |
 
 - **T1**：最省事的一条。`plan` 只读出差异摘要、base 是否前进、预检到的冲突文件；
   确认无误再 `apply`。
 - **T2**：把「收割」本身做成一张下游卡（`blockedBy` 指向被收割的卡）。前置卡 `done`
   后门禁放行，卡被认领或 cron 到点触发，prompt 里调工具——近自动，但**靠 prompt 里的
-  纪律兜底**（见下方已知坑第 1 条）。
+  纪律兜底**（见下方已知坑第 1、8 条；门禁还要求依赖总开关处于开启态）。
 - **T3**（**已落地**）：验收联动 watcher——进程内轮询台账 `revision`，发现卡片**进入**
   `done` 就自动收割：无冲突直合并并删检出 + 删分支，有冲突则先留痕冲突清单再自动建
   收割卡交人；`canceled` 则先留痕分支 tip 与脏文件清单，再强制删除检出与分支
@@ -240,6 +249,11 @@ todo/in_progress 或 dependency_blocked（**前置未满足则立即停止**，`
    `ctx.get('dsh-taskboard')` **软读**板服务，缺席时报可操作错误（提示安装
    `@zhidal/dsh-taskboard`）而非静默失败；预设里再挂 dsh-taskboard 行会重复注册同名
    工具并实例化第二套 SchedulerService（见「限制与红线」第 1 条）。
+8. **依赖总开关关闭时 `blockedBy` 静默不生效**（dsh-taskboard 0.10.1 起）：看板设置
+   「启用任务依赖」被用户显式关闭期间，建收割卡传的 `blockedBy` 会被静默丢弃、门禁不拦，
+   T2 的「近自动」就只剩 prompt 纪律兜底——顺序要靠模板里「显式确认 `status==='done'`」
+   的纪律（这也是它无论如何都要保留的原因）。本仓 vendored 版把总开关缺省钉为开启
+   （local-patches.json 第 16 条），上游官方缺省关闭。
 
 ## 安装
 

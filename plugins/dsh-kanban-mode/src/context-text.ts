@@ -66,7 +66,7 @@ export const CONTEXT_SECTIONS: readonly ContextSection[] = [
   {
     title: '前置',
     bullets: [
-      '有真实先后依赖时，用 blockedBy 把前置卡 id 落成机器门禁。',
+      '有真实先后依赖时，用 blockedBy 把前置卡 id 落成机器门禁（插件 0.10.1 起要求看板设置的「启用任务依赖」总开关处于开启态：本仓 vendored 版缺省开启、用户可显式关闭，关闭期间 blockedBy 静默不生效、门禁不拦截，顺序仍要写进卡内文字）。',
       '只是建议顺序（本就并行、或只是先做更顺手）只写文字说明，不设 blockedBy 门禁。',
       '门禁只对同项目的前置卡生效，跨项目不设门禁。',
     ],
@@ -119,7 +119,7 @@ export const CONTEXT_SECTIONS: readonly ContextSection[] = [
       'AI 解决：在任务检出内逐文件解决（编辑 + git add）→ 再调 taskboard_harvest(mode=apply) 续跑（工具检测到进行中的 rebase / merge 会走 --continue 收尾）。',
       '手动解决：工具保留冲突现场（rebase / merge 进行中，不 abort、不清理），并输出「手动收割指引」（分支名、目标分支、检出路径、建议命令序列）；人在检出内解决后 git add，再跑一次 apply 续跑。',
       '二次冲突最多再问一轮：AI 解决后仍冲突 → 至多再问一轮，仍冲突就停手交人。',
-      "收割卡模板（agent 直接抄）：blockedBy=[被收割的任务卡 id]、presetId=kanban-mode、execution 用 claim（人认领）或 cron（定时）、prompt 显式写「先 taskboard_get 确认前置 status==='done'，否则停手」并调用 taskboard_harvest(mode=apply)。",
+      "收割卡模板（agent 直接抄）：blockedBy=[被收割的任务卡 id]、presetId=kanban-mode、execution 用 claim（人认领）或 cron（定时）、prompt 显式写「先 taskboard_get 确认前置 status==='done'，否则停手」并调用 taskboard_harvest(mode=apply)。注意 blockedBy 门禁只在依赖总开关开启时生效（插件 0.10.1 起，看板设置可关），所以 prompt 里的「显式确认 done」纪律无论如何都要保留。",
     ],
   },
 ];

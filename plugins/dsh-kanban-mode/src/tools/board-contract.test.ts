@@ -95,6 +95,25 @@ describe('dsh-kanban-mode tools 契约：依赖判定口径', () => {
     expect(judgeDependencies(tasks, tasks[0]!)).toEqual([]);
   });
 
+  it('记录面判定不受依赖总开关影响（0.10.1：门禁面停用时台账里的 blockedBy 照判）', () => {
+    // 上游 0.10.1 起依赖总开关（dependenciesEnabled）只影响板服务的读面与
+    // 门禁面（dependencies() 返回 []、dependencyBlock() 返回 undefined、
+    // 建卡/改卡传 blockedBy 被静默丢弃）；judgeDependencies 吃台账原始记录、
+    // 不接开关参数——总开关无论开（本仓 vendored 缺省）还是关（用户显式
+    // 关闭），对同一份记录的判定结果必须一致。这是「记录面 vs 门禁面」
+    // 口径差异的回归锚（门禁面结论以板服务 dependencyBlock 为准）。
+    const prereq = makeTask({ id: 't-pre', status: 'todo' });
+    const downstream = makeTask({ id: 't-a', blockedBy: ['t-pre'] });
+    const withRecords = [prereq, downstream];
+    const withoutRecords = [prereq, makeTask({ id: 't-a', blockedBy: [] })];
+    const judged = judgeDependencies(withRecords, downstream)[0]!;
+    expect(judged.satisfied).toBe(false);
+    expect(judged.status).toBe('todo');
+    // 判定只认记录：blockedBy 记录为空（如开关关闭期间被丢弃后清理过）就是
+    // 空前置列表，函数不引入任何板设置语义。
+    expect(judgeDependencies(withoutRecords, withoutRecords[1]!)).toEqual([]);
+  });
+
   it('与上游 shared/dependencies.ts 口径逐维对齐（等价场景矩阵比对预期）', () => {
     // 上游真源 plugins/dsh-taskboard/src/shared/dependencies.ts 的
     // dependencyState 语义：satisfied = 前置存在 ∧ 同项目 ∧ 未软删 ∧

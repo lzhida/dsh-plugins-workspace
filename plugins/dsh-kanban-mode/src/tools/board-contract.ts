@@ -11,6 +11,12 @@
  * 登记见 docs/upstream-alignment.md；board-contract.test.ts 与上游口径
  * 逐维对齐断言。
  *
+ * 上游 0.10.1 起依赖受看板设置「启用任务依赖」总开关（dependenciesEnabled）
+ * 门控：上游缺省关闭，本仓 vendored 版缺省钉为开启（local-patches.json 第
+ * 16 条）。判定函数本身在 0.10.0 → 0.10.1 之间未变；总开关只影响板服务的
+ * 读面与门禁面（见 BoardServiceContract.dependencies / dependencyBlock 注释），
+ * 本文件的 judgeDependencies 作用于台账原始记录面，不知晓开关状态。
+ *
  * @module dsh-kanban-mode/tools/board-contract
  */
 
@@ -166,9 +172,16 @@ export interface BoardServiceContract {
   getTask(id: string): BoardTaskRecord | undefined;
   /** 任务列表（可过滤，返回摘要视图）。 */
   listTasks(filter?: { workspaceId?: string }): BoardTaskSummary[];
-  /** 某任务的前置满足情况（任务不存在返回空数组）。 */
+  /**
+   * 某任务的前置满足情况（任务不存在返回空数组）。
+   * 上游 0.10.1 读面语义：依赖总开关（dependenciesEnabled）关闭时恒返回
+   * `[]`——空数组不代表卡上没有 blockedBy 记录，只代表读面被关。
+   */
   dependencies(taskId: string): BoardDependencyView[];
-  /** 某任务是否被未满足的前置阻塞（返回阻塞详情，未阻塞返回 undefined）。 */
+  /**
+   * 某任务是否被未满足的前置阻塞（返回阻塞详情，未阻塞返回 undefined）。
+   * 上游 0.10.1 读面语义：依赖总开关关闭时恒返回 `undefined`（门禁面停用）。
+   */
   dependencyBlock(taskId: string): string | undefined;
   /** 建卡（上游走 store.mutate('task-created') 事件流）。 */
   createTask(input: BoardCreateTaskInput): Promise<BoardTaskSummary>;
@@ -253,9 +266,19 @@ export interface BoardDependencyJudgement {
  * canceled/archived 一律不满足；status 回退 'missing'、title 回退 id 的
  * 缺失回退也与上游一致。
  *
- * 版本锚：与 vendored @zhidal/dsh-taskboard（上游 v0.10.0）
+ * 记录面口径：本函数吃台账原始记录（`task.blockedBy`），**不看**依赖总开关
+ * （dependenciesEnabled）——上游 0.10.1 起，总开关只影响板服务的读面
+ * （`dependencies()` 返回 `[]`）与门禁面（`dependencyBlock()` 返回
+ * undefined、四类门禁短路、建卡/改卡传 blockedBy 被静默丢弃），不改变台账
+ * 里已写的 blockedBy 记录。因此总开关关闭期间，本函数（kanban_ready_cards
+ * 的 ready/blocked 判定）仍按记录报「等待前置」，与门禁面表现不同——这是
+ * 记录面 vs 门禁面的已知口径差异，消费方需要门禁面结论时以
+ * `dependencyBlock()` 为准。
+ *
+ * 版本锚：与 vendored @zhidal/dsh-taskboard（上游 v0.10.1）
  * `src/shared/dependencies.ts` 的 `dependencyState` 判定口径对齐
- * （2026-11-20 快照；上游升级时同步核对 `docs/upstream-alignment.md`）。
+ * （判定函数 0.10.0 → 0.10.1 未变，0.10.1 新增的是同文件的
+ * `dependenciesEnabled` 总开关；上游升级时同步核对 `docs/upstream-alignment.md`）。
  */
 export function judgeDependencies(
   tasks: readonly BoardTaskRecord[],

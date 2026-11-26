@@ -52,6 +52,30 @@ describe('dsh-kanban-mode 内嵌建卡 skill 正文', () => {
     expect(SKILL_CONTENT).toContain('文字兜底');
   });
 
+  it('0.10.1 起：版本探测为两层判据，依赖总开关两态各有明确结论（4.11.0）', () => {
+    // 层 1（版本层）+ 层 2（总开关层）缺一不可；只看 schema 有 blockedBy 是假阳性。
+    expect(SKILL_CONTENT).toContain('两层判据缺一不可');
+    expect(SKILL_CONTENT).toContain('假阳性');
+    // 总开关事实：上游官方缺省关闭、本仓 vendored 版缺省开启、用户可显式关闭。
+    expect(SKILL_CONTENT).toContain('上游官方缺省关闭');
+    expect(SKILL_CONTENT).toContain('本仓 vendored 版缺省开启');
+    expect(SKILL_CONTENT).toContain('显式关闭');
+    expect(SKILL_CONTENT).toContain('dependenciesEnabled');
+    // 两态结论：开（写后回读出现前置行）⇒ 判可用；关 ⇒ 判不可用走 4.11.6 文字兜底。
+    expect(SKILL_CONTENT).toContain('判**可用**');
+    expect(SKILL_CONTENT).toContain('判**不可用**');
+    expect(SKILL_CONTENT).toContain('4.11.6');
+    // 关闭态行为清单：静默丢弃 + 读面消失 + 四类门禁全部不拦截。
+    expect(SKILL_CONTENT).toContain('### 4.11.0 依赖总开关');
+    expect(SKILL_CONTENT).toContain('静默丢弃');
+    expect(SKILL_CONTENT).toContain('全部不拦截');
+    // 探测有清理义务：探测用的改卡必须还原 blockedBy，探测卡用完解引用再删。
+    expect(SKILL_CONTENT).toContain('探测完必须清理');
+    expect(SKILL_CONTENT).toContain('blockedBy: []');
+    // 跨项目校验在总开关关闭期间被跳过（否则会被静默写入）。
+    expect(SKILL_CONTENT).toContain('总开关关闭期间该校验跳过');
+  });
+
   it('保留系列命名模板与拆分表先确认纪律', () => {
     expect(SKILL_CONTENT).toContain('<主题>系列 n/N：<祈使短句>');
     expect(SKILL_CONTENT).toContain('拆分表未经确认不建任何卡');
