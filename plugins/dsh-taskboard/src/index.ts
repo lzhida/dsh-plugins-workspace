@@ -25,6 +25,8 @@ import { dispatchIntervalMsOf, DEFAULT_MAX_CONCURRENT, maxConcurrentOf, queueMax
 import { scheduledSessionResumer, type ScheduledSessionDeps } from './host/scheduled-session.ts'
 import { createGitFace } from './host/git.ts'
 import { readWorktreeService, readWorkingDirectory } from './local/official-worktree.ts'
+import { agentRealmCtx, readGoalsService, readPlanModeService } from './local/official-modes.ts'
+import { onAgentPreStep } from './local/todo-sync.ts'
 import { createRepoScanner } from './host/repos.ts'
 import { registerTaskboardRoutes } from './host/routes.ts'
 import { SchedulerService } from './host/scheduler.ts'
@@ -214,6 +216,11 @@ export function apply(ctx: Context): void {
     wsCtx.inject(['agents'], (agentCtx: Context) => {
       const agentDisposers: Array<() => void> = []
       agentSessions = agentCtx.get('sessions') as { get?: (id: string) => unknown; list?: () => unknown[] } | undefined
+      // 会话任务清单 ↔ 卡片验收清单（看板增强系列 3/6）：在官方首个
+      // 'agent/pre-step' 钩子里把卡片验收清单注入为官方 todos。pre-step 位于
+      // Session.append 发布之外，append 安全（官方 dsh-plan-mode 同款先例）；
+      // 注入失败只记日志，不阻塞执行。监听器随本作用域注销。
+      agentDisposers.push(onAgentPreStep(agentCtx, agent => activeExecution?.injectChecklistTodos(agent)))
       // Soft-read the OFFICIAL worktree services (0.10.1): installed only when
       // @deepseek-ai/dsh-experimental-worktree (forge bundle) is enabled. A
       // missing service degrades task isolation to the original directory —
@@ -238,6 +245,15 @@ export function apply(ctx: Context): void {
         liveAgent: sessionId => agentCtx.agents.get(sessionId as never) as never,
         worktrees: () => readWorktreeService(agentCtx),
         workingDirectory: () => readWorkingDirectory(agentCtx),
+        // Official plan-mode / goal services (看板增强系列 2/6): soft reads —
+        // a missing service degrades the card to normal mode with a visible
+        // execution.taskModeNote, never a hard dependency and never an import.
+        // 5/6 修正读取拓扑：planMode 只挂在每会话 preset realm（宿主面行被
+        // 官方 patch 禁用），读取必须经 live agent 的 realm ctx；goals 在
+        // 宿主面，agent realm 经共享根 store 也能解析。agent 无 ctx（旧宿主
+        // 或测试假件）时回落宿主上下文。
+        planMode: agent => readPlanModeService(agentRealmCtx(agent) ?? agentCtx),
+        goals: agent => readGoalsService(agentRealmCtx(agent) ?? agentCtx),
         workspaces: {
           get: id => workspaceFace(wsCtx.workspaceRegistry).get(id),
           attach: async (workspaceId, sessionId) => {

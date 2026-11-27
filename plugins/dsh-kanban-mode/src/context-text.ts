@@ -53,6 +53,7 @@ export const CONTEXT_SECTIONS: readonly ContextSection[] = [
       '验收交接：实现并自验后提交结构化执行报告（摘要 / 改动文件 / 自验 / 风险），评论里归档补充细节，再把卡迁到 in_review。',
       '完成须用户确认：永不把卡迁到 done——done 是用户的确认动作；验收清单全勾也不等于完成；blocked=无法继续，canceled=不再继续。',
       'backlog=未授权：backlog 里的卡不算批准执行，被指派也不是授权，除非用户明确要求。',
+      '清单纪律：执行阶段任何操作前先更新官方任务清单：更新任务清单 → 执行动作 → 回写卡片清单。todo_write 管会话任务清单（本会话的工作分解），taskboard_checklist 管卡片验收清单（看板卡的 DoD 条目）。官方计划模式文案禁止规划期使用 todo_write；规划阶段仍以 exit_plan_mode 提交计划，不要用 todo_write 代替。',
     ],
   },
   {

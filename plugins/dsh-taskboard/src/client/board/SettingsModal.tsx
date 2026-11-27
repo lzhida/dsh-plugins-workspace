@@ -11,15 +11,9 @@ import { useEffect, useState } from 'react'
 import { ExternalSyncPanel } from './ExternalSyncPanel.tsx'
 import type { BoardController } from '../controller.ts'
 import type { CatalogModelItem, CatalogPresetItem } from '../../shared/api.ts'
-import { BRANCH_NAME_MODES, DEFAULT_BRANCH_NAME_PREFIX, DEFAULT_COMPLETED_DISPLAY_LIMIT, DEFAULT_DISPATCH_INTERVAL_MS, DEFAULT_ISOLATION, DEFAULT_MAX_CONCURRENT, DEFAULT_QUEUE_MAX_AGE_MINUTES, DEFAULT_SCHEDULE_MISSED_AFTER_MINUTES, MIN_COMPLETED_DISPLAY_LIMIT, MAX_COMPLETED_DISPLAY_LIMIT, allowClaimFromLinkedRootsOf, branchNameModeOf, branchNamePrefixOf, buildBranchName, completedDisplayLimitOf, defaultPermissionOf, defaultSyncExternalSessionsOf, dispatchIntervalMsOf, maxConcurrentOf, queueMaxAgeMinutesOf, scheduleMissedAfterMinutesOf, type BranchNameMode, type IsolationMode, type PermissionMode } from '../../shared/protocol.ts'
+import { BRANCH_NAME_MODES, DEFAULT_BRANCH_NAME_PREFIX, DEFAULT_COMPLETED_DISPLAY_LIMIT, DEFAULT_DISPATCH_INTERVAL_MS, DEFAULT_MAX_CONCURRENT, DEFAULT_QUEUE_MAX_AGE_MINUTES, DEFAULT_SCHEDULE_MISSED_AFTER_MINUTES, MIN_COMPLETED_DISPLAY_LIMIT, MAX_COMPLETED_DISPLAY_LIMIT, allowClaimFromLinkedRootsOf, branchNameModeOf, branchNamePrefixOf, buildBranchName, completedDisplayLimitOf, defaultPermissionOf, defaultSyncExternalSessionsOf, dispatchIntervalMsOf, maxConcurrentOf, queueMaxAgeMinutesOf, scheduleMissedAfterMinutesOf, type BranchNameMode, type PermissionMode } from '../../shared/protocol.ts'
 import { dependenciesEnabled } from '../../shared/dependencies.ts'
 import { localeStore, setLocalePreference, useT, type LocalePreference, type Translate } from '../i18n/runtime.ts'
-
-/** The isolation options with one-line hints (mirrors the task form; translated per render). */
-const isolationOptions = (t: Translate): ReadonlyArray<{ value: IsolationMode; name: string; hint: string }> => [
-  { value: 'none', name: t('form.iso.none'), hint: t('set.iso.noneHint') },
-  { value: 'worktree', name: t('form.iso.worktree'), hint: t('set.iso.worktreeHint') },
-]
 
 /** The branch naming presets (issue #98); translated per render. */
 const branchModeOptions = (t: Translate): ReadonlyArray<{ value: BranchNameMode; name: string }> => BRANCH_NAME_MODES.map(value => ({
@@ -44,7 +38,6 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
   const localePreference = localeStore.getSnapshot().preference
   const [section, setSection] = useState<'general' | 'external'>('general')
   const state = controller.getSnapshot()
-  const currentIso = state.ledger.settings?.defaultIsolation ?? DEFAULT_ISOLATION
   const currentSync = defaultSyncExternalSessionsOf(state.ledger.settings)
   const currentPerm = defaultPermissionOf(state.ledger.settings)
   const currentMulti = allowClaimFromLinkedRootsOf(state.ledger.settings)
@@ -73,7 +66,6 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
   const parsedModel = draftModel === '' ? undefined : JSON.parse(draftModel) as { provider: string; model: string }
   const selectedModel = catalog.find(m => m.provider === parsedModel?.provider && m.model === parsedModel?.model)
   const reasoning = selectedModel?.reasoning
-  const [draftIso, setDraftIso] = useState<IsolationMode>(currentIso)
   const currentBranchMode = branchNameModeOf(state.ledger.settings)
   const currentBranchPrefix = branchNamePrefixOf(state.ledger.settings)
   const [draftBranchMode, setDraftBranchMode] = useState<BranchNameMode>(currentBranchMode)
@@ -103,7 +95,7 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
     || draftDependenciesEnabled !== currentDependenciesEnabled
     || gateKeys.some(key => draftGates[key] !== currentGates[key])
     || draftDefaultWorkspace !== currentDefaultWorkspace
-    || draftIso !== currentIso || draftSync !== currentSync || draftPerm !== currentPerm || draftMulti !== currentMulti
+    || draftSync !== currentSync || draftPerm !== currentPerm || draftMulti !== currentMulti
     || draftBranchMode !== currentBranchMode || draftBranchPrefix !== currentBranchPrefix
     || draftMaxConcurrent !== String(currentMaxConcurrent) || draftMissedAfterMinutes !== String(currentMissedAfterMinutes)
     || draftQueueMaxAgeMinutes !== String(currentQueueMaxAgeMinutes) || draftDispatchIntervalMs !== String(currentDispatchIntervalMs)
@@ -126,7 +118,6 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
 
   const save = (): void => {
     void controller.updateSettings({
-      defaultIsolation: draftIso,
       branchNameMode: draftBranchMode,
       branchNamePrefix: draftBranchPrefix.trim().length === 0 ? DEFAULT_BRANCH_NAME_PREFIX : draftBranchPrefix,
       syncExternalSessions: draftSync,
@@ -210,28 +201,6 @@ export function SettingsModal({ controller }: { controller: BoardController }) {
               </select>
             </label>
             <p className="dsh-atb-isolation-note">{t('set.workspace.hint')}</p>
-          </section>
-
-          <section className="dsh-atb-diag-sec">
-            <h4>{t('set.iso.heading')}</h4>
-            <div className="dsh-atb-mode-picker">
-              {isolationOptions(t).map(o => (
-                <button
-                  key={o.value}
-                  type="button"
-                  className="dsh-atb-mode-opt"
-                  data-on={draftIso === o.value}
-                  title={o.hint}
-                  onClick={() => setDraftIso(o.value)}
-                >
-                  <span className="dsh-atb-mode-name">{o.name}</span>
-                  <span className="dsh-atb-mode-hint">{o.hint}</span>
-                </button>
-              ))}
-            </div>
-            <span className="dsh-atb-isolation-note">
-              {t('set.iso.current', { current: currentIso === 'worktree' ? t('form.iso.worktree') : t('form.iso.none') })}
-            </span>
           </section>
 
           <section className="dsh-atb-diag-sec">

@@ -114,19 +114,21 @@ export const URGENCY_COLOR: Readonly<Record<Urgency, string>> = {
  *   forge-bundle plugin; without it the run degrades to `none` with an
  *   `isolationNote` (never an error).
  * - `none`: run in the workspace directory as before, zero git interaction.
- * Omitted = {@link DEFAULT_ISOLATION}; since 0.5.0 creation materializes the
- * board default onto the record (看板设置 → 执行隔离), and non-git projects
+ * Omitted = {@link DEFAULT_ISOLATION} (恒 'worktree' in this fork; creation is
+ * normalized through the local task-writer's resolveIsolation, so an explicit
+ * 'none' is force-rewritten with an isolationNote), and non-git projects
  * still auto-degrade at run time (the execution record carries an
  * `isolationNote` explaining why).
  */
 export type IsolationMode = 'worktree' | 'none'
 
 /**
- * Factory-default isolation (0.5.0): 原目录执行. Applies when neither the
- * task record nor the board setting (`BoardSettings.defaultIsolation`)
- * says otherwise. Before 0.5.0 the implicit default was 'worktree'.
+ * Factory-default isolation. 本仓口径（看板增强系列 1/6）恒 'worktree'：所有
+ * 新建卡一律 worktree 隔离（写手层 resolveIsolation 强制，显式 'none' 被改写
+ * 并注明），看板设置里的「默认执行隔离」档位已随 GUI 一并移除。上游 0.10.1
+ * 的出厂缺省是 'none'，0.5.0 前的隐式缺省是 'worktree'。
  */
-export const DEFAULT_ISOLATION: IsolationMode = 'none'
+export const DEFAULT_ISOLATION: IsolationMode = 'worktree'
 
 /** Factory default and safe UI/API range for concurrent task executions. */
 export const DEFAULT_MAX_CONCURRENT = 3
@@ -303,7 +305,7 @@ export type BoardSettings = {
   dependenciesEnabled?: boolean
   /** Dependency gates default to enabled when omitted. */
   dependencyGates?: Partial<Record<'agent' | 'manual' | 'scheduled' | 'review', boolean>>
-  /** Default code isolation applied when a NEW task is created without an explicit choice. */
+  /** Legacy (pre-1/6) default isolation; kept for old ledgers only — ignored, every NEW task is 'worktree'. */
   defaultIsolation?: IsolationMode
   /** Branch naming preset for worktree task branches (issue #98; default 'title-id' = the pre-#98 format). */
   branchNameMode?: BranchNameMode
@@ -445,9 +447,9 @@ export function asBoardSettings(raw: unknown): BoardSettings {
   return out
 }
 
-/** The effective default isolation for NEW tasks (board setting → factory default). */
-export function defaultIsolationOf(settings?: BoardSettings): IsolationMode {
-  return settings?.defaultIsolation ?? DEFAULT_ISOLATION
+/** The effective default isolation for NEW tasks: 恒 'worktree'（看板默认档已随 GUI 一并移除，字段仅兼容旧台账）。 */
+export function defaultIsolationOf(_settings?: BoardSettings): IsolationMode {
+  return DEFAULT_ISOLATION
 }
 
 /** The effective external session sync switch (board setting → factory default false). */
@@ -492,6 +494,52 @@ export function completedDisplayLimitOf(settings?: BoardSettings): number {
 
 /** How a task may run. */
 export type ExecutionMode = 'claim' | 'scheduled'
+
+/**
+ * Which official capability an execution session is put into (看板增强系列 2/6).
+ *
+ * This is INDEPENDENT of {@link ExecutionMode}: that one carries the SCHEDULING
+ * semantics (claim by an in-project session vs. host cron scheduler), while
+ * `taskMode` carries the SESSION semantics:
+ * - `normal` — plain execution; no official mode service is touched at all;
+ * - `goal` — the fresh session gets a persistent official goal (官方 goals 服务);
+ * - `plan` — the fresh session starts in the official plan mode (官方 planMode 服务).
+ *
+ * The official DSH session-creation API has no mode parameter at all, so the
+ * mode is applied AFTER the agent exists (see host/execution.ts).
+ */
+export type TaskMode = 'normal' | 'goal' | 'plan'
+
+/** Every valid task mode. */
+export const TASK_MODES: readonly TaskMode[] = ['normal', 'goal', 'plan']
+
+/** The default task mode: plain execution. */
+export const DEFAULT_TASK_MODE: TaskMode = 'normal'
+
+/**
+ * Validate a task mode value (看板增强系列 2/6).
+ *
+ * Absent (undefined/null) means "not specified" → {@link DEFAULT_TASK_MODE};
+ * anything else must be one of {@link TASK_MODES} or the call fails loudly
+ * (never silently coerced — a mistyped mode must not silently run as normal).
+ * @param raw - the raw input.
+ * @returns the normalized task mode.
+ */
+export function normalizeTaskMode(raw: unknown): TaskMode {
+  if (raw === undefined || raw === null) return DEFAULT_TASK_MODE
+  if (typeof raw !== 'string' || !TASK_MODES.includes(raw as TaskMode)) {
+    throw new Error(`taskMode must be one of: ${TASK_MODES.join(', ')}`)
+  }
+  return raw as TaskMode
+}
+
+/**
+ * The effective task mode of a task (old ledgers carry no field → normal).
+ * @param task - the task.
+ */
+export function taskModeOf(task: { taskMode?: TaskMode }): TaskMode {
+  return task.taskMode ?? DEFAULT_TASK_MODE
+}
 
 /** How a periodic cron task continues after a successful scheduled run. */
 export type PeriodicCompletion = 'rearm' | 'spawn'
@@ -833,6 +881,17 @@ export type ExecutionRecord = {
   isolation?: IsolationMode
   /** Why worktree isolation degraded to running in the original directory. */
   isolationNote?: string
+  /**
+   * The task mode this execution actually ran with (看板增强系列 2/6). Absent
+   * on ledgers written before the feature; `normal` when the requested mode
+   * degraded (see {@link ExecutionRecord.taskModeNote}).
+   */
+  taskMode?: TaskMode
+  /**
+   * Why the requested task mode (看板增强系列 2/6) could not be applied and the
+   * run continued as `normal` (official service missing or the call failed).
+   */
+  taskModeNote?: string
   /** The task branch this execution worked on (worktree runs only). */
   branch?: string
   /** Absolute path of the dedicated worktree (worktree runs only). */
@@ -895,6 +954,12 @@ export type TaskRecord = {
   /** Explanation only; never put credentials or secret values here. */
   waitingReason?: string
   execution: ExecutionConfig
+  /**
+   * Session semantics of the execution (看板增强系列 2/6; see {@link TaskMode}).
+   * Omitted on legacy records → {@link DEFAULT_TASK_MODE} ('normal'). This is
+   * NOT the scheduling mode — {@link ExecutionConfig.mode} owns that.
+   */
+  taskMode?: TaskMode
   model?: TaskModel
   /** Code isolation for executions (omitted = the worktree default; see {@link IsolationMode}). */
   isolation?: IsolationMode
@@ -1714,6 +1779,8 @@ export function validateImportedTask(raw: unknown, now: number): { ok: true; tas
           ...(outcomeRaw === 'running' ? { error: 'imported while still running (settlement watcher died with the exporting host)' } : (typeof xe.error === 'string' ? { error: xe.error } : {})),
           ...(typeof xe.isolation === 'string' && (xe.isolation === 'worktree' || xe.isolation === 'none') ? { isolation: xe.isolation } : {}),
           ...(typeof xe.isolationNote === 'string' ? { isolationNote: xe.isolationNote } : {}),
+          ...(typeof xe.taskModeNote === 'string' ? { taskModeNote: xe.taskModeNote } : {}),
+          ...(xe.taskMode === 'normal' || xe.taskMode === 'goal' || xe.taskMode === 'plan' ? { taskMode: xe.taskMode } : {}),
           ...(typeof xe.branch === 'string' ? { branch: xe.branch } : {}),
           ...(typeof xe.worktreePath === 'string' ? { worktreePath: xe.worktreePath } : {}),
           ...(typeof xe.baseCommit === 'string' ? { baseCommit: xe.baseCommit } : {}),
@@ -1747,6 +1814,7 @@ export function validateImportedTask(raw: unknown, now: number): { ok: true; tas
       blocked: e.blocked === true,
       ...(e.blockedBy !== undefined ? { blockedBy: normalizeBlockedBy(e.blockedBy) } : {}),
       execution,
+      ...(typeof e.taskMode === 'string' ? { taskMode: normalizeTaskMode(e.taskMode) } : {}),
       ...(typeof e.model === 'object' && e.model !== null ? { model: normalizeModel(e.model) } : {}),
       ...(typeof e.isolation === 'string' && (e.isolation === 'worktree' || e.isolation === 'none') ? { isolation: e.isolation } : {}),
       ...(typeof e.presetId === 'string' && e.presetId.trim().length > 0 ? { presetId: e.presetId.trim() } : {}),
@@ -1846,6 +1914,8 @@ export type TaskSummary = {
   waitingForHuman?: boolean
   waitingReason?: string
   executionMode: ExecutionMode
+  /** Session semantics of the execution (看板增强系列 2/6); 'normal' | 'goal' | 'plan'. */
+  taskMode: TaskMode
   nextRunAt?: number
   model?: TaskModel
   permission?: PermissionMode
@@ -1875,6 +1945,7 @@ export function summarize(task: TaskRecord): TaskSummary {
     ...(typeof task.waitingForHuman === 'boolean' ? { waitingForHuman: task.waitingForHuman } : {}),
     ...(task.waitingForHuman === true && task.waitingReason ? { waitingReason: task.waitingReason } : {}),
     executionMode: task.execution.mode,
+    taskMode: taskModeOf(task),
     nextRunAt: task.execution.nextRunAt,
     model: task.model,
     permission: task.permission,

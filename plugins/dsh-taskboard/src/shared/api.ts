@@ -5,9 +5,9 @@
  *
  * @module dsh-taskboard/shared/api
  */
-import type { BoardSettings, TaskLedger, TaskModel, TaskRecord, TaskSummary } from './protocol.ts'
+import type { BoardSettings, TaskLedger, TaskMode, TaskModel, TaskRecord, TaskSummary } from './protocol.ts'
 
-export type { TaskModel, TaskRecord }
+export type { TaskMode, TaskModel, TaskRecord }
 
 /** Route prefix on the shared DSH webserver (same origin as the GUI). */
 export const ROUTE_PREFIX = '/dsh-taskboard'
@@ -76,6 +76,12 @@ export type CreateTaskBody = {
   description?: string
   prompt?: string
   execution?: { mode?: string; cron?: string; runAt?: string | number; periodicCompletion?: 'rearm' | 'spawn'; reuseSessionId?: string; sessionReuseMode?: 'fresh' | 'reuse' }
+  /**
+   * Task execution mode (看板增强系列 2/6): 'normal' | 'goal' | 'plan'.
+   * What the run IS — independent of `execution.mode` (claim | scheduled,
+   * which says WHEN the card runs). Omitted = 'normal'.
+   */
+  taskMode?: TaskMode
   /** Omitted = board default; null = follow the deployment default explicitly. */
   model?: TaskModel | null
   /** Code isolation for executions ('worktree' | 'none'); omitted = default. */
@@ -109,6 +115,8 @@ export type UpdateTaskBody = {
   /** Rebind the task to another project (GUI owner surface only). */
   workspaceId?: string
   execution?: { mode?: string; cron?: string; runAt?: string | number; periodicCompletion?: 'rearm' | 'spawn'; reuseSessionId?: string; sessionReuseMode?: 'fresh' | 'reuse' }
+  /** New task execution mode (看板增强系列 2/6); omitted = keep the current mode. */
+  taskMode?: TaskMode
   model?: TaskModel | null
   /** Change isolation; locked once the task has execution history. */
   isolation?: string
@@ -217,6 +225,8 @@ export type TaskTemplateSpec = {
   prompt?: string
   urgency?: string
   execution?: { mode?: string; cron?: string; runAt?: string | number; periodicCompletion?: 'rearm' | 'spawn'; reuseSessionId?: string; sessionReuseMode?: 'fresh' | 'reuse' }
+  /** Task execution mode (看板增强系列 2/6) the template prefills. */
+  taskMode?: TaskMode
   model?: TaskModel
   isolation?: string
   /** Explicit task branch (issue #98); sanitized at template save. */

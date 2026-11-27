@@ -27,6 +27,7 @@ import {
   normalizeExecution,
   normalizeModel,
   normalizePrompt,
+  normalizeTaskMode,
   normalizeTitle,
   sanitizeCustomBranchName,
   summarize,
@@ -35,6 +36,7 @@ import {
   type CommentRecord,
   type IsolationMode,
   type TaskLedger,
+  type TaskMode,
   type TaskModel,
   type TaskRecord,
   type TaskSummary,
@@ -104,6 +106,8 @@ export interface CreateTaskInput {
   prompt?: string;
   /** 执行方式（claim / scheduled）。 */
   execution?: { mode?: string; cron?: string; runAt?: string | number };
+  /** 会话执行模式（normal / goal / plan；缺省 normal）。 */
+  taskMode?: string;
   /** 固定模型。 */
   model?: { provider?: string; model?: string; reasoningEffort?: string };
   /** 代码隔离方式。 */
@@ -145,12 +149,12 @@ export interface IsolationResolution {
 /**
  * 建卡隔离归一化的**单一真源**：工具 / 板服务 / GUI 三条建卡入口共用。
  *
- * 语义：
- * - 显式 `worktree`（或看板默认即为 worktree）→ 原样生效，不算覆盖；
+ * 语义（看板增强系列 1/6 起：看板设置里的「默认执行隔离」档位已随 GUI 移除，
+ * shared/protocol.ts 的 DEFAULT_ISOLATION 恒为 'worktree'，boardDefault 实参
+ * 恒为 worktree）：
+ * - 显式 `worktree` 或未指定（看板默认恒为 worktree）→ 原样生效，不算覆盖；
  * - 显式 `none` → 强制改为 worktree 并注明；入参非法值仍按上游口径报错
- *   （`isolation must be 'worktree' or 'none'`），校验不被绕过；
- * - 未指定 → 取看板默认（缺省为上游 DEFAULT_ISOLATION='none'），同样强制
- *   为 worktree 并注明。
+ *   （`isolation must be 'worktree' or 'none'`），校验不被绕过。
  */
 export function resolveIsolation(
   raw: string | undefined,
@@ -171,6 +175,22 @@ export function resolveIsolation(
     forced: true,
     note: `${FORCED_ISOLATION_NOTE}（原值：${source}）`,
   };
+}
+
+/**
+ * 会话执行模式的**单一真源**（看板增强系列 2/6）。
+ *
+ * 与 {@link resolveIsolation} 同风格：写手层是建卡/改卡归一化的唯一发生地，
+ * 工具入口、板服务入口与 GUI 路由入口共用本函数，避免三处各写一份校验。
+ *
+ * 语义：
+ * - 未指定（undefined）→ 缺省 {@link DEFAULT_TASK_MODE}（'normal'）；
+ * - 'normal' | 'goal' | 'plan' → 原样生效；
+ * - 其它值 → 抛错（`taskMode must be one of: normal, goal, plan`），
+ *   绝不静默降级成 normal——写错的模式必须让调用方看见。
+ */
+export function resolveTaskMode(raw: string | undefined): TaskMode {
+  return normalizeTaskMode(raw);
 }
 
 /**
@@ -210,6 +230,8 @@ export interface UpdateTaskInput {
   waitingReason?: string;
   /** 新执行权限。 */
   permission?: string;
+  /** 新会话执行模式（normal / goal / plan；缺省表示不改）。 */
+  taskMode?: string;
 }
 
 /**
@@ -288,6 +310,8 @@ export async function createTask(
     );
   }
   const execution = normalizeExecution(input.execution ?? {}, deps.now());
+  // 看板增强系列 2/6：会话执行模式（normal / goal / plan），缺省 normal。
+  const taskMode = resolveTaskMode(input.taskMode);
   const modelRaw = input.model ?? deps.settings()?.defaultModel;
   const model =
     modelRaw !== undefined
@@ -333,6 +357,7 @@ export async function createTask(
     status,
     blocked: false,
     execution,
+    taskMode,
     model,
     isolation,
     ...(branchOverride !== undefined ? { branch: branchOverride } : {}),
@@ -407,6 +432,10 @@ export async function updateTask(
     applyHumanWaitingPatch(next, input);
     if (input.permission !== undefined)
       next.permission = asPermission(input.permission);
+    // 看板增强系列 2/6：会话执行模式；未指定表示保持原值。
+    if (input.taskMode !== undefined) {
+      next.taskMode = resolveTaskMode(input.taskMode);
+    }
     next.version = task.version + 1;
     next.updatedAt = deps.now();
     next.updatedBy = actor;

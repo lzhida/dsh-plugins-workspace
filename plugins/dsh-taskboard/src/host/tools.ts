@@ -36,7 +36,6 @@ import {
   effectivePrompt,
   isClaim,
   isClaimedBy,
-  newChecklistItemId,
   newCommentId,
   normalizeBody,
   normalizeExecutionReport,
@@ -398,7 +397,7 @@ export interface ToolContextFace {
  */
 export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Array<() => void> {
   const disposers: Array<() => void> = []
-  const { store, workspaces } = deps
+  const { store } = deps
 
   // Env-gated tool-call tracing (ATB_TRACE=1) — evidence for protocol E2E.
   const register = (tool: { name: string; execute?: unknown }) => {
@@ -496,7 +495,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
     description:
       'Create a task on the board. Required: title, workspaceId (project), urgency (urgent/normal/relaxed). '
       + 'Optional: description, prompt (sent to a fresh session on execution), status (default todo), '
-      + 'execution mode (claim | scheduled+cron 定期重复 | scheduled+runAt 定时一次), model {provider, model} to pin executions to a model. '
+      + 'execution mode (claim | scheduled+cron 定期重复 | scheduled+runAt 定时一次), taskMode (normal | goal | plan — what the run IS, independent of execution mode), model {provider, model} to pin executions to a model. '
       + 'Do not track trivial requests as tasks.',
     parameters: {
       title: { type: 'string', required: true, description: 'Short imperative line (1..200 chars).' },
@@ -516,6 +515,10 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
           runAt: { type: 'string', description: 'One-shot trigger time: epoch ms or ISO string (scheduled one-shot only; must be in the future).' },
         },
       },
+      taskMode: {
+        type: 'string',
+        description: 'Task execution MODE (看板增强系列 2/6): "normal" (default) | "goal" (the official goal service drives the card towards a persistent objective) | "plan" (the official plan mode makes the agent plan before acting). Independent of execution.mode, which only says WHEN the card runs (claim | scheduled).',
+      },
       model: {
         type: 'object',
         additionalProperties: false,
@@ -528,7 +531,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       },
       isolation: {
         type: 'string',
-        description: 'Code isolation for executions: "worktree" (each run gets a fresh git worktree on a task branch named per the board preset — default task/<标题>+<taskId>) or "none" (run in the project directory, zero git interaction). Omitted → the board default (看板设置 → 默认执行隔离; factory default "none").',
+        description: 'Code isolation for executions: "worktree" (each run gets a fresh git worktree on a task branch named per the board preset — default task/<标题>+<taskId>) or "none" (run in the project directory, zero git interaction). 看板增强系列 1/6 起隔离档位唯一：省略即按 "worktree" 生效；显式 "none" 会被写手层强制改回 "worktree" 并在返回结果注明「已强制 worktree 隔离」。',
       },
       branch: {
         type: 'string',
@@ -564,6 +567,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       description?: string
       prompt?: string
       execution?: { mode?: string; cron?: string; runAt?: string | number }
+      taskMode?: string
       model?: { provider?: string; model?: string; reasoningEffort?: string }
       isolation?: string
       branch?: string
@@ -594,7 +598,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
   disposers.push(register(defineTool({
     name: 'taskboard_update',
     description:
-      'Update a task\'s title/description/prompt/urgency/blocked/waitingForHuman/waitingReason/permission. Requires ifVersion (read first). '
+      'Update a task\'s title/description/prompt/urgency/blocked/waitingForHuman/waitingReason/permission/taskMode. Requires ifVersion (read first). '
       + 'The model and execution config are read-only through this tool (they belong to the task owner/user).',
     parameters: {
       id: { type: 'string', required: true, description: 'Task id.' },
@@ -608,6 +612,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       waitingForHuman: { type: 'boolean', description: 'True to wait for human action; false to explicitly clear the wait and suppress inference. Independent of blocked.' },
       waitingReason: { type: 'string', description: 'Why human input/action is needed (max 500 characters). Never include credentials or secret values. Empty clears the reason.' },
       permission: { type: 'string', description: 'Execution permission: read-only | workspace-write | danger-full-access.' },
+      taskMode: { type: 'string', description: 'New task execution MODE (看板增强系列 2/6): normal | goal | plan. Omitted → keep the current mode.' },
     },
     output: {
       schema: JSON_OUT,
@@ -629,6 +634,7 @@ export function registerTaskboardTools(ctx: ToolContextFace, deps: ToolDeps): Ar
       waitingForHuman?: boolean
       waitingReason?: string
       permission?: string
+      taskMode?: string
     }, exec: unknown) {
       try {
         const { actor } = caller(exec as ToolRunContext)

@@ -65,7 +65,7 @@ describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
       expect(task?.updatedAt).toBe(NOW);
     });
 
-    it('按看板设置固化默认权限与预设 id（隔离不随之变化：一律强制 worktree）', async () => {
+    it('按看板设置固化默认权限与预设 id（隔离恒 worktree；设置中的默认隔离已不生效）', async () => {
       const store = createFakeStore({
         settings: {
           defaultIsolation: 'none',
@@ -81,7 +81,11 @@ describe('dsh-taskboard 写手（建卡 / 改卡）', () => {
       const task = store.get(summary.id);
 
       expect(task?.isolation).toBe('worktree');
-      expect(summary.isolationForced).toBe(true);
+      // 看板增强系列 1/6：defaultIsolationOf 恒 worktree，设置里的
+      // defaultIsolation 不再生效——省略 isolation 直接命中默认值，
+      // 不属于强制覆盖，故无强制标记与注记（字段不写入）。
+      expect(summary.isolationForced).toBeUndefined();
+      expect(summary.isolationNote).toBeUndefined();
       expect(task?.permission).toBe('danger-full-access');
       expect(task?.presetId).toBe('preset-a');
     });

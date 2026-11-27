@@ -11,8 +11,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { BoardController } from '../controller.ts'
 import type { TaskTemplateSpec } from '../../shared/api.ts'
-import type { ChecklistItem, IsolationMode, PermissionMode, PeriodicCompletion, TaskRecord, Urgency } from '../../shared/protocol.ts'
-import { MAX_CHECKLIST_ITEMS, asPermission, branchNameModeOf, branchNamePrefixOf, buildBranchName, defaultIsolationOf, defaultPermissionOf, nextCronTime, parseCron } from '../../shared/protocol.ts'
+import type { ChecklistItem, PermissionMode, PeriodicCompletion, TaskMode, TaskRecord, Urgency } from '../../shared/protocol.ts'
+import { DEFAULT_TASK_MODE, MAX_CHECKLIST_ITEMS, asPermission, defaultPermissionOf, nextCronTime, parseCron } from '../../shared/protocol.ts'
 import { fmtTime, initialWorkspaceId } from './format.ts'
 import { useT, type Translate } from '../i18n/runtime.ts'
 import { SlashPromptInput } from './SlashPromptInput.tsx'
@@ -86,6 +86,16 @@ const permissionOptions = (t: Translate): ReadonlyArray<{ value: PermissionMode;
   { value: 'workspace-write', label: t('form.perm.write'), icon: '📁' },
   { value: 'read-only', label: t('form.perm.readOnly'), icon: '🔒' },
   { value: 'danger-full-access', label: t('form.perm.fullAccess'), icon: '⚡' },
+]
+
+/**
+ * Task execution modes (看板增强系列 2/6). The card's task mode says WHAT the
+ * run is — completely independent of the execution mode above (WHEN it runs).
+ */
+const taskModeOptions = (t: Translate): ReadonlyArray<{ value: TaskMode; label: string; hint: string }> => [
+  { value: 'normal', label: t('form.taskMode.normal'), hint: t('form.taskMode.normalHint') },
+  { value: 'goal', label: t('form.taskMode.goal'), hint: t('form.taskMode.goalHint') },
+  { value: 'plan', label: t('form.taskMode.plan'), hint: t('form.taskMode.planHint') },
 ]
 
 /** Field shell: label + control, optionally spanning the full grid row. */
@@ -244,29 +254,16 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   const [permission, setPermission] = useState<PermissionMode>(
     task?.permission ?? (prefill?.permission ? asPermission(prefill.permission) : defaultPermissionOf(state.ledger.settings)),
   )
-  // Isolation toggle: create mode starts from the board setting (0.5.0
-  // 看板设置 → 默认执行隔离) or the template's choice; edit mode starts from
-  // the task and locks once execution began.
-  const [isolation, setIsolation] = useState<IsolationMode>(task?.isolation ?? (prefill?.isolation === 'none' ? 'none' : prefill?.isolation === 'worktree' ? 'worktree' : defaultIsolationOf(state.ledger.settings)))
-  // Explicit task branch (issue #98): the field DEFAULTS to what the board
-  // naming preset generates for this task (edit mode has the task id, so the
-  // concrete name is computable; create mode stays blank — the host mints
-  // the id). It keeps following the preset (recomputed on title edits) until
-  // the user types into it or an explicit override already exists; blank
-  // submits as null = follow the board preset again.
-  const branchNameMode = branchNameModeOf(state.ledger.settings)
-  const branchNamePrefix = branchNamePrefixOf(state.ledger.settings)
-  const [branch, setBranch] = useState(
-    task?.branch ?? prefill?.branch ?? (editing && task !== undefined ? buildBranchName(task.title, task.id, branchNameMode, branchNamePrefix) : ''),
+  // Isolation is NOT user-selectable anymore (看板增强系列 1/6): every new
+  // task is created worktree-isolated by the writer-layer resolveIsolation
+  // (an explicit 'none' is force-rewritten with a note); the branch name
+  // follows the board naming preset — no per-task override in the form.
+  // 看板增强系列 2/6: the card's execution MODE (normal | goal | plan) —
+  // independent of the execution SCHEDULE picker below (claim | once |
+  // periodic). Edit keeps the card's mode; create starts at 'normal'.
+  const [taskMode, setTaskMode] = useState<TaskMode>(
+    task?.taskMode ?? prefill?.taskMode ?? DEFAULT_TASK_MODE,
   )
-  const [branchFollows, setBranchFollows] = useState(task?.branch === undefined && prefill?.branch === undefined)
-  // Placeholder = the board rule applied to the CURRENT title. Edit mode has
-  // the pinned id; create mode has none yet, so the id renders as the
-  // literal `ID` placeholder (an empty title as 标题) — buildBranchName's own
-  // fallback covers the rest.
-  const branchPlaceholder = editing && task !== undefined
-    ? buildBranchName(title, task.id, branchNameMode, branchNamePrefix)
-    : buildBranchName(title.trim().length > 0 ? title : '标题', 'ID', branchNameMode, branchNamePrefix)
   // Checklist (0.4.0): create = template texts / blank rows; edit = live items.
   const [checkRows, setCheckRows] = useState<CheckRow[]>(
     task?.checklist !== undefined && task.checklist.length > 0
@@ -354,36 +351,6 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
   // A task already in progress cannot be run again (host rejects it).
   const runBlocked = editing && task.status === 'in_progress'
 
-  // Isolation editability: locked once the task has execution history (the
-  // branch and its baseline depend on the choice — plan §3.1).
-  const isolationLocked = editing && ((task.executions?.length ?? 0) > 0 || task.status === 'in_progress')
-  const gitOk = controller.gitAvailable(workspaceId)
-  // 0.6.3: how many repos a task mirror of this workspace would cover — >1
-  // shows the auto-mirror note under the picker (multi-repo is automatic,
-  // there is deliberately no per-task repo selection this release).
-  const repoCount = controller.repoCount(workspaceId)
-  // Non-git project: the worktree option is disabled; submitting keeps the
-  // default (runtime auto-degrades with a note) instead of persisting 'none'.
-  const isolationDisabled = isolationLocked || !gitOk
-
-  /**
-   * Isolation payload for submit: undefined lets the HOST materialize the
-   * current board default at creation (non-git projects degrade naturally).
-   */
-  const isolationPayload = (): string | undefined => {
-    if (!gitOk) return undefined
-    return isolation
-  }
-
-  /**
-   * Branch payload for submit (issue #98): trimmed input; undefined (blank)
-   * follows the board naming preset. Host-side sanitize is fail-soft.
-   */
-  const branchPayload = (): string | undefined => {
-    const b = branch.trim()
-    return b.length > 0 ? b : undefined
-  }
-
   /** Preset payload: '' explicitly follows the deployment default (submit null). */
   const presetPayload = (): string | undefined => (presetId.trim().length > 0 ? presetId.trim() : undefined)
 
@@ -408,8 +375,6 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
     if (!valid || busy || imageUploading) return
     const picked = buildPickedModel()
     if (!editing) saveLastModel(picked)
-    const isolationOut = isolationPayload()
-    const branchOut = branchPayload()
     const presetOut = presetPayload()
     const rows = filledRows()
     setBusy(true)
@@ -422,12 +387,9 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         ...(showDependencies ? { blockedBy } : {}),
         workspaceId,
         execution: executionPayload(),
+        taskMode,
         // '' in edit mode clears the pinned model back to the default.
         model: picked ?? null,
-        ...(isolationOut !== undefined && !isolationLocked ? { isolation: isolationOut } : {}),
-        // Issue #98: editable only before the first execution; null clears
-        // the override (back to the board naming preset).
-        ...(isolationLocked ? {} : { branch: branchOut ?? null }),
         presetId: presetOut ?? null,
         permission,
         // [] clears the checklist (host deletes the field on empty).
@@ -441,9 +403,8 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         description: description.length > 0 ? description : undefined,
         prompt: prompt.length > 0 ? prompt : undefined,
         execution: executionPayload(),
+        taskMode,
         model: picked ?? null,
-        ...(isolationOut !== undefined ? { isolation: isolationOut } : {}),
-        ...(branchOut !== undefined ? { branch: branchOut } : {}),
         presetId: presetOut ?? null,
         permission,
         ...(rows.length > 0 ? { checklist: rows.map(r => r.text) } : {}),
@@ -456,8 +417,6 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
     if (!valid || runBlocked || busy || imageUploading) return
     const picked = buildPickedModel()
     if (!editing) saveLastModel(picked)
-    const isolationOut = isolationPayload()
-    const branchOut = branchPayload()
     const presetOut = presetPayload()
     const rows = filledRows()
     setBusy(true)
@@ -471,9 +430,8 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
           ...(showDependencies ? { blockedBy } : {}),
           workspaceId,
           execution: executionPayload(),
+          taskMode,
           model: picked ?? null,
-          ...(isolationOut !== undefined && !isolationLocked ? { isolation: isolationOut } : {}),
-          ...(isolationLocked ? {} : { branch: branchOut ?? null }),
           presetId: presetOut ?? null,
           permission,
           checklist: rows.length > 0 ? rows : null,
@@ -488,9 +446,8 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
           description: description.length > 0 ? description : undefined,
           prompt: prompt.length > 0 ? prompt : undefined,
           execution: executionPayload(),
+          taskMode,
           model: picked ?? null,
-          ...(isolationOut !== undefined ? { isolation: isolationOut } : {}),
-          ...(branchOut !== undefined ? { branch: branchOut } : {}),
           presetId: presetOut ?? null,
           permission,
           ...(rows.length > 0 ? { checklist: rows.map(r => r.text) } : {}),
@@ -506,7 +463,6 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
     const name = title.trim()
     if (name.length === 0) return
     const rows = filledRows()
-    const templateBranch = branchPayload()
     void controller.upsertTemplate({
       name: name.slice(0, 60),
       task: {
@@ -515,9 +471,8 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
         prompt: prompt.length > 0 ? prompt : undefined,
         urgency,
         execution: executionPayload(),
+        taskMode,
         model: buildPickedModel(),
-        isolation: isolationPayload(),
-        ...(templateBranch !== undefined ? { branch: templateBranch } : {}),
         presetId: presetPayload(),
         permission,
         checklist: rows.length > 0 ? rows.map(r => r.text) : undefined,
@@ -556,15 +511,7 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
           <div className="dsh-atb-form-col dsh-atb-form-left">
             <Field label={t('form.field.title')} required full>
               <input ref={titleRef} value={title} maxLength={200} placeholder={t('form.field.titlePlaceholder')}
-                onChange={e => {
-                  const next = e.target.value
-                  setTitle(next)
-                  // While the branch field still follows the board preset,
-                  // keep its derived value in step with the title.
-                  if (branchFollows && editing && task !== undefined) {
-                    setBranch(buildBranchName(next, task.id, branchNameMode, branchNamePrefix))
-                  }
-                }} />
+                onChange={e => setTitle(e.target.value)} />
             </Field>
             {showDependencies && <Field label={t('dependency.prerequisites')} full>
               <div>{state.ledger.tasks.filter(candidate => candidate.workspaceId === workspaceId && candidate.id !== task?.id && candidate.trashedAt === undefined
@@ -774,54 +721,24 @@ export function TaskFormModal({ controller, task }: { controller: BoardControlle
               </Field>
             )}
 
-            <Field label={t('form.field.isolation')} full>
-              <div className="dsh-atb-mode-picker" data-disabled={isolationDisabled ? 'true' : undefined}>
-                <button
-                  type="button"
-                  className="dsh-atb-mode-opt"
-                  data-on={isolation === 'worktree'}
-                  disabled={isolationDisabled}
-                  title={isolationLocked ? t('form.iso.locked') : !gitOk ? t('form.iso.nonGit') : t('form.iso.worktreeTitle')}
-                  onClick={() => setIsolation('worktree')}
-                >
-                  <span className="dsh-atb-mode-name">{t('form.iso.worktree')}</span>
-                  <span className="dsh-atb-mode-hint">
-                    {isolationLocked ? t('form.iso.lockedShort') : !gitOk ? t('form.iso.nonGit') : t('form.iso.worktreeHint')}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  className="dsh-atb-mode-opt"
-                  data-on={isolation === 'none'}
-                  disabled={isolationDisabled}
-                  title={isolationLocked ? t('form.iso.locked') : t('form.iso.noneTitle')}
-                  onClick={() => setIsolation('none')}
-                >
-                  <span className="dsh-atb-mode-name">{t('form.iso.none')}</span>
-                  <span className="dsh-atb-mode-hint">{isolationLocked ? t('form.iso.lockedShort') : !gitOk ? t('form.iso.noneHintNonGit') : t('form.iso.noneHint')}</span>
-                </button>
+            {/* 看板增强系列 2/6: the task's execution MODE (normal | goal |
+                plan) — a task semantic, deliberately separate from the
+                execution schedule picker above (claim | once | periodic). */}
+            <Field label={t('form.field.taskMode')} full>
+              <div className="dsh-atb-mode-picker">
+                {taskModeOptions(t).map(opt => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    className="dsh-atb-mode-opt"
+                    data-on={taskMode === opt.value}
+                    onClick={() => setTaskMode(opt.value)}
+                  >
+                    <span className="dsh-atb-mode-name">{opt.label}</span>
+                    <span className="dsh-atb-mode-hint">{opt.hint}</span>
+                  </button>
+                ))}
               </div>
-              {!gitOk && !isolationLocked && (
-                <span className="dsh-atb-isolation-note">{t('form.iso.nonGitNote')}</span>
-              )}
-              {gitOk && !isolationLocked && repoCount > 1 && (
-                <span className="dsh-atb-isolation-note" data-mirror="true">{t('form.iso.mirrorNote', { n: repoCount })}</span>
-              )}
-              {isolation === 'worktree' && (
-                <>
-                  <input
-                    value={branch}
-                    disabled={isolationLocked || !gitOk}
-                    maxLength={60}
-                    spellCheck={false}
-                    placeholder={branchPlaceholder}
-                    onChange={e => { setBranchFollows(false); setBranch(e.target.value) }}
-                  />
-                  <span className="dsh-atb-isolation-note">
-                    {isolationLocked ? t('form.iso.branchLocked') : t('form.iso.branchNote')}
-                  </span>
-                </>
-              )}
             </Field>
 
             <Field label={editing ? t('form.field.checklist') : t('form.field.checklistOptional')} full>
@@ -900,7 +817,6 @@ interface TaskRecordLike {
   urgency: Urgency
   execution: { mode: 'claim' | 'scheduled'; cron?: string; runAt?: number }
   model?: { provider: string; model: string; reasoningEffort?: string }
-  isolation?: IsolationMode
   presetId?: string
   checklist?: ChecklistItem[]
   executions?: unknown[]

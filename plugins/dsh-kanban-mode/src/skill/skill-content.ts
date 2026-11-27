@@ -120,6 +120,7 @@ export const SKILL_CONTENT = `\
 - \`description\`：「目标与成功标准 / 范围（做什么 + 明确不做什么）/ 实施要点（按子系统或步骤分组）/ 边界情况与已知风险」四段；交代背景与动机。多卡时开头加系列全景行。
 - \`checklist\`：每条**独立可勾验**（能给出证据的动作），≤30 条、每条 ≤200 字符；写「能看到什么输出 / 文件 / 状态」而不是「完成 xx」；只覆盖本卡功能点。
 - \`prompt\`：执行会话收到的补充指令，用下面 4.0 的四段模板。
+- **清单纪律（写进 prompt）**：prompt 必须写死执行阶段顺序——执行阶段任何操作前先更新官方任务清单：更新任务清单 → 执行动作 → 回写卡片清单。todo_write 管会话任务清单（本会话的工作分解），taskboard_checklist 管卡片验收清单（看板卡的 DoD 条目）。官方计划模式文案禁止规划期使用 todo_write；规划阶段仍以 exit_plan_mode 提交计划，不要用 todo_write 代替。
 
 ### 4.0 prompt 四段模板（所有卡通用，章节内只写增量）
 
@@ -338,18 +339,18 @@ git -C '<worktree 绝对路径>' status --porcelain=v1 | Measure-Object -Line | 
 - 处理：重新 \`taskboard_get\` 取最新 \`ifVersion\`，**重试一次**；仍失败即如实报告错误原文，**不循环重试、不把失败当成功**。
 - 预防：把「补 prompt」与「设 waitingForHuman」合并到一次 update（两个字段同传）；必须分两次时，第二次前重读卡取号。
 
-### 4.7.8 系列卡共用 worktree：仅显式 opt-in（非默认口径）
+### 4.7.8 系列卡共用 worktree：口径已收紧（看板增强系列 1/6 起）
 
-- **默认不共用**：建卡 \`isolation\` 默认**省略**，跟随看板当前默认档位（默认隔离档位由看板项目设置决定）；看板 worktree 隔离做不到系列共用（机制语义见第 6 节）。
+- **建卡 \`isolation\` 一律省略**：写手层恒 worktree——省略与显式 \`"worktree"\` 都按 worktree 生效；显式 \`"none"\` 会被写手层强制改回 worktree 并在结果注明「已强制 worktree 隔离」。「传 none + 钉绝对路径」的旧共享方案已失效，不存在经建卡参数共享 worktree 的途径。
 - **触发条件**：仅当用户明确要求「后续 / 这几张卡要跑在同一 worktree、同一分支上」（如派生卡要续用首卡的 worktree）才启用本节。
-- **做法**：先拿到共享 worktree 的绝对路径与分支名——首卡已建的直接 \`git worktree list\` / 读首卡评论取；还没有的首卡执行时先建（如 \`git worktree add <绝对路径> -b <分支>\`）并评论记录。其余各卡显式传 \`isolation: "none"\`（\`none\` 才不会被看板自动塞进新分支），并按 4.7.5 在 description / prompt 写死该 worktree 绝对路径 + 分支名 + 禁触主 checkout——这是与首卡同 worktree 同分支的唯一途径。
-- **标注**：这是显式 opt-in、非默认口径。未经用户明说，不得把任何系列卡 / 派生卡写成本口径，也不得把「共享 worktree」写回默认建卡规则。
+- **做法**：首卡执行会话在任务 worktree 内自建共享检出（如 \`git worktree add <绝对路径> -b <分支>\`）并评论记录绝对路径与分支名；其余各卡**建卡参数照常省略 \`isolation\`**，改由按 4.7.5 在 description / prompt 写死该共享检出绝对路径 + 分支名 + 禁触主 checkout——执行会话在该共享检出内工作、在该分支提交（这是与首卡同 worktree 同分支的唯一途径）。
+- **标注**：这是用户显式 opt-in 的例外工作流，非默认口径。未经用户明说，不得把任何系列卡 / 派生卡写成本口径，也不得把「共享 worktree」写回默认建卡规则。
 
-### 4.7.9 用户显式指定隔离口径时（覆盖默认，不写回默认）
+### 4.7.9 用户显式指定隔离口径时
 
-- 用户说「以后建卡默认用 worktree 执行隔离，每张独立卡都要新开分支」→ 后续建卡**显式传** \`isolation: "worktree"\`；并说明看板会为**每张卡、每次执行**自动新开 worktree 与分支 \`task/<标题>+<taskId>\`（同一张卡重跑同样开新 worktree，不复用上一次）。
-- 用户同时说「同一个系列的卡要共用同一个 worktree 和分支」→ 按 4.7.8 执行：**首卡创建共享 worktree**（\`git worktree add <绝对路径> -b <分支>\`），其余卡显式传 \`isolation: "none"\` 并在 prompt 里钉住该 worktree 绝对路径与分支。
-- **机制理由**：worktree 隔离是每卡每次执行都自动开新 worktree，天然无法让系列多卡共用——所以「单卡默认 worktree」与「系列共用 worktree」只能靠「首卡建 worktree + 其余卡 none + 钉绝对路径」实现，不是看板自带的「系列共享」档。
+- 用户说「以后建卡默认用 worktree 执行隔离，每张独立卡都要新开分支」→ 与本仓现行口径一致（写手层恒 worktree，看板增强系列 1/6 起），建卡 \`isolation\` **省略**即可；并说明看板会为**每张卡、每次执行**自动新开 worktree 与分支（分支名按看板「分支命名」规则生成，默认 \`task/<标题>+<taskId>\`；同一张卡重跑同样开新 worktree，不复用上一次）。
+- 用户同时说「同一个系列的卡要共用同一个 worktree 和分支」→ 按 4.7.8 执行：首卡执行会话创建共享检出（\`git worktree add <绝对路径> -b <分支>\`）并评论记录，其余各卡在 prompt 里钉住该 worktree 绝对路径与分支；建卡参数 \`isolation\` 照常省略——显式传 \`"none"\` 会被强制改回 worktree，旧方案无效。
+- **机制理由**：worktree 隔离是每卡每次执行都自动开新 worktree，天然无法让系列多卡共用——所以「系列共用 worktree」只能靠「首卡建共享检出 + 其余卡 prompt 钉绝对路径」实现，不是看板自带的「系列共享」档。
 
 ## 4.8 功能卡的跨平台 / 跨仓可达性事实调研（强制）
 
@@ -500,12 +501,13 @@ git -C '<worktree 绝对路径>' status --porcelain=v1 | Measure-Object -Line | 
 
 - \`status\` 默认 \`todo\`；用户明确「先别排」才用 \`backlog\`（backlog = 未授权执行）。**派生 / 审查结论类卡片按 4.7.4 分流**：仅评估或后续扩展意向 → \`backlog\`（并在卡内写明「未授权执行 / 需用户批准后才能认领」）。
 - \`urgency\` 默认 \`normal\`；用户催促才 \`urgent\`。
-- \`permission\` / \`model\` / \`execution\`（定时）/ \`presetId\` 一律**省略**，跟随看板默认；model 与定时配置属创建者 / 用户所有，不得代设。\`isolation\` 默认同样**省略**（跟随看板当前默认档位），只有 4.7.8 显式 opt-in 或 4.7.9 用户显式指定时才传。
-- **worktree 隔离语义（说明性事实，非默认规则）**：看板 \`isolation: "worktree"\` 是**按卡 + 按每次执行**开全新 worktree，分支名固定 \`task/<标题>+<taskId>\`；同系列各卡 taskId 不同，即使标题前缀逐字一致也各得独立 worktree 与分支（同一张卡重跑同样开新 worktree，不复用上一次）；GUI 看板的「默认执行隔离」只有 worktree / none 两档，没有「系列共享」档。**因此系列卡默认不共用 worktree / 分支**；用户明确要共用时按 4.7.8 显式 opt-in（\`none\` + 钉绝对路径），不得写成默认建卡口径。
+- \`permission\` / \`model\` / \`execution\`（定时）/ \`presetId\` 一律**省略**，跟随看板默认；model 与定时配置属创建者 / 用户所有，不得代设。\`isolation\` 同样一律**省略**——看板增强系列 1/6 起写手层恒 worktree（省略 / 显式 \`"worktree"\` 都按 worktree 生效，显式 \`"none"\` 被强制改回并在结果注明「已强制 worktree 隔离」），不存在其他可传档位；系列共用 worktree 见 4.7.8（prompt 钉路径，不经建卡参数）。
+- **worktree 隔离语义（说明性事实）**：所有新建卡恒为 worktree 隔离（看板增强系列 1/6 起），**按卡 + 按每次执行**开全新 worktree；分支名按看板「分支命名」规则生成（默认 \`task/<标题>+<taskId>\`）；同系列各卡 taskId 不同，即使标题前缀逐字一致也各得独立 worktree 与分支（同一张卡重跑同样开新 worktree，不复用上一次）。看板没有「系列共享」档；用户明确要共用时按 4.7.8（首卡建共享检出 + prompt 钉绝对路径），不得写成默认建卡口径。
 - 多卡按**拓扑序**逐张创建：前置卡先建、拿到 id 后再建下游，下游创建时把真阻塞的前置卡 id 传给 \`blockedBy\`（插件 0.10.0 起，见 4.11；总开关开启时生效，关闭时传了会被静默丢弃——建完必须回读确认，见 4.11.0）。\`blockedBy\` 是**显式建卡参数**，与被省略的 \`model\` / \`execution\` / \`permission\` / \`presetId\` / \`isolation\` 不同——真阻塞关系必须落到 \`blockedBy\`，不能只在文字里写顺序；文字仍要双写（description 系列全景行 + prompt「依赖与门禁」段）。
 - 创建完成后自查：全组 title 前缀与「n/N」编号逐字一致、编号连续无跳号；**逐张 \`taskboard_get\` 核对 \`blockedBy\` 与「前置任务: …」行**（\`taskboard_create\` 返回体不含依赖信息，只能回读确认）。
 - **派生类卡片建完必须逐张 \`taskboard_update\` 补 prompt**（4.7.5），并给需外部环境的卡设 \`waitingForHuman=true\` + \`waitingReason\`（4.7.6）；同一批卡共享同一执行目录与分支（4.7.1）。
 - 建卡 ≠ 授权执行：创建完成后告知用户任务进入 todo 待认领，不自动开始执行。
+- **清单纪律（落卡时写进 prompt）**：prompt 必须写死执行阶段顺序——执行阶段任何操作前先更新官方任务清单：更新任务清单 → 执行动作 → 回写卡片清单。todo_write 管会话任务清单（本会话的工作分解），taskboard_checklist 管卡片验收清单（看板卡的 DoD 条目）。官方计划模式文案禁止规划期使用 todo_write；规划阶段仍以 exit_plan_mode 提交计划，不要用 todo_write 代替。
 
 ## 7. 回报
 
@@ -535,7 +537,7 @@ git -C '<worktree 绝对路径>' status --porcelain=v1 | Measure-Object -Line | 
 - **计划被驳回后另建新卡**：用户驳回的是表述口径，不是调研结论——按其措辞改写既有卡（\`taskboard_update\` + 最新 \`ifVersion\`）或计划稿，保留原事实与证据；另建新卡会让看板出现同目标双卡。
 - **功能卡跳过平台可达性调研**：「Tauri 不行就走原生」不是二选一拍脑袋——不查平台门控与路径映射就建卡，执行者只能瞎猜；按 4.8 把判定结论 + \`文件:行号\` 证据写进卡。
 - **依赖源码按版本号猜 rev**：\`~/.cargo/git/checkouts\` 下多个 rev 可同为同一版本号，取错 rev 结论全错；从消费方 \`Cargo.lock\` 的 \`source = "…#<rev>"\` 取精确 rev 再读源码。
-- **默认给系列卡写死 isolation**：默认 worktree 口径已被用户明确回退——建卡 \`isolation\` 默认省略、跟随看板默认档位；系列卡共享 worktree 只能按 4.7.8 显式 opt-in（\`none\` + 钉绝对路径），不得写回默认规则；用户显式改口径时按 4.7.9 执行。
+- **给建卡传 \`isolation\` 参数**：看板增强系列 1/6 起写手层恒 worktree，\`isolation\` 一律省略；显式传 \`"none"\` 会被强制改回 worktree 并注明——「传 none 做共享 worktree」的旧方案已失效，系列共用按 4.7.8 用 prompt 钉绝对路径实现；用户显式改隔离口径时按 4.7.9 执行。
 - **抽功能不等于搬代码**：没有功能面清单就建「移植」卡，执行者只能猜命令与依赖，结果是编不过或搬一半。必先派只读调研 subagent 出带 \`文件路径:行号\` 的七节盘点。
 - **调研 subagent 必须禁写**：让它边调研边建卡 / 改文件会污染源插件，且绕过「先确认后落卡」的流程。派发时在 prompt 里写死「禁止任何写操作 / 建卡操作」。
 - **只加了 \`src/\` 不登记仓库面**：命令实现了但 permissions、guest-js、\`docs/API.md\`、根 README、文档站 nav/sidebar、tagPrefix 没同步 → 新插件卡 checklist 必须覆盖「命令同步面六处 + 仓库级登记面四项」。
@@ -563,6 +565,7 @@ git -C '<worktree 绝对路径>' status --porcelain=v1 | Measure-Object -Line | 
 - **把 \`blockedBy\` 当唯一保障**：四类门禁（Agent 认领 / 界面手动启动 / 定时和周期启动 / 验收反馈后续跑）都可在看板设置逐项关闭，插件 0.10.1 起还有依赖总开关一票关停全部门禁（4.11.0），外部会话更是只显示不拦截 → 顺序必须文字 + 机器双写。
 - **总开关关闭时传 \`blockedBy\` 还当挂上了**（0.10.1 假阳性）：schema 里参数还在，传了不报错，但会被静默丢弃、读面也消失（4.11.0）——没做第 0 节的开关态探测就传参 + 不回读确认，门禁是空的还以为拦得住；判关闭就走 4.11.6 文字兜底，误传过的用 \`blockedBy: []\` 清残留。
 - **默认给每张卡写「必须开 PR」**：官方 forge「变更请求与工作树」是可选增强，未启用的宿主没有 PR 面板，把开 PR 写成硬要求会把执行会话带进死胡同——只有确认宿主启用 forge 时才在 prompt 交接纪律里写「执行会话开 PR + PR URL 回写 execution_report 与任务评论」，未启用就写「按仓库常规 git 纪律收尾」。
+- **执行阶段不先更新任务清单就动手**：执行阶段任何操作前先更新官方任务清单：更新任务清单 → 执行动作 → 回写卡片清单。todo_write 管会话任务清单（本会话的工作分解），taskboard_checklist 管卡片验收清单（看板卡的 DoD 条目）。官方计划模式文案禁止规划期使用 todo_write；规划阶段仍以 exit_plan_mode 提交计划，不要用 todo_write 代替。两者分工不同、不能互相顶替——会话清单与卡片清单各管一头，勾卡片清单时别拿会话清单冒充。
 
 ## Verification（建卡前自检）
 
@@ -580,10 +583,11 @@ git -C '<worktree 绝对路径>' status --porcelain=v1 | Measure-Object -Line | 
 12. 查重与确认：已查看板是否存在重复 / 相似 todo（第 2 节）；落卡前已让用户看到成品并点头（plan mode 走 \`exit_plan_mode\`，普通模式走 \`ask_user_question\`），确认材料带对应调研结论。
 13. 版本纪律：撞 \`version_conflict\` 时重读卡取新 \`ifVersion\` 并只重试一次成功（或如实报告失败），未循环重试、未把失败当成功；批量建卡后逐张 update 用 create 返回的版本号、不盲用旧号。
 14. 落卡后做过一次 \`taskboard_list\` 回读自查，并说明核对了前缀一致 / 编号连续 / status 分流 / prompt 非空；回报用表格逐张列出卡 id / 状态 / 标题，并声明 done 需用户确认。
-15. 建卡参数未写死 \`isolation\`（默认省略、跟随看板当前默认档位）；仅 4.7.8 显式 opt-in 或 4.7.9 用户显式指定时传 \`"none"\` / \`"worktree"\` 并钉 worktree 绝对路径 + 分支；未代设 \`model\` / \`execution\` / \`permission\` / \`presetId\`。
+15. 建卡参数未传 \`isolation\`（看板增强系列 1/6 起恒 worktree：省略即生效，显式 \`"none"\` 会被强制改回并注明）；需要共享 worktree 的系列按 4.7.8 在 prompt 钉 worktree 绝对路径 + 分支；未代设 \`model\` / \`execution\` / \`permission\` / \`presetId\`。
 16. 依赖落实（4.11）：拆分表「前置（blockedBy）」列已填（前置卡 id + 解锁口径，不设门禁的注明仅文字顺序及原因）；按拓扑序建卡并把真阻塞前置传进 \`blockedBy\`；逐张 \`taskboard_get\` 回读确认 \`blockedBy\` 与「前置任务: …」行与拆分表一致；未跨项目、未自引用、未成环、未重复；第 0 节两层探测已做且结论与处置一致（判不可用即走文字兜底，未在关闭态盲传 \`blockedBy\`）。
 17. 门禁口径与用户告知：已在卡内写明解锁口径（前置卡进入 \`in_review\` / \`done\` 即解锁，不等用户点完成）与「门禁可在看板设置关闭、外部会话不受拦截；插件 0.10.1 起依赖总开关一票关停全部门禁」；被 \`dependency_blocked\` 拦截时不循环重试，先 \`taskboard_get\` 前置卡再回报。
 18. 依赖维护与降级：取消 / 归档 / 删除前置卡前已读 \`affectedDependents\` 与引用关系并逐张处置；被引用卡不硬删，且删除前置卡前先 \`taskboard_update\` 解引用下游 \`blockedBy\`（不靠「先删下游卡」）；插件 < 0.10.0（工具 schema 无 \`blockedBy\` 参数）或 ≥ 0.10.1 但总开关关闭（探测判不可用）时未把 \`blockedBy\` 当已生效，改走 4.11.6 文字兜底并在回报里说明。
+19. 清单纪律：prompt 已写死执行阶段顺序——执行阶段任何操作前先更新官方任务清单：更新任务清单 → 执行动作 → 回写卡片清单。todo_write 管会话任务清单（本会话的工作分解），taskboard_checklist 管卡片验收清单（看板卡的 DoD 条目）。官方计划模式文案禁止规划期使用 todo_write；规划阶段仍以 exit_plan_mode 提交计划，不要用 todo_write 代替。
 
 ## 硬约束汇总
 
@@ -601,8 +605,9 @@ git -C '<worktree 绝对路径>' status --porcelain=v1 | Measure-Object -Line | 
 12. 派生 / 审查结论派生卡必须钉住执行 worktree（绝对路径 + 分支）、溯源到原卡 id 与具体未勾选项，同批卡共享同一执行路径，不得默认在主 checkout 执行。
 13. 状态按授权分流：仅评估 / 后续扩展意向 → \`backlog\` + 「未授权执行 / 需用户批准后才能认领」（不建对应 todo 卡）；需外部环境 → \`waitingForHuman=true\` + \`waitingReason\`；建卡 ≠ 授权执行。
 14. 批量建卡后必须逐张 \`taskboard_update\` 补 prompt；同一卡连续 update 遇 \`version_conflict\` → 重读卡取新 \`ifVersion\` 重试一次，不循环重试、不把失败当成功。
-15. 建卡默认不写死 \`isolation\`（省略、跟随看板当前默认档位）；系列卡共享 worktree / 分支只能按 4.7.8 在用户明确要求时显式 opt-in（\`"none"\` + 钉绝对路径与分支），不得作为默认口径；用户显式改隔离口径时按 4.7.9 执行。
+15. 建卡 \`isolation\` 一律省略（看板增强系列 1/6 起写手层恒 worktree，显式 \`"none"\` 被强制改回并注明）；系列卡共享 worktree / 分支只能按 4.7.8 在用户明确要求时由首卡建共享检出 + prompt 钉绝对路径与分支，不得作为默认口径；用户显式改隔离口径时按 4.7.9 执行。
 16. 真阻塞依赖必须落 \`blockedBy\`（插件 0.10.0 起，且依赖总开关开启时才生效，见 4.11.0）+ 文字双写：按拓扑序建卡，下游创建时传前置卡 id 并回读确认；跨项目 / 跨插件前置只写文字顺序；\`blockedBy\` 追加要传全量数组（替换语义）；总开关关闭时不盲传、误传过就清残留。
 17. 门禁只到 \`in_review\`、且门禁可关：不得声称「有 \`blockedBy\` 就一定拦得住」——四类门禁可在看板设置逐项关闭、插件 0.10.1 起依赖总开关一票关停全部门禁、外部会话不受拦截，顺序纪律必须写进 description / prompt 并在回报里告知用户。
 18. 动前置卡前先看 \`affectedDependents\` 与引用关系：不硬删被引用卡（\`task is referenced by: …\`），取消 / 归档前置卡后逐张处置下游依赖，避免下游永远「等待中」。
-19. 官方 forge 变更请求是条件式增强：prompt 的 Git 收尾口径必须写成「未启用按仓库常规 git 纪律、已启用才开 PR 并把 PR URL 回写 execution_report 与任务评论」，不得把启用 forge 写成建卡或执行的前提。`;
+19. 官方 forge 变更请求是条件式增强：prompt 的 Git 收尾口径必须写成「未启用按仓库常规 git 纪律、已启用才开 PR 并把 PR URL 回写 execution_report 与任务评论」，不得把启用 forge 写成建卡或执行的前提。
+20. 执行阶段任何操作前先更新官方任务清单：更新任务清单 → 执行动作 → 回写卡片清单。todo_write 管会话任务清单（本会话的工作分解），taskboard_checklist 管卡片验收清单（看板卡的 DoD 条目）。官方计划模式文案禁止规划期使用 todo_write；规划阶段仍以 exit_plan_mode 提交计划，不要用 todo_write 代替。`;

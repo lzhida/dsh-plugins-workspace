@@ -3,11 +3,11 @@
   "files": {
     "host/tools.ts": {
       "upstreamSha256": "fed1f60d13dc5b485232d94c21de8a1112ea984c33d938f11c5f24e304a52d44",
-      "reason": "看板模式系列第 2/6 卡：把建卡（taskboard_create）与改卡（taskboard_update）的实现迁到 src/local/task-writer.ts（唯一实现），本文件改为调用它；错误码与错误类下沉到 src/local/board-errors.ts 供本地层复用（ERR 取值、ToolError 消息形状均不变）。行为、报错文案与 blockedBy 语义（建卡=新增、改卡=替换）零漂移。"
+      "reason": "看板模式系列第 2/6 卡：把建卡（taskboard_create）与改卡（taskboard_update）的实现迁到 src/local/task-writer.ts（唯一实现），本文件改为调用它；错误码与错误类下沉到 src/local/board-errors.ts 供本地层复用（ERR 取值、ToolError 消息形状均不变）。行为、报错文案与 blockedBy 语义（建卡=新增、改卡=替换）零漂移。看板增强系列 2/6 卡：taskboard_create / taskboard_update 的 schema 与 execute 参数新增独立字段 taskMode（normal | goal | plan，与 execution.mode 的调度时机语义互相独立），归一化仍由写手层 resolveTaskMode 单一真源完成；isolation 参数描述同步为系列 1/6 口径（省略即按 worktree 生效、显式 none 被强制改回并注明），参数本身未删除。另清理写手层迁移遗留的两个未用绑定（newChecklistItemId import 与 registerTaskboardTools 里未用的 workspaces 解构），恢复 vendored tsconfig 的 noUnusedLocals 通过。"
     },
     "index.ts": {
       "upstreamSha256": "f18107cce00bb51e1f6fb2b8d40c3cc8b1d5e0443194ff16a8ce290b362976d1",
-      "reason": "看板模式系列第 2/6 卡：apply 内新增 ctx.provide('dsh-taskboard', boardService)，把板服务暴露给宿主，使模式插件（另一个 dsh 插件包）能以 ctx.get('dsh-taskboard') 软读取板数据并按需建卡/改卡；注销函数走 ctx.effect(() => dispose, 'dsh-taskboard: board service')，与 dsh-anytype 的服务注册模式一致。既有逻辑未改动。看板官方集成系列 1/3 卡：ExecutionService 依赖新增 worktrees/workingDirectory 两个软读取 getter（官方 worktree 服务缺席时返回 undefined，走降级路径，不声明硬 inject）。"
+      "reason": "看板模式系列第 2/6 卡：apply 内新增 ctx.provide('dsh-taskboard', boardService)，把板服务暴露给宿主，使模式插件（另一个 dsh 插件包）能以 ctx.get('dsh-taskboard') 软读取板数据并按需建卡/改卡；注销函数走 ctx.effect(() => dispose, 'dsh-taskboard: board service')，与 dsh-anytype 的服务注册模式一致。既有逻辑未改动。看板官方集成系列 1/3 卡：ExecutionService 依赖新增 worktrees/workingDirectory 两个软读取 getter（官方 worktree 服务缺席时返回 undefined，走降级路径，不声明硬 inject）。看板增强系列 2/6 卡：ExecutionService 依赖再新增 planMode / goals 两个软读取 getter（agentCtx 作用域上 ctx.get('planMode') / ctx.get('goals')，官方服务缺席即返回 undefined 走降级），不声明硬 inject、不运行时 import 官方包。看板增强系列 3/6 卡：在 agents 作用域注册官方 'agent/pre-step' 钩子（onAgentPreStep，见 local/todo-sync.ts），宿主在执行会话首个 pre-step 内把卡片验收清单注入为官方会话任务清单；监听器随本作用域注销，注入失败只记日志不阻塞执行。看板增强系列 5/6 卡（e2e 修正读取拓扑）：planMode/goals getter 契约改为接收 live agent——planMode 只挂在每会话 preset realm（官方 web-app patch 在宿主面禁用该行，宿主上下文永远读不到），读取经 local/official-modes.ts 的 agentRealmCtx(agent) 取会话 realm ctx（goals 在宿主面，agent realm 经共享根 store 同样可解析），agent 无 ctx 时回落宿主 agentCtx。"
     },
     "host/git.ts": {
       "upstreamSha256": "77689b09c714649e494c0601830f59a0ee703447cd56370f448e947a1f37e761",
@@ -19,11 +19,11 @@
     },
     "host/execution.ts": {
       "upstreamSha256": "d886db31a0b4289d32110505fea81f7cdb7f577450477c381d8d38ec1f3bf0c5",
-      "reason": "看板官方集成系列 1/3 卡：隔离准备改到 agent 创建之后（官方 create 需要真实 Agent 实例，并会接管该 Agent 的工作目录）；删除 cleanupMirror / factsFields 与多仓 execution.repos 写入；结算证据改为单检出 git.collect(path, baseCommit)；RunEntry.prepared 改名 isolation；framing 文案改为单检出 + 续用/全新/降级三态；ExecutionDeps 新增软读取 worktrees?() 与 workingDirectory?()。"
+      "reason": "看板官方集成系列 1/3 卡：隔离准备改到 agent 创建之后（官方 create 需要真实 Agent 实例，并会接管该 Agent 的工作目录）；删除 cleanupMirror / factsFields 与多仓 execution.repos 写入；结算证据改为单检出 git.collect(path, baseCommit)；RunEntry.prepared 改名 isolation；framing 文案改为单检出 + 续用/全新/降级三态；ExecutionDeps 新增软读取 worktrees?() 与 workingDirectory?()。看板增强系列 2/6 卡：run() 在 prepareIsolation 之后、首条消息注入之前调用 applyTaskMode——plan 卡调 planMode.set(agent, true)、goal 卡调 goals.create(agent, {objective=标题+描述})、normal 卡完全不触碰官方模式服务；服务缺失或调用抛错时写 execution.taskMode / taskModeNote（与 isolationNote 同构）并按普通模式继续，降级说明同时拼进首条 framing；sessionReuseKey 并入 taskMode，模式变化后绝不续跑旧会话。看板增强系列 3/6 卡：新增会话任务清单与卡片验收清单的双向同步接缝——RunEntry 带 taskId；类内维护 checklistSync（sessionId→taskId）与 todoInitialized 两个跟踪表；构造器的会话事件监听新增 todo/write 分支，调用 writeBackCompletedChecklist 把会话清单里标记 completed 且与 DoD 文本精确匹配的项幂等勾选回卡片清单（只推进不取消，无变化即放弃写盘）；新增 injectChecklistTodos（首个 agent/pre-step 内把卡片验收清单映射为初始 todos 并 session.append('todo/write')，plan 模式跳过、每会话只注入一次）与 retrackChecklistSync（热重载接管会话补登记）；checklistFraming 追加会话清单纪律段（todo_write 与 taskboard_checklist 分工 + 计划模式例外）。看板增强系列 5/6 卡（e2e 修正）：隔离实例实测 agent 会把 DoD 原文改写后用 todo_write 写回，纯精确文本匹配导致宿主自动回写零命中——回写匹配改为 local/todo-sync.ts 的 matchCompletedTodos（先 trim 精确，再字符 bigram Dice 近似兜底：阈值 0.6、次优差距 ≥0.1、一对一；normalizeTodoText 折叠空白/语气前缀/句末标点），其余回写语义（只推进不取消、无变化不写盘、note=TODO_WRITE_BACK_NOTE）不变。看板增强系列 5/6 卡（e2e 修正读取拓扑）：planMode/goals 依赖 getter 契约改为 (agent) => service——applyTaskMode 调用点把 agents.create 返回的 live agent 传给读取口，服务软读经 agent 的会话 realm ctx（planMode 挂在 preset realm 内，宿主面读不到；见 local/official-modes.ts agentRealmCtx），plan/goal 降级判定其余语义不变。看板增强系列 5/6 卡（e2e 修正计划模式激活路径）：applyTaskMode 调用点把 live agent 的会话对象（handle.agent.session）一并交给模式层——官方 planMode 服务只挂在每会话 preset realm 内、宿主面读不到，而官方计划状态的真身是会话投影（plan/mode 事件折叠），故由 local/official-modes.ts 的 appendPlanModeEvent 直接写同一条官方事件完成兜底激活（服务在场时仍优先 planMode.set）。看板增强系列 5/6 卡（e2e 修正目标模式启动竞态）：模式应用前后记录 live agent 的 status，当模式为 goal、模式生效且状态由 idle 变 running（官方 goal-round-driver 在 goals.create 后由本次运行自己起第 1 回合）时，不再按「会话正忙」判失败并 dispose——旧判定会误杀自己刚开的回合（实测目标卡 execution=failed、error=scheduled session is busy、回合 aborted）。会话在他处占用（派发前已 running）的旧护栏语义保持不变。看板增强系列 5/6 卡（目标模式启动竞态的时序校正）：官方 goal-round-driver 的第 1 回合是异步起的——goals.create 返回那一刻 agent.status 仍是 idle，直到后续真实 I/O 之后才变 running。故 busy 判定点上按当时的 status 复核（模式应用前 idle + 判定点 running + 模式已生效 → 视为本次运行自己开的回合），而不是只看模式应用后的瞬时快照。"
     },
     "host/routes.ts": {
       "upstreamSha256": "086f4bf96bdef4e522968f6b76deedf44e5c766077a487f0423884a63defab51",
-      "reason": "看板官方集成系列 1/3 卡：worktree 作用域校验改用官方池 .agents/worktrees（路径必须落在池内）；gitignore 建议认 .agents；孤儿检出改为按路径枚举（官方池目录名是分支名，不再是任务号）；worktree-remove / worktree-cleanup 改用 git.removeCheckout（脏检出拒绝删除）；purge 清理检出后删分支；合并逻辑（--no-ff、遗留多仓记录逐仓合并）保留不变。验收联动系列 1/4 卡：建卡入口 POST /dsh-taskboard/tasks 的隔离归一化接入本地真源 resolveIsolation——建卡一律 worktree，显式 isolation=none 被强制覆盖并在响应中带「已强制 worktree」注明；该入口此前独立归一化 isolation（未走本地写手），故必须显式接入真源。"
+      "reason": "看板官方集成系列 1/3 卡：worktree 作用域校验改用官方池 .agents/worktrees（路径必须落在池内）；gitignore 建议认 .agents；孤儿检出改为按路径枚举（官方池目录名是分支名，不再是任务号）；worktree-remove / worktree-cleanup 改用 git.removeCheckout（脏检出拒绝删除）；purge 清理检出后删分支；合并逻辑（--no-ff、遗留多仓记录逐仓合并）保留不变。验收联动系列 1/4 卡：建卡入口 POST /dsh-taskboard/tasks 的隔离归一化接入本地真源 resolveIsolation——建卡一律 worktree，显式 isolation=none 被强制覆盖并在响应中带「已强制 worktree」注明；该入口此前独立归一化 isolation（未走本地写手），故必须显式接入真源。看板增强系列 2/6 卡：HTTP 建卡 / 改卡（与工具链路独立的直接持久化入口）接入同一真源 resolveTaskMode——建卡写入 TaskRecord.taskMode（缺省 normal，非法值 invalid_input），改卡仅提供时覆盖（不锁定：sessionReuseKey 已含模式，模式变化自动弃用旧会话）。"
     },
     "host/repos.ts": {
       "upstreamSha256": "510d0ba278453d7771f61da3817efe598db631742a3f63e218ff59aba091c23a",
@@ -31,11 +31,11 @@
     },
     "shared/protocol.ts": {
       "upstreamSha256": "d49ddd0fb5f3e4aa4e6fc04a7b973d6a9f79edbd2cb55661c9351acc662ecdb4",
-      "reason": "看板官方集成系列 1/3 卡：协议形状保持向后兼容（老台账仍可解析），但注释改为反映新边界——隔离模式指向官方单仓服务（缺席降级 none + isolationNote），MAX_MIRROR_REPOS / ExecutionRepoEvidence 标注为 0.10.1 起禁用的遗留多仓镜像形状，TaskRecord.branch / branches 说明官方服务无 fallback 命名、branches 仅遗留。"
+      "reason": "看板官方集成系列 1/3 卡：协议形状保持向后兼容（老台账仍可解析），但注释改为反映新边界——隔离模式指向官方单仓服务（缺席降级 none + isolationNote），MAX_MIRROR_REPOS / ExecutionRepoEvidence 标注为 0.10.1 起禁用的遗留多仓镜像形状，TaskRecord.branch / branches 说明官方服务无 fallback 命名、branches 仅遗留。看板增强系列 1/6 卡：DEFAULT_ISOLATION 出厂缺省由 'none' 改为恒 'worktree'（所有新建卡一律 worktree 隔离），defaultIsolationOf 不再读看板设置（BoardSettings.defaultIsolation 仅保留兼容旧台账、不再生效）；IsolationMode 类型与 asIsolation 校验保留 'none' 以解析旧台账，effectiveIsolation / IsolationMode 的 doc 注释同步。看板增强系列 2/6 卡：新增 TaskMode = 'normal' | 'goal' | 'plan'、TASK_MODES、DEFAULT_TASK_MODE、normalizeTaskMode（未指定→normal，非法值逐字报错 taskMode must be one of: normal, goal, plan）与 taskModeOf（旧台账缺字段回落 normal）；TaskRecord 新增可选 taskMode、ExecutionRecord 新增实际生效 taskMode 与降级注记 taskModeNote（与 isolationNote 同构）；TaskSummary 新增必填 taskMode；台账导入恢复任务级 taskMode 与执行级 taskModeNote。"
     },
     "shared/api.ts": {
       "upstreamSha256": "b0b3cf075e1953cf514e20cc93054f53f6c1b69f3ac7f391eed43448477b7d48",
-      "reason": "看板官方集成系列 1/3 卡：OrphanWorktree 去掉 taskId 字段（官方池目录名是分支名，路径本身即清理句柄），改为 {workspaceId, workspacePath, path}；新增 WorktreeCleanupBody = {workspaceId, path} 供按路径清理孤儿检出。"
+      "reason": "看板官方集成系列 1/3 卡：OrphanWorktree 去掉 taskId 字段（官方池目录名是分支名，路径本身即清理句柄），改为 {workspaceId, workspacePath, path}；新增 WorktreeCleanupBody = {workspaceId, path} 供按路径清理孤儿检出。看板增强系列 2/6 卡：CreateTaskBody / UpdateTaskBody / TaskTemplateSpec 新增 taskMode?: TaskMode 并重导出 TaskMode——与 execution.mode（何时跑）互相独立的任务语义（这次运行是什么）。"
     },
     "client/api.ts": {
       "upstreamSha256": "fabb6976d84dd7f77fda63716041a8150a55d1e4e651bbe31830202f93cd5b81",
@@ -43,7 +43,7 @@
     },
     "client/controller.ts": {
       "upstreamSha256": "8742d51467519dcdf421a0bb127e0f3e163afb9a97bdd47765c3e94a96894f5e",
-      "reason": "看板官方集成系列 1/3 卡：cleanupOrphan 改为接收 WorktreeCleanupBody（{workspaceId, path}），与新的孤儿检出模型一致；removeWorktree 的注释改为「检出」口径。"
+      "reason": "看板官方集成系列 1/3 卡：cleanupOrphan 改为接收 WorktreeCleanupBody（{workspaceId, path}），与新的孤儿检出模型一致；removeWorktree 的注释改为「检出」口径。看板增强系列 1/6 卡：duplicate / saveAsTemplate 不再透传 isolation（隔离不再可选，新建卡统一由写手层真源归一化为 worktree）。看板增强系列 2/6 卡：duplicate 保留卡片 taskMode，saveAsTemplate 把 taskMode 写入模板 spec（模板预填不丢模式）。"
     },
     "client/board/TaskBoard.tsx": {
       "upstreamSha256": "3f8a44f259f77c20e15fbf7c673283b6e607c71402938bde97fccdbd36c75049",
@@ -51,19 +51,27 @@
     },
     "client/i18n/zh.ts": {
       "upstreamSha256": "e36ba901e3442c9479339adeabadece57ca42db05120f16f860603c6374221d3",
-      "reason": "看板官方集成系列 1/3 卡：诊断面板 / 隔离区块 / 任务表单 / 看板设置的中文文案改为「官方 worktree 服务、单仓库、服务缺席自动降级」口径，并说明重跑优先续用存活检出。"
+      "reason": "看板官方集成系列 1/3 卡：诊断面板 / 隔离区块 / 任务表单 / 看板设置的中文文案改为「官方 worktree 服务、单仓库、服务缺席自动降级」口径，并说明重跑优先续用存活检出。看板增强系列 1/6 卡：删除表单隔离选择器（form.field.isolation、form.iso.* 共 16 键）与看板设置「默认执行隔离」段（set.iso.heading / noneHint / worktreeHint / current）的中文文案；set.iso.branchHint 去掉「表单可在分支名字段覆盖」句；board.action.settingsTitle 文案不再特指默认执行隔离。看板增强系列 2/6 卡：新增任务模式三档中文文案 form.field.taskMode 与 form.taskMode.normal / goal / plan 及各自 Hint。"
     },
     "client/i18n/en.ts": {
       "upstreamSha256": "cf52a94f367cd50ccffa80972d26a7ff6742d8678de22e6917dd1daa654e1fff",
-      "reason": "看板官方集成系列 1/3 卡：同 zh.ts 的英文文案同步（官方服务、单仓库、缺席降级、重跑优先续用）。"
+      "reason": "看板官方集成系列 1/3 卡：同 zh.ts 的英文文案同步（官方服务、单仓库、缺席降级、重跑优先续用）。看板增强系列 1/6 卡：与 zh.ts 同步删除表单隔离选择器（form.field.isolation、form.iso.*）与设置「默认执行隔离」段（set.iso.heading / noneHint / worktreeHint / current）的英文文案；set.iso.branchHint 去掉表单覆盖分支名句；board.action.settingsTitle 同步。看板增强系列 2/6 卡：与 zh.ts 同步新增任务模式三档英文文案（form.field.taskMode、form.taskMode.normal / goal / plan 及各自 Hint）。"
     },
     "client/i18n/ru.ts": {
       "upstreamSha256": "39ee41fc28f20d297e4f86d009404f54dc863cd438f7c1cae6be5f0bff5b266b",
-      "reason": "看板官方集成系列 1/3 卡：同 zh.ts 的俄文文案同步（官方服务、单仓库、缺席降级、重跑优先续用）。"
+      "reason": "看板官方集成系列 1/3 卡：同 zh.ts 的俄文文案同步（官方服务、单仓库、缺席降级、重跑优先续用）。看板增强系列 1/6 卡：与 zh.ts 同步删除表单隔离选择器（form.field.isolation、form.iso.*）与设置「默认执行隔离」段（set.iso.heading / noneHint / worktreeHint / current）的俄文文案；set.iso.branchHint 去掉表单覆盖分支名句；board.action.settingsTitle 同步。看板增强系列 2/6 卡：与 zh.ts 同步新增任务模式三档俄文文案（form.field.taskMode、form.taskMode.normal / goal / plan 及各自 Hint）。"
     },
     "shared/dependencies.ts": {
       "upstreamSha256": "807c1ddff576c309b3b68a1165c964a1bb99ccdd52690d8668d9beb71857ea73",
       "reason": "上游同步系列 2/6 卡：dependenciesEnabled 的缺省值由上游的 false 改为本地的 true（未显式配置即视为开启）。本仓工作流依赖机器门禁——建卡 skill 的依赖门禁约定、定时卡锁定目标卡、收割卡挂 blockedBy——跟随上游缺省关闭会让这些门禁静默失效。用户在看板设置里显式关闭（dependenciesEnabled: false）时行为与上游一致。上游哈希取自上游 0.10.1 的 shared/dependencies.ts。"
+    },
+    "client/board/TaskFormModal.tsx": {
+      "upstreamSha256": "8b2eff77c97f2b471e7a1ac886b8f9ecf6a2abaefc9c1cb500ce4b934e83001e",
+      "reason": "看板增强系列 1/6 卡：移除任务表单的隔离选择器（worktree/none 双按钮、执行历史锁定与非 git 提示、多仓镜像提示）与「分支名」输入（含标题联动跟随）——隔离不再可选，所有新建卡由写手层 resolveIsolation 统一归一化为 worktree，分支名跟随看板「分支命名」规则；submit / submitAndRun / saveAsTemplate 的提交体不再携带 isolation 与 branch；TaskRecordLike 去掉 isolation 字段；相关 import（IsolationMode / defaultIsolationOf / branchName*Of / buildBranchName）一并清理。看板增强系列 2/6 卡：新增「任务模式」三档 picker（normal/goal/plan，默认 normal，样式复用执行方式 picker 的 dsh-atb-mode-picker），编辑态读卡片值、模板预填读取 spec.taskMode；submit / submitAndRun / saveAsTemplate 的提交体携带 taskMode；与执行方式（claim/once/periodic）picker 分离摆放，避免「何时跑」与「是什么运行」两种语义混淆。"
+    },
+    "client/board/SettingsModal.tsx": {
+      "upstreamSha256": "1958e586db7a2a8e8985e7b7a49a47e69292e6e05cb666b1c468e6c09860193c",
+      "reason": "看板增强系列 1/6 卡：移除看板设置里「默认执行隔离」两档选择（isolationOptions 常量、currentIso / draftIso 状态、dirty 判定与 save 提交中的 defaultIsolation）——默认隔离口径随 shared/protocol.ts 的 DEFAULT_ISOLATION 统一为恒 worktree；「分支命名」设置保留。"
     }
   }
 }

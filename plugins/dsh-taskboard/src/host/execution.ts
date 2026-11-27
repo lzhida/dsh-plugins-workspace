@@ -26,16 +26,31 @@ import {
   normalizeBody,
   parseCron,
   spawnNextCycle,
+  taskModeOf,
   taskSessionId,
   type ExecutionRecord,
   type IsolationMode,
   type PermissionMode,
   type TaskModel,
   type TaskRecord,
+  type TaskMode,
 } from '../shared/protocol.ts'
 import { type GitFace, type SettlementFacts } from './git.ts'
 import { prepareOfficialIsolation, type WorktreeIsolation } from './isolation.ts'
 import { OFFICIAL_SERVICE_UNAVAILABLE_NOTE, type OfficialWorktreeService, type WorkingDirectoryService } from '../local/official-worktree.ts'
+import {
+  applyTaskMode,
+  goalObjectiveOf,
+  type OfficialGoalsService,
+  type OfficialPlanModeService,
+} from '../local/official-modes.ts'
+import {
+  matchCompletedTodos,
+  todosFromChecklist,
+  todosFromEventData,
+  TODO_WRITE_BACK_NOTE,
+  type PreStepAgentFace,
+} from '../local/todo-sync.ts'
 import { MessageId } from './sdk.ts'
 import type { TaskStore } from './store.ts'
 import { dependencyError, gateEnabled } from '../shared/dependencies.ts'
@@ -155,6 +170,26 @@ export interface ExecutionDeps {
    */
   workingDirectory?: () => WorkingDirectoryService | undefined
   /**
+   * Official plan-mode service soft-read (0.11.0 / 看板增强系列 2/6; 5/6 修正
+   * 读取拓扑): the official @deepseek-ai/dsh-plan-mode service owns the
+   * per-agent `plan/mode` log state. The service mounts inside the SESSION's
+   * preset realm (host-plane rows are disabled by design), so the reader
+   * receives the LIVE agent and reads through `agentRealmCtx(agent)` — a
+   * host-context fallback is resolved on the wiring side (src/index.ts).
+   * Undefined → plan-mode tasks degrade to normal mode with a visible
+   * execution.taskModeNote (never an error).
+   */
+  planMode?: (agent: object) => OfficialPlanModeService | undefined
+  /**
+   * Official goal service soft-read (0.11.0 / 看板增强系列 2/6; 5/6 同修正):
+   * the official @deepseek-ai/dsh-goal service owns persistent goals and
+   * their round driver. Same live-agent contract as planMode (goals lives on
+   * the host plane, but the agent realm resolves it through the shared root
+   * store). Undefined → goal-mode tasks degrade to normal mode with a
+   * visible execution.taskModeNote (never an error).
+   */
+  goals?: (agent: object) => OfficialGoalsService | undefined
+  /**
    * Resolve the preset composition for an execution session (0.3.3): hands
    * the session its tool set. Absent → sessions run on the bare host
    * composition (pre-preset behavior). A rejection fails the run through
@@ -237,6 +272,8 @@ export interface RunOptions {
 /** One live execution tracked for settlement and cancellation. */
 interface RunEntry {
   sessionId: string
+  /** The task this run executes (checklist sync tracking, 看板增强系列 3/6). */
+  taskId?: string
   /** Official checkout prepared for this run (evidence collection at ANY settlement). */
   isolation?: WorktreeIsolation
   dispose: () => Promise<void>
@@ -276,12 +313,29 @@ export class ExecutionService {
   /** Last activity persistence attempt per live session (avoid per-event disk writes). */
   private readonly lastActivityAt = new Map<string, number>()
 
+  /**
+   * 会话 → 卡片：清单同步跟踪（看板增强系列 3/6；见 local/todo-sync.ts）。
+   * 只登记看板自己启动的执行会话——pre-step 与 todo/write 事件都按它做 O(1) 过滤，
+   * 宿主里的其它会话不会触发任何台账读写。
+   */
+  private readonly checklistSync = new Map<string, string>()
+
+  /** 已完成初始 todo 注入的会话（注入成功、或 plan 模式/空清单的永久跳过）。 */
+  private readonly todoInitialized = new Set<string>()
+
   /** @param deps - store + agents + workspaces + events + clock. */
   constructor(private readonly deps: ExecutionDeps) {
     this.unsubscribeEvents = deps.events.onSessionEvent((sessionId, event) => {
       if (ACTIVITY_EVENTS.has(event.type)) {
         this.noteActivity(sessionId).catch(error => {
           console.error('[dsh-taskboard] activity persistence error:', error)
+        })
+      }
+      if (event.type === 'todo/write') {
+        // 会话任务清单 → 卡片验收清单的单向回写（看板增强系列 3/6）：宿主兜底，
+        // 不依赖 agent 自觉；只推进勾选，绝不取消勾选（冲突以卡片清单为准）。
+        this.writeBackCompletedChecklist(sessionId, event.data).catch(error => {
+          console.error('[dsh-taskboard] checklist write-back error:', error)
         })
       }
       if (event.type !== 'turn/end') return
@@ -308,6 +362,8 @@ export class ExecutionService {
     }
     this.runs.clear()
     this.lastActivityAt.clear()
+    this.checklistSync.clear()
+    this.todoInitialized.clear()
   }
 
   /** Record execution activity at most once per minute for an accurate stale badge. */
@@ -329,6 +385,118 @@ export class ExecutionService {
       }
       return undefined
     })
+  }
+
+  /**
+   * 首个 agent/pre-step：把卡片验收清单注入为官方会话任务清单（看板增强系列 3/6）。
+   *
+   * 注入点选 pre-step 是确定性的：官方 todo 投影在 turn/start 清空，而 pre-step
+   * 位于 Session.append 发布之外（官方 dsh-plan-mode 同款先例），append 安全且
+   * 必然生效——create 之后、首轮 turn 之前直接 append 会被 turn/start 清掉。
+   * 本轮只注入一次；后续轮次由 agent 按 framing 纪律自行 todo_write 维护。
+   * 计划模式卡片（声明 taskMode='plan'，官方服务可用与否均如此）不注入：
+   * 官方计划模式文案禁止规划期使用 todo_write，规划阶段仍以 exit_plan_mode
+   * 提交计划；降级为普通执行的 plan 卡同样跳过——framing 仍按声明口径告知
+   * agent 不要用 todo_write，注入一份它被告知不要维护的清单只会自相矛盾。
+   *
+   * @param agent - pre-step 载荷里的 agent 面（会话 id + session.append）。
+   */
+  async injectChecklistTodos(agent: PreStepAgentFace): Promise<void> {
+    const sessionId = typeof agent.id === 'string' ? agent.id : undefined
+    if (sessionId === undefined || this.todoInitialized.has(sessionId)) return
+    const taskId = this.checklistSync.get(sessionId)
+    if (taskId === undefined) return
+    const session = agent.session
+    if (session === undefined || typeof session.append !== 'function') return
+    const checklist = await this.deps.store.read(ledger => {
+      const task = ledger.tasks.find(t => t.id === taskId && t.trashedAt === undefined)
+      if (task === undefined) return undefined
+      const execution = task.executions.find(e => e.sessionId === sessionId && e.outcome === 'running')
+      // Plan cards never get a session list — not even when the official
+      // plan-mode service was absent and the run degraded to normal
+      // (execution.taskModeNote). The framing (checklistFraming) derives from
+      // the task's DECLARED mode and already tells the agent not to use
+      // todo_write on plan cards, so injecting a list it is told not to
+      // maintain would contradict the prompt.
+      if (taskModeOf(task) === 'plan') return undefined
+      const mode = execution?.taskMode ?? taskModeOf(task)
+      if (mode === 'plan') return undefined
+      return task.checklist ?? []
+    })
+    if (checklist === undefined || checklist.length === 0) {
+      // Plan mode, an empty DoD, or a vanished card: mark it as handled so the
+      // next pre-step does not retry forever.
+      this.todoInitialized.add(sessionId)
+      return
+    }
+    session.append('todo/write', { todos: todosFromChecklist(checklist) })
+    this.todoInitialized.add(sessionId)
+  }
+
+  /**
+   * 会话 todo/write 事件的单向回写（看板增强系列 3/6）：把会话清单里标记
+   * completed 的项幂等勾选回卡片验收清单。匹配先精确后近似（agent 常把 DoD 原文
+   * 改写后再写回 todo，纯精确匹配会漏掉这种常见情形）。
+   *
+   * 冲突口径以卡片清单为准——本回写只推进勾选、绝不取消勾选；agent 手动
+   * taskboard_checklist 仍是权威路径，本回写是宿主兜底。没有新变化时整个
+   * mutation 被放弃（返回 undefined），不写盘、不涨版本。
+   */
+  private async writeBackCompletedChecklist(sessionId: string, data: unknown): Promise<void> {
+    const taskId = this.checklistSync.get(sessionId)
+    if (taskId === undefined) return
+    const todos = todosFromEventData(data)
+    if (todos === undefined) return
+    if (!todos.some(todo => todo.status === 'completed')) return
+    await this.deps.store.mutate('task-updated', ledger => {
+      const index = ledger.tasks.findIndex(t => t.id === taskId && t.trashedAt === undefined)
+      if (index < 0) return undefined
+      const task = ledger.tasks[index]
+      if (task === undefined) return undefined
+      const current = task.checklist
+      if (current === undefined || current.length === 0) return undefined
+      const matched = matchCompletedTodos(todos, current)
+      if (matched.size === 0) return undefined
+      let changed = false
+      const checklist = current.map(item => {
+        if (item.checked || !matched.has(item.id)) return item
+        changed = true
+        return {
+          ...item,
+          checked: true,
+          checkedBy: sessionId,
+          checkedAt: this.deps.now(),
+          note: TODO_WRITE_BACK_NOTE,
+        }
+      })
+      if (!changed) return undefined
+      const next: TaskRecord = {
+        ...task,
+        checklist,
+        version: task.version + 1,
+        updatedAt: this.deps.now(),
+        updatedBy: { kind: 'agent', sessionId },
+      }
+      ledger.tasks[index] = next
+      return [next]
+    })
+  }
+
+  /**
+   * 热重载接管的会话补登记清单同步（看板增强系列 3/6；尽力而为）。
+   * @param executionId - 被接管的执行 id（台账里反查任务）。
+   * @param sessionId - 接管后的会话 id。
+   */
+  private async retrackChecklistSync(executionId: string, sessionId: string): Promise<void> {
+    try {
+      const taskId = await this.deps.store.read(ledger =>
+        ledger.tasks.find(t => t.trashedAt === undefined && t.executions.some(e => e.id === executionId))?.id)
+      if (taskId !== undefined && !this.checklistSync.has(sessionId)) {
+        this.checklistSync.set(sessionId, taskId)
+      }
+    } catch {
+      /* an adopted run keeps working without checklist sync */
+    }
   }
 
   /** Recreate enough checkout metadata from the durable start record to collect settlement facts. */
@@ -354,12 +522,16 @@ export class ExecutionService {
       // honor the existing stop button through the live registry face.
       dispose: async () => { agent.cancel({ kind: 'user' }); await agent.whenIdle() },
     })
+    // A hot-reloaded service adopts a run it did not start: its checklist sync
+    // registration is rebuilt from the durable execution record (3/6).
+    void this.retrackChecklistSync(executionId, sessionId)
   }
 
   /** Every watcher keeps its entry until the terminal ledger write succeeds. */
   private watchRun(executionId: string, agent: Awaited<ReturnType<AgentsFace['create']>>['agent'], entry: RunEntry): void {
     if (this.disposed) return
     this.runs.set(executionId, entry)
+    if (entry.taskId !== undefined) this.checklistSync.set(entry.sessionId, entry.taskId)
     this.lastActivityAt.set(entry.sessionId, this.deps.now())
     void agent.whenIdle().then(
       () => this.requestSettlement(executionId, 'succeeded'),
@@ -411,6 +583,8 @@ export class ExecutionService {
         if (!settled) return false
         if (this.runs.get(executionId) === entry) this.runs.delete(executionId)
         this.lastActivityAt.delete(entry.sessionId)
+        this.checklistSync.delete(entry.sessionId)
+        this.todoInitialized.delete(entry.sessionId)
         return true
       } catch (error) {
         if (this.disposed || this.runs.get(executionId) !== entry) return false
@@ -528,6 +702,10 @@ export class ExecutionService {
     //    'worktree' (also the omitted default) → prepare below, degrading to
     //    the original directory fail-soft on any git problem.
     const isolation: IsolationMode = effectiveIsolation(task)
+    // 看板增强系列 2/6: the card's task mode (normal | goal | plan). It is a
+    // TASK semantic (what the run is supposed to achieve), completely
+    // independent of execution.mode (claim | scheduled — WHEN it runs).
+    const taskMode: TaskMode = taskModeOf(task)
     // Issue #98: an explicit branch (task-level override, possibly pinned
     // earlier) wins; otherwise the board naming preset decides. Either way
     // the FIRST worktree creation pins the result for merge/continuation.
@@ -725,10 +903,14 @@ export class ExecutionService {
       }
       // Persist the effective settings, including resolved defaults. Never
       // continue history under a different project, model, preset or boundary.
+      // The task mode (看板增强系列 2/6) joins the key: a plan-mode session
+      // carries a `plan/mode` log state and a goal-mode session carries an
+      // armed goal — resuming either under another mode would silently run
+      // the card in a mode the conversation was never set up for.
       sessionReuseKey = JSON.stringify([
         task.workspaceId, workspace.path, composition?.agentPreset ?? null,
         model?.provider ?? null, model?.model ?? null, model?.reasoningEffort ?? null,
-        task.permission ?? DEFAULT_PERMISSION, isolation,
+        task.permission ?? DEFAULT_PERMISSION, isolation, taskMode,
       ])
       // Session continuation candidate: scheduled uses its explicit binding;
       // a comment wake (issue #51) continues the ONE conversation the card
@@ -812,6 +994,67 @@ export class ExecutionService {
     //     proceeds in the original directory — never an error.
     await prepareIsolation(handle.agent as object)
 
+    // 3b-2. Task mode (看板增强系列 2/6): normal | goal | plan.
+    //     Timing is a hard requirement:
+    //       * the official plan/goal services need the LIVE agent instance
+    //         that agents.create just resolved — the goal service's
+    //         assertLive rejects anything else (and a later phase would hold a
+    //         different instance), so the call must happen HERE, right after
+    //         the handle exists;
+    //       * it must still happen BEFORE the opening user message is
+    //         injected, otherwise the first turn already runs in the wrong
+    //         mode.
+    //     'normal' never touches an official service. A missing service or a
+    //     failing call degrades to normal mode with a VISIBLE note on the
+    //     execution record — never a silent failure.
+    // TEMP DIAGNOSTIC (5/6 e2e) 已删除（服务读取拓扑已定位，见 official-modes.ts）。
+    // 5/6 修正：官方目标模式在 goals.create 成功后由 goal-round-driver 立刻起
+    //     第 1 回合——agent.status 会在本函数内从 idle 变 running。那是「我们自己
+    //     刚开的执行」，不是「插队到别人正在跑的会话」，不能按 busy 判失败：
+    //     旧判定会把刚起的回合 abort 掉（kanban-e2e 实测：目标卡 execution
+    //     failed、error='scheduled session is busy'、回合 aborted/disposed）。
+    const agentStatusBeforeMode = handle.agent.status
+    const modeApplication = applyTaskMode({
+      mode: taskMode,
+      agent: handle.agent as object,
+      // Soft service reads stay lazy: a 'normal' card must not touch the
+      // official plan/goal services at all (系列 2/6 acceptance) — the
+      // getters are only invoked for goal/plan cards. 5/6 修正：读取拓扑走
+      // live agent 的会话 realm（agentRealmCtx），宿主面服务经共享根 store
+      // 同样可解析（见 official-modes.ts 顶部文档）。
+      planMode:
+        taskMode !== 'normal' ? this.deps.planMode?.(handle.agent as object) : undefined,
+      goals:
+        taskMode !== 'normal' ? this.deps.goals?.(handle.agent as object) : undefined,
+      // 5/6 修正：planMode 服务只挂在每会话 preset realm 内，宿主面读不到；
+      // 官方计划状态以会话投影（折叠 plan/mode 事件）为准，故把 live agent 的
+      // 会话对象交出去，让模式层能写同一条官方事件激活计划模式。
+      session:
+        taskMode !== 'normal'
+          ? (handle.agent as { session?: unknown }).session
+          : undefined,
+      // Objective = title + description (see goalObjectiveOf for the
+      // rationale: the goal must state WHAT to achieve, while the execution
+      // prompt already reached the session as the opening message).
+      objective: goalObjectiveOf(task),
+    })
+    const taskModeNote = modeApplication.note
+    // 目标模式由本次运行自己开回合（idle → running），故不计为 busy。
+    //   注意：goal-round-driver 的第 1 回合是**异步**起的——goals.create
+    //   返回那一刻 agent.status 可能仍是 idle，busy 判定发生在若干 await
+    //   之后，那时才变 running。所以「是否由我们开跑」要在 busy 判定点按
+    //   **当时**的 status 复核（见下方 goalArmedRun），不能只看模式应用后的
+    //   瞬时快照。
+    await this.patchExecution(executionId, {
+      taskMode: modeApplication.applied,
+      ...(taskModeNote !== undefined ? { taskModeNote } : {}),
+    })
+    if (taskModeNote !== undefined) {
+      console.warn('[dsh-taskboard] task mode degraded to normal:', taskModeNote)
+    } else if (modeApplication.evidence !== undefined) {
+      console.log('[dsh-taskboard] task mode applied:', modeApplication.evidence)
+    }
+
     // 3c. Best-effort rename: pin the session title to the task title so the
     //     session list shows the task name (a user-sourced title also stops
     //     automatic first-prompt retitling).
@@ -841,7 +1084,15 @@ export class ExecutionService {
     // Do not inject a scheduled prompt into an already running conversation.
     const current = this.deps.store.get(taskId)?.executions.find(e => e.id === executionId)
     const cancellationPending = this.runs.get(executionId)?.settlement?.outcome === 'cancelled' || this.disposed
-    if (current?.outcome !== 'running' || cancellationPending || handle.agent.status === 'running') {
+    // 目标模式：模式由**本次运行**激活（applied==='goal'），且模式应用前 agent 还是
+    //   idle（说明这个会话本来没人跑），此刻 running 只可能是官方 goal-round-driver
+    //   自己起的第 1 回合 → 不能按 busy 判失败（否则刚起的回合被 abort）。
+    //   会话若在派发前就已被别处占用（模式应用前已是 running），旧语义保持不变。
+    const goalArmedRun = taskMode === 'goal'
+      && modeApplication.applied === 'goal'
+      && agentStatusBeforeMode === 'idle'
+      && handle.agent.status === 'running'
+    if (current?.outcome !== 'running' || cancellationPending || (handle.agent.status === 'running' && !goalArmedRun)) {
       if (!handle.borrowed) await handle.dispose().catch(() => { /* best effort */ })
       if (current?.outcome === 'running' && !cancellationPending) {
         await this.patchExecution(executionId, { outcome: 'failed', error: 'scheduled session is busy', endedAt: this.deps.now() })
@@ -862,10 +1113,15 @@ export class ExecutionService {
     //    and ALL pending comments go in as ONE merged user message (never N
     //    bubbles; lone comment stays verbatim) — user decision 2026-10-23.
     const commentWake = trigger === 'comment' && (options?.comments?.length ?? 0) > 0
+    // goal 模式下开场合一与官方第 1 回合**并存是预期行为**（5/6 e2e-10 活体）：
+    // goals.create 后 goal-round-driver 先把 <goal_round> splice 进 inbox（seq10），
+    // 本卡开场合一随后注入（framing→next-step、正文→next-turn，seq15/16），
+    // 会话按 framing → 正文 → goal_round 的稳定顺序排布且执行成功。不跳过注入：
+    // DoD 与纪律说明只随卡片消息到达，goal_round 只带 objective。
     handle.agent.inject({
       id: this.deps.mintMessageId?.() ?? MessageId(`msg-taskboard-${crypto.randomUUID()}`),
       role: 'user' as const,
-      content: [{ type: 'text' as const, text: (commentWake ? this.commentFraming(task, prepared, isolationNote) : this.pluginFraming(task, prepared, isolationNote)) + (reuseFallbackNote !== undefined ? `\n⚠ ${reuseFallbackNote}` : '') }],
+      content: [{ type: 'text' as const, text: (commentWake ? this.commentFraming(task, prepared, isolationNote) : this.pluginFraming(task, prepared, isolationNote)) + (reuseFallbackNote !== undefined ? `\n⚠ ${reuseFallbackNote}` : '') + (taskModeNote !== undefined ? `\n⚠ ${taskModeNote}` : '') }],
       source: { kind: 'dsh-taskboard' as const },
     })
     if (commentWake) {
@@ -888,6 +1144,7 @@ export class ExecutionService {
     // the agent or make the already queued comments eligible for redelivery.
     const entry: RunEntry = {
       sessionId,
+      taskId,
       ...(prepared !== undefined ? { isolation: prepared } : {}),
       dispose: () => handle.dispose(),
       ...(commentWake ? { commentDelivery: { taskId, commentIds: options!.comments!.map(c => c.id), announce: true } } : {}),
@@ -1140,6 +1397,7 @@ export class ExecutionService {
       // Startup cancellation can still precede creation of any live agent.
       entry = {
         sessionId,
+        taskId,
         isolation: this.isolationFromExecution(running),
         dispose: async () => {
           if (live !== undefined) { live.cancel({ kind: 'user' }); await live.whenIdle() }
@@ -1371,7 +1629,13 @@ export class ExecutionService {
       .map((item, index) => `${item.checked ? '☑' : '☐'} ${index + 1}. ${item.text}${item.note !== undefined ? `（证据: ${item.note}）` : ''}`)
       .join('\n')
     const done = task.checklist.filter(i => i.checked).length
-    return `\n本任务有验收清单（DoD，${done}/${task.checklist.length} 已完成）——按清单干活：\n${items}\n完成一项就用 taskboard_checklist（action=check，附 note 证据）勾选；未完成项会在验收时高亮，全部完成再移待验收。需要补充验收项也可用 action=add 追加。`
+    // 会话任务清单 ↔ 卡片验收清单的同步纪律（看板增强系列 3/6；口径与看板模式
+    // 系列的清单纪律一致）：todo_write 管会话清单，taskboard_checklist 管卡片
+    // 清单；计划模式是官方明文例外——规划期禁用 todo_write。
+    const sync = taskModeOf(task) === 'plan'
+      ? `\n会话任务清单（计划模式例外）：官方计划模式文案禁止规划期使用 todo_write；规划阶段仍以 exit_plan_mode 提交计划，不要用 todo_write 代替。本次不注入会话任务清单——直接按上方清单用 taskboard_checklist（附证据 note）推进与回写。`
+      : `\n会话任务清单：宿主已在首个执行步骤把上方清单注入为官方任务清单（todo 投影）——请用 todo_write 维护它：开工把当前项标 in_progress（非并行配置同时至多一项），完成即标 completed。执行阶段任何操作前先更新官方任务清单：更新任务清单 → 执行动作 → 回写卡片清单。todo_write 管会话任务清单（本会话的工作分解），taskboard_checklist 管卡片验收清单（看板卡的 DoD 条目）。会话清单把对应 DoD 条目标成 completed 时宿主会自动回写卡片清单；但你勾选卡片清单仍必须用 taskboard_checklist 并附证据 note。`
+    return `\n本任务有验收清单（DoD，${done}/${task.checklist.length} 已完成）——按清单干活：\n${items}\n完成一项就用 taskboard_checklist（action=check，附 note 证据）勾选；未完成项会在验收时高亮，全部完成再移待验收。需要补充验收项也可用 action=add 追加。${sync}`
   }
 
   /**

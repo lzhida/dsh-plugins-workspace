@@ -47,7 +47,7 @@ import {
   type SystemCommentRow,
 } from '../shared/protocol.ts'
 import { OFFICIAL_POOL_DIR } from '../local/official-worktree.ts'
-import { resolveIsolation } from '../local/task-writer.ts'
+import { resolveIsolation, resolveTaskMode } from '../local/task-writer.ts'
 import { type GitFace } from './git.ts'
 import { repoMainPath } from './isolation.ts'
 import { createRepoScanner, type RepoScanner } from './repos.ts'
@@ -805,6 +805,11 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
           const presetId = body.presetId === undefined ? settings?.defaultPresetId : normalizePresetId(str(body, 'presetId'))
           const permissionRaw = str(body, 'permission')
           const permission = permissionRaw === null ? defaultPermissionOf(store.snapshot().settings) : asPermission(permissionRaw)
+          // 看板增强系列 2/6: the task's execution mode. One truth shared with
+          // the writer (resolveTaskMode): omitted → 'normal', anything else
+          // outside normal|goal|plan is an invalid_input error.
+          const taskModeRaw = str(body, 'taskMode')
+          const taskMode = resolveTaskMode(taskModeRaw === null ? undefined : taskModeRaw)
           let checklist: TaskRecord['checklist'] = undefined
           if (body.checklist !== undefined) {
             if (!Array.isArray(body.checklist) || body.checklist.some(c => typeof c !== 'string')) {
@@ -824,6 +829,7 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
             status,
             blocked: false,
             execution,
+            taskMode,
             model,
             isolation,
             ...(branchOverride !== undefined ? { branch: branchOverride } : {}),
@@ -939,6 +945,11 @@ export function registerTaskboardRoutes(ctx: Context, options: TaskboardRoutesOp
               // Permission (0.5.5): 'workspace-write' | 'read-only' | 'danger-full-access'
               if (body.permission === null) delete next.permission
               else if (body.permission !== undefined) next.permission = asPermission(body.permission)
+              // 看板增强系列 2/6: the task mode may change any time — the
+              // session reuse key (execution.ts) includes it, so a mode flip
+              // never continues a conversation set up under the old mode.
+              const taskModeRaw = str(body, 'taskMode')
+              if (taskModeRaw !== null) next.taskMode = resolveTaskMode(taskModeRaw)
               // Checklist (0.4.0): the GUI replaces the whole list; null clears.
               if (body.checklist === null) delete next.checklist
               else if (body.checklist !== undefined) {

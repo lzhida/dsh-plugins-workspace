@@ -3,11 +3,16 @@
 上游：[cloader/dsh-taskboard](https://github.com/cloader/dsh-taskboard) **v0.10.1**
 （取自本机 npm 安装包 `dsh-taskboard@0.10.1` 的 `src/`，Apache-2.0，Copyright 2026 cloader）。
 
-`src/` 下 63 个 `.ts`/`.tsx` 文件中，**47 个与上游逐字一致**（未做行为改写、未做风格改写）；
-**16 个**因看板模式系列第 2/6 张卡、**看板官方集成系列 1/3 张卡**（worktree 隔离改用官方
-worktree 服务）与**上游同步系列 2/6 张卡**（依赖总开关缺省开启）**有意改动**，改动范围、理由与
-哈希登记在 `docs/local-patches.json` / `docs/local-sha256.txt`（见下文「逐字一致性机制」）。
-其余本地改动全部集中在包外层（清单 / 构建 / 依赖口径 / 文档）与新增的 `src/local/`。
+`src/` 下 63 个 `.ts`/`.tsx` 文件中，**45 个与上游逐字一致**（未做行为改写、未做风格改写）；
+**18 个**因看板模式系列第 2/6 张卡、**看板官方集成系列 1/3 张卡**（worktree 隔离改用官方
+worktree 服务）、**上游同步系列 2/6 张卡**（依赖总开关缺省开启）、**看板增强系列 1/6 张卡**
+（移除执行隔离选项、恒 worktree）、**看板增强系列 2/6 张卡**（普通/目标/计划三种执行模式）
+与**看板增强系列 3/6 张卡**（会话任务清单与卡片验收清单双向同步）、**看板增强系列
+5/6 张卡**（e2e 实测修正：服务读取拓扑 / 计划模式兜底激活 / 目标模式启动竞态）
+**有意改动**，改动范围、
+理由与哈希登记在 `docs/local-patches.json` / `docs/local-sha256.txt`（见下文「逐字一致性
+机制」）。其余本地改动全部集中在包外层（清单 / 构建 / 依赖口径 / 文档）与新增的
+`src/local/`。
 
 > **版本口径注记**：本仓 vendored 副本的 `src/shared/version.ts` 里 `PLUGIN_VERSION` 跟随
 > **上游**版本号（当前 `0.10.1`）；本包自身的 npm 版本号是 `0.1.0`（本仓 changeset 口径），
@@ -121,12 +126,123 @@ CLEAN、仅 `src/host/tools.ts` 3 处冲突，冲突解算固定为「把上游�
 | 50  | `docs/upstream-sha256.txt` / `docs/local-sha256.txt` / `docs/local-patches.json`                          | 哈希基线重置为上游 0.10.1（63 条）；例外登记扩到 16 条（新增 `shared/dependencies.ts`）；本地哈希补该文件                                                                                                                                                                        | 同步后「逐字一致性机制」继续成立                                                                |
 | 51  | `docs/upstream-readme.md`                                                                                 | 重拷上游 0.10.1 README 原文（逐字，SHA256 与 npm 包内 README 一致）                                                                                                                                                                                                              | 上游文档镜像随上游更新，不自行润色                                                              |
 
+### 看板增强系列 1/6 张卡：移除执行隔离选项并恒定 worktree
+
+本卡把「执行隔离」从**三处可选**收敛为**唯一档位**：客户端不再提供隔离选择（任务表单的
+隔离双按钮 + 看板设置的「默认执行隔离」两档），写手层 `resolveIsolation` 恒定
+`worktree`——省略与显式 `"worktree"` 一律按 worktree 生效，显式 `"none"` 被强制改回
+worktree 并在结果带「已强制 worktree 隔离」注记。**旧台账的 `isolation: 'none'` 读面保持
+可解析**（`IsolationMode` 与 `asIsolation` 仍接受 `'none'`），不追溯改写既有卡。
+
+| #   | 位置                                                                   | 改动                                                                                                                                                                                                                                                                                                                                                      | 理由                                                                                                             |
+| --- | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| 52  | `src/shared/protocol.ts`（上游文件，**有意改动**）                     | `DEFAULT_ISOLATION` 出厂缺省 `'none'` → 恒 `'worktree'`；`defaultIsolationOf(settings)` 不再读看板设置（`BoardSettings.defaultIsolation` 降级为**仅兼容旧台账**的遗留字段）；`IsolationMode` / `asIsolation` 仍保留 `'none'` 以解析旧台账，`effectiveIsolation` 与相关 doc 注释同步                                                                       | 隔离不再可选，缺省档必须与写手层强制结果一致，否则「省略即 none」会与「恒 worktree」在读面打架；旧台账仍要能打开 |
+| 53  | `src/client/board/TaskFormModal.tsx`（上游文件，**有意改动**）         | 删除隔离选择器（`worktree`/`none` 双按钮、执行历史锁定与非 git 提示、多仓镜像提示）与「分支名」输入（含标题联动）；`submit` / `submitAndRun` / `saveAsTemplate` 三条提交路径不再携带 `isolation` 与 `branch`；`TaskRecordLike` 去掉 `isolation` 字段；相关 import（`IsolationMode` / `defaultIsolationOf` / `branchName*Of` / `buildBranchName`）一并清理 | 卡片要求「移除用户可选的隔离 UI 与 payload」；分支名改由看板「分支命名」规则统一生成，不再由表单自由填写         |
+| 54  | `src/client/board/SettingsModal.tsx`（上游文件，**有意改动**）         | 删除看板设置里的「默认执行隔离」两档选择（`isolationOptions` 常量、`currentIso` / `draftIso` 状态、dirty 判定、`save` 提交的 `defaultIsolation`）；「分支命名」设置保留                                                                                                                                                                                   | 设置档位与表单选择器同源，两处一起移除才不会出现「设置可改、表单不可改」的半残状态                               |
+| 55  | `src/client/controller.ts`（上游文件，**有意改动**）                   | `duplicate`（复制卡）与 `saveAsTemplate`（存为模板）不再透传 `isolation: task.isolation`；`duplicate` 的 doc 注释同步                                                                                                                                                                                                                                     | 复制 / 模板继承历史卡的隔离声明，会把旧卡的 `none` 口径带进新卡；隔离已不可选，继承它没有意义                    |
+| 56  | `src/client/i18n/{zh,en,ru}.ts`（上游文件，**有意改动**）              | 三语各删 16+4 键：表单隔离相关键（`form.field.isolation`、`form.iso.*`）、设置段键（`set.iso.heading` / `noneHint` / `worktreeHint` / `current`）；`set.iso.branchHint` 去掉「表单可在分支名字段覆盖」句；`board.action.settingsTitle` 不再特指默认执行隔离                                                                                               | UI 文案不得残留已删控件的入口，否则用户按文案找不到对应控件                                                      |
+| 57  | `src/local/task-writer.ts` + `src/local/task-writer.test.ts`（本地层） | `resolveIsolation` 的 doc 注释改写为 1/6 口径（省略 / 显式 `worktree` → 原样生效且不算覆盖；显式 `none` → 强制改 worktree 并注明；非法值仍按上游口径报错）；单测断言同步（省略 → worktree 不带强制注记，显式 `none` → worktree + `isolationForced` + 注记）                                                                                               | 写手层是唯一真源，注释与测试必须与新缺省档一致，否则「行为没变」会被误读成「行为已变」                           |
+| 58  | `docs/local-patches.json` / `docs/local-sha256.txt`                    | 例外登记由 16 条扩到 **18 条**（新增 `client/board/TaskFormModal.tsx`、`client/board/SettingsModal.tsx`）；已登记文件的本地哈希按实算重算                                                                                                                                                                                                                 | vendored 红线：改动必须显式登记并同步哈希，否则契约测试立刻失败                                                  |
+
+**包外同步改动**（不属 vendored 63 文件清单，另记）：`plugins/dsh-kanban-mode/src/skill/skill-content.ts`
+的 5 处隔离口径改为「恒 worktree」——4.7.8「系列卡共用 worktree」改为「首卡自建共享检出 +
+其余卡 prompt 钉绝对路径与分支」（建卡参数已无 `none` 可传），4.7.9 与 4.11 的建卡参数
+清单、4.13 常见错误、4.15 自检清单均改写为「`isolation` 一律省略」。
+
+### 看板增强系列 2/6 张卡：接入普通/目标/计划三种执行模式
+
+新增**独立**字段 `taskMode`（`'normal' | 'goal' | 'plan'`，缺省 `normal`），与调度语义
+`execution.mode`（`claim` / `scheduled`）及导出摘要里已占用的 `executionMode` 互不复用。
+执行时按模式调用 DSH 官方能力：`plan` → `ctx.get('planMode').set(agent, true)`，
+`goal` → `ctx.get('goals').create(agent, { objective })`（objective = 标题 + 描述，不含
+Prompt——Prompt 已进会话日志，goal 多轮续跑重复长指令会让目标失焦），`normal` → 完全不触碰
+官方服务（getter 懒读取）。官方服务一律**软读取**（`ctx.get` + 结构断言），缺席或调用
+抛错即写 `execution.taskModeNote`（与 `isolationNote` 同构）并按普通模式继续，降级说明同时
+拼进首条 framing——绝不静默失败。
+
+| #   | 位置                                                                                                         | 改动                                                                                                                                                                                                                                                                                                                                                   | 理由                                                                                           |
+| --- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| 59  | `src/shared/protocol.ts`（上游文件，**有意改动**）                                                           | 新增 `TaskMode` / `TASK_MODES` / `DEFAULT_TASK_MODE` / `normalizeTaskMode`（非法值逐字报错 `taskMode must be one of: normal, goal, plan`）/ `taskModeOf`（旧卡缺省回落 `normal`）；`TaskRecord.taskMode?`、`ExecutionRecord.taskMode?` + `taskModeNote?`；台账导入恢复两字段                                                                           | 模式字段要有**单一真源**与明确校验，避免表单 / 工具 / 路由三处各写一套归一化                   |
+| 60  | `src/local/task-writer.ts`（本地层）                                                                         | 新增 `resolveTaskMode`：`createTask` 始终归一化写入、`updateTask` 仅在调用方提供时覆盖；工具入口、GUI 表单、HTTP 路由三处共用                                                                                                                                                                                                                          | 写手层是唯一真源；路由与工具各写一份归一化必然漂移                                             |
+| 61  | `src/host/execution.ts`（上游文件，**有意改动**）                                                            | `ExecutionDeps` 新增 `planMode?()` / `goals?()` 两个软读取 getter；`run()` 在 `prepareIsolation` 之后、首条 `inject`/`followup` 之前调用 `applyTaskMode`（目标模式受官方 `assertLive` 约束，必须是 `agents.create` 返回的同一 live 实例）；结果写 `execution.taskMode` / `taskModeNote`；`sessionReuseKey` 并入 `taskMode`（模式变化后绝不续跑旧会话） | 调用时机是硬约束（官方 `assertLive`），放错位置会直接失败；模式进 reuse key 防旧模式会话被续跑 |
+| 62  | `src/host/tools.ts` / `src/host/routes.ts` / `src/shared/api.ts` / `src/client/**`（上游文件，**有意改动**） | 建卡 / 改卡工具 schema 与 HTTP 路由支持 `taskMode`（路由走同一 `resolveTaskMode`）；客户端表单新增「任务模式」三档 picker（复用 `dsh-atb-mode-picker` 样式，编辑态读卡片值、模板预填），三语各 7 个键；复制卡与存为模板保留模式                                                                                                                        | 模式要能从 GUI 与工具两条路设置，且读面一致                                                    |
+
+**包外同步改动**：无（2/6 只动本包 vendored 文件与 `src/local/` 新增 `official-modes.ts`、
+`task-mode.test.ts`——两者都在 `src/local/`，不计入 63 文件逐字口径）。
+
+### 看板增强系列 3/6 张卡：会话任务清单与卡片验收清单双向同步
+
+两侧分工（与看板模式系列的清单纪律一致）：**会话任务清单**由官方 `todo_write` 工具维护
+（本会话的工作分解），**卡片验收清单**是看板卡的 DoD 条目（由 `taskboard_checklist` 维护，
+勾选必须带证据 note）。宿主负责两件事——**初始化注入**与**单向回写**：
+
+- **初始化注入**：执行会话的**首个 `agent/pre-step`** 内，宿主把卡片验收清单映射为初始
+  `todos` 并 `session.append('todo/write', { todos })`。注入点选 pre-step 是确定性的：官方
+  todo 投影在 `turn/start` 清空，而 pre-step 位于 `Session.append` 发布之外（官方
+  dsh-plan-mode 同款先例），append 安全且必然生效——create 之后、首轮 turn 之前直接 append
+  会被 `turn/start` 清掉。计划模式（有效 `taskMode='plan'`）**不注入**：官方计划模式文案
+  禁止规划期使用 `todo_write`，规划阶段仍以 `exit_plan_mode` 提交计划。
+- **单向回写**：宿主监听会话 `todo/write` 事件，把标记 `completed`、且能匹配上 DoD 条目
+  的项幂等勾选回卡片清单（`checked` / `checkedBy` / `checkedAt` + 证据 note
+  「会话任务清单标记完成（todo_write 自动回写）」），版本 +1。匹配规则（看板增强系列
+  5/6 卡 e2e 修正）：先 **trim 精确匹配**，再对未命中项做**字符 bigram Dice 近似兜底**
+  （`matchCompletedTodos`：阈值 0.6、最优/次优差距 ≥0.1 才命中、一对一）——隔离实例
+  实测 agent 会把 DoD 原文改写后写回 todo，纯精确匹配导致自动回写零命中。**只推进、
+  绝不取消勾选**——冲突以卡片验收清单为准；没有新变化时整个 mutation 被放弃
+  （不写盘、不涨版本）。
+
+| #   | 位置                                                                                                         | 改动                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      | 理由                                                                                                                 |
+| --- | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| 63  | `src/host/execution.ts`（上游文件，**有意改动**）                                                            | `RunEntry` 带 `taskId`；类内新增 `checklistSync`（sessionId→taskId）与 `todoInitialized` 两个跟踪表；构造器的会话事件监听新增 `todo/write` 分支 → `writeBackCompletedChecklist`；新增 `injectChecklistTodos`（首个 pre-step 注入，plan 跳过、每会话只注入一次、失败下个 pre-step 重试）与 `retrackChecklistSync`（热重载接管会话补登记）；`checklistFraming` 追加会话清单纪律段                                                                                                                                                                                           | 注入与回写都必须由宿主兜底，不能只靠 agent 自觉；跟踪表按 sessionId 做 O(1) 过滤，宿主里的其它会话不触发任何台账读写 |
+| 64  | `src/index.ts`（上游文件，**有意改动**）                                                                     | 在 `agents` 作用域注册官方 `'agent/pre-step'` 钩子（`onAgentPreStep`），把首个 pre-step 的 agent 面交给执行服务做注入；监听器随本作用域注销                                                                                                                                                                                                                                                                                                                                                                                                                               | 官方 scope 过滤对未打标签的上下文一律放行，注册在插件可触达的普通上下文即可；监听器随作用域注销避免热重载后重复注入  |
+| 65  | `src/local/todo-sync.ts` + `src/local/todo-sync.test.ts` + `src/local/execution-todo-sync.test.ts`（本地层） | 新增纯函数模块（`todosFromEventData` 载荷校验、`todosFromChecklist` 清单→todos 映射、`normalizeTodoText` 文本归一化、`todoTextSimilarity` 字符 bigram Dice、`matchCompletedTodos` 精确+近似两轮匹配、`onAgentPreStep` 注册助手）与 31 个用例：纯函数 18 例（含近似匹配/歧义退避/一对一/否定词不剥离，5/6 补 7 例近似回归 + 1 例歧义退避）+ 服务层 13 例（注入映射 / 幂等 / plan 跳过 / 空清单跳过 / 未跟踪会话不动作 / 回写带证据 note 且版本 +1 / 回写近似匹配 e2e 回归 / 回写幂等 / 只推进不误勾 / 形状不符载荷忽略 / 热重载补登记后仍能注入 / 结算清理后回写不再写盘） | 纯函数放本地层便于单测；服务层用例白盒播种跟踪表，覆盖两个接缝的真实行为                                             |
+
+**包外同步改动**：无（3/6 只动本包 vendored 文件与 `src/local/` 新增文件）。
+
+### 看板增强系列 5/6 张卡：e2e 实测修正（服务读取拓扑 / 计划模式兜底激活 / 目标模式启动竞态）
+
+隔离实例（`kanban-e2e` profile + rc.5 运行时）上跑真实会话后，实测修正三处：
+
+1. **服务读取拓扑**：官方 plan-mode 行在宿主面被显式禁用（`dsh-web-app` 的
+   `cordis.patch.yml` 里 `disabled: true`），服务只挂在**每会话 preset realm**
+   （`cordis:group` + `isolate: { planMode: true }`）——宿主 ctx 与 `agent.ctx`
+   都读不到（实测 `reflect.get('planMode', false)` 恒 undefined）。软读口改为
+   `reflect.get(name, false)`（免 inject 的 store 读）+ `agentRealmCtx(agent)`
+   （会话 realm ctx）；`ctx.get` 存在但等价 `strict=true`，不用于软读。
+2. **计划模式兜底激活**：官方计划状态的真身是**会话投影**
+   （`planProjectionDefinition` 折叠 `plan/mode` 事件），而 `planMode.set()` 在没有
+   开环回合时做的正是 `session.append('plan/mode', { active })`——故服务不可达时
+   由宿主直接写同一条官方事件完成激活（`appendPlanModeEvent`）：投影折叠后 realm 内
+   控制器同样转 active，`plan:policy` 提示段与 `exit_plan_mode` 条件工具随之生效。
+3. **目标模式启动竞态**：官方 goal-round-driver 在 `goals.create` 成功后**立刻起第 1
+   回合**，live agent 的 status 在模式应用的同一拍里从 idle 变 running；旧护栏把它
+   误认成「插队到别人正在跑的会话」→ 目标卡 `execution=failed`、
+   `error=scheduled session is busy`、刚起的回合被 abort。修正：模式应用前后记录
+   status，模式为 goal、模式生效且 idle→running 时**不判 busy**；派发前就已经
+   running 的会话仍按旧语义判失败。
+
+| #   | 位置                                                                    | 改动                                                                                                                                                                                                                                                   | 理由                                                                                                                                                                                |
+| --- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 66  | `src/host/execution.ts`（上游文件，**有意改动**）                       | 模式应用**前**记录 live agent 的 `status`；busy 判定点上按**当时**的 `status` 复核：`taskMode==='goal'`、模式生效、模式应用前为 idle、此刻为 running → 判定为「本次运行自己起的第 1 回合」，跳过 busy 继续派发（会话在派发前已被别处占用时旧语义不变） | 目标回合是**本次运行自己**开的，判 busy 会误杀自己的第 1 回合（e2e 实测 execution=failed + 回合 aborted）；第 1 回合是**异步**起的，模式应用瞬间 status 仍是 idle，必须在判定点复核 |
+| 67  | `src/local/official-modes.ts` + `src/local/task-mode.test.ts`（本地层） | 新增 `agentRealmCtx`（取会话 realm ctx）与 `appendPlanModeEvent`（写官方 `plan/mode` 事件）；`applyTaskMode` 增加 `session` 选项，plan 路径改成「服务优先 / 事件兜底」双轨；软读口改为 `reflect.get(name, false)`；删除临时诊断探针                    | 官方 plan-mode 只在 preset realm 内、宿主面读不到，而计划状态的真身是会话投影——写事件与调服务等效；诊断探针完成定位后必须删除                                                       |
+| 68  | `src/local/goal-mode-race.test.ts`（本地层，新增）                      | 服务层契约测试 5 例：目标回合**同步**起跑不判 busy / 目标回合**异步**起跑（判定点才 running）不判 busy / 会话在派发前已忙仍判 busy / 目标模式下会话在模式应用前已忙仍判 busy / 目标服务缺席降级时照常派发                                              | 把 e2e 实测到的竞态固化成回归用例，避免「护栏」与「官方目标模式」再次互相误伤；异步起跑一例正是第一版修正漏判的时序                                                                 |
+
+**包外同步改动（系列 4/6 张卡，不属 vendored 63 文件清单，不进哈希登记）**：
+`plugins/dsh-kanban-mode` 三句执行纪律文案逐字落地 7 处——`src/context-text.ts:56`、
+`src/skill/skill-content.ts:123/510/568/590/613`、`src/preset-def.ts:110`：
+①「执行阶段任何操作前先更新官方任务清单：更新任务清单 → 执行动作 → 回写卡片清单。」
+②「todo_write 管会话任务清单（本会话的工作分解），taskboard_checklist 管卡片验收清单（看板卡的 DoD 条目）。」
+③「官方计划模式文案禁止规划期使用 todo_write；规划阶段仍以 exit_plan_mode 提交计划，不要用 todo_write 代替。」
+（`preset-def.ts` 的 `PLAN_MODE_SECTION` 原文未改，只在其后的 preset 提示位新增第 ③ 句。）
+
 ## 逐字一致性机制（看板模式系列 2/6 调整，上游同步系列 3/6 重置基线）
 
 第 1/6 张卡建立了「63 个 vendored 文件与上游逐字一致」的内容级不变量。第 2/6 张卡
 必须改上游 `src/host/tools.ts` 与 `src/index.ts`，该不变量随之调整为**三段式**；
 看板官方集成系列 1/3 张卡（worktree 改用官方服务）沿用同一套三段式登记，只是例外
-从 2 个文件扩大到 16 个（上游同步系列 2/6 张卡新增 `shared/dependencies.ts`）。
+从 2 个文件扩大到 18 个（上游同步系列 2/6 张卡新增 `shared/dependencies.ts`，
+看板增强系列 1/6 张卡新增 `client/board/TaskFormModal.tsx` 与
+`client/board/SettingsModal.tsx`）。
 
 1. **`docs/upstream-sha256.txt`**：永远是上游原始哈希，一个字节都不许改写；
    其自身的 sha256 被契约测试钉死（`UPSTREAM_MANIFEST_SHA256`），被改写即失败。
@@ -169,7 +285,8 @@ CLEAN、仅 `src/host/tools.ts` 3 处冲突，冲突解算固定为「把上游�
   （工具入口 / 板服务入口 / GUI 建卡入口）。① **改卡**（`taskboard_update` 与 GUI
   改卡处）维持上游口径按传入值写入，不受强制约束；② **既有旧卡**的隔离字段不被
   追溯改写；③ **台账导入**（`validateLedgerImport`）不经建卡路径，同样不受强制
-  约束；④ GUI 建卡表单仍展示 `none` 选项（提交后被服务端强制为 worktree，客户端
-  尚未展示 `isolationForced` / `isolationNote` 注记字段）；⑤ 官方 worktree 服务
+  约束；④ **看板增强系列 1/6 起 GUI 建卡表单已不再提供隔离选项**（隔离档位唯一，
+  客户端不再展示 `isolationForced` / `isolationNote` 注记字段——注记只出现在
+  工具 / 板服务写路径的返回结果里）；⑤ 官方 worktree 服务
   缺席时，执行层按上游口径降级到原目录执行（`src/host/execution.ts`），此时
   worktree 隔离只在**建卡计划**层面成立，实际执行目录仍为原目录。

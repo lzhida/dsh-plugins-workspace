@@ -825,7 +825,7 @@ export class BoardController {
     }
   }
 
-  /** Duplicate a task into a fresh todo card (same project/urgency/prompt/execution/model/isolation/checklist). */
+  /** Duplicate a task into a fresh todo card (same project/urgency/prompt/execution/model/checklist). */
   async duplicate(task: TaskRecord): Promise<void> {
     try {
       await this.client.create({
@@ -841,7 +841,8 @@ export class BoardController {
             ? { mode: 'scheduled', runAt: new Date(task.execution.runAt).toISOString() }
             : { mode: 'claim' },
         model: task.model,
-        isolation: task.isolation,
+        // 看板增强系列 2/6: keep the card's execution mode on duplication.
+        ...(task.taskMode !== undefined ? { taskMode: task.taskMode } : {}),
         ...(task.presetId !== undefined ? { presetId: task.presetId } : {}),
         ...(task.permission !== undefined ? { permission: task.permission } : {}),
         ...(task.checklist !== undefined && task.checklist.length > 0 ? { checklist: task.checklist.map(i => i.text) } : {}),
@@ -916,7 +917,8 @@ export class BoardController {
             ? { mode: 'scheduled', runAt: new Date(task.execution.runAt).toISOString() }
             : { mode: 'claim' },
         model: task.model,
-        isolation: task.isolation,
+        // 看板增强系列 2/6: templates may prefill the execution mode too.
+        ...(task.taskMode !== undefined ? { taskMode: task.taskMode } : {}),
         ...(task.presetId !== undefined ? { presetId: task.presetId } : {}),
         ...(task.permission !== undefined ? { permission: task.permission } : {}),
         ...(task.checklist !== undefined && task.checklist.length > 0 ? { checklist: task.checklist.map(i => i.text) } : {}),
