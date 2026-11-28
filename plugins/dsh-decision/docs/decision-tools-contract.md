@@ -275,7 +275,7 @@
 - **state 组装**：发给 systemone 的 `state` 固定为 `{ "message": <组装文本> }`；文本顺序 `PURPOSE → CONSTRAINTS → ACTIONS → DETAIL`，调用方 `state` 原文只落在 `DETAIL` 一处（不重复回灌，符合 §11 D1/D5）。
 - **入参校验边界**：`instructions` 非空且 ≤2000 字符；`n` 仅接受 `1` 或 `3..5`（`2`、`6+` 一律 `invalid-arguments`）；`choice.criteria` 为 2–255 项「选项名→描述」非空映射；`score.criteria` 为 2–10 档非空文字数组。
 - **候选集外取值**：模型返回的 `choice` 若不在该题候选集内 → 该题判 `dropped`（**fail-closed 不夹取**），整体 `ok:false` + `model-invalid-response`，`details` 含 `droppedQuestionIds` / `invalidAnswers` / `answers`（保留原始映射供审计）。
-- **聚合平票规则**：choice 计票平票时取「单次 `confidence` 最高者」，仍平票按选项名字典序；`modalVoteRatio` = 众数票数 / 有效样本数。
+- **聚合平票规则**：choice 计票平票时取「单次 `confidence` 最高者」，仍平票按选项名字典序（UTF-16 码元序，与运行环境 locale 无关的跨平台确定序）；`modalVoteRatio` = 众数票数 / 有效样本数。
 - **`modalVoteRatio` 作用域（3/11 定稿）**：只有 `choice` 有投票语义；`noul` / `score` 用平均概率聚合，`modalVoteRatio` 一律 `null`。
 - **`agreement` / `modalVoteRatio` 边界**：输出前 `clamp` 到 `[0,1]`（未归一分布可能让熵公式越界）；多题汇总只对**非 `null`** 的题取最小值，一题缺概率不抹掉全局值。
 - **score 分布分母**：只用**真正提供了 `probabilities` 的样本数**求档位均值（缺失概率的样本不参与归一）；全部样本都无 `probabilities` → `distribution = null`。

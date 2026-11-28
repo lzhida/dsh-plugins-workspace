@@ -292,7 +292,9 @@ export function buildCaseIndex(root: string): CaseIndexReport {
     });
   }
 
-  cases.sort((a, b) => a.path.localeCompare(b.path));
+  // 排序用 UTF-16 码元比较而非 localeCompare：默认 locale 随运行环境变化（本机
+  // zh-CN 按拼音、CI 的 en 环境按码元），中文案件名在两侧会得到不同顺序（CI 曾因此挂单测）。
+  cases.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 
   if (cases.length === 0) {
     issues.push({

@@ -677,7 +677,9 @@ export function aggregateAnswers(
       const confGap =
         (confidenceByChoice.get(b) ?? -1) - (confidenceByChoice.get(a) ?? -1);
       if (confGap !== 0) return confGap;
-      return a.localeCompare(b);
+      // 平票兜底用 UTF-16 码元字典序而非 localeCompare：默认 locale 随环境变化，
+      // 中文选项名在 CI 与本机会得到不同的 tie-break（跨平台确定序）。
+      return a < b ? -1 : a > b ? 1 : 0;
     });
     const value = ranked[0];
     const maxVotes = votes.get(value) ?? 0;

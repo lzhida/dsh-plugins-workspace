@@ -125,8 +125,14 @@ describe('buildCaseIndex 案件索引', () => {
     expect(report.cases.length).toBe(2);
     expect(report.stats.total).toBe(2);
     expect(report.stats.ready).toBe(2);
-    expect(report.cases[0].path.endsWith('甲案.md')).toBe(true);
-    expect(report.cases[0].statusSource).toBe('inferred');
+    // 排序必须是跨平台确定序（UTF-16 码元序，不用 localeCompare）：CI 默认 locale
+    // 与本机不同，中文文件名按 locale 排序会得到不同顺序。码元序：乙(U+4E59) < 甲(U+7532)。
+    expect(report.cases.map((c) => c.path.split(/[\\/]/).pop())).toEqual([
+      '乙案.md',
+      '甲案.md',
+    ]);
+    const jia = report.cases.find((c) => c.path.endsWith('甲案.md'));
+    expect(jia?.statusSource).toBe('inferred');
   });
 
   it('旁挂元数据优先于推断状态', () => {
