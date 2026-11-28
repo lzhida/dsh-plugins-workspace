@@ -120,22 +120,19 @@ export const ARBITER_OUTPUT_SCHEMA = {
     ok: { type: 'boolean' as const, required: true as const },
     verdict: {
       type: 'string' as const,
-      required: true as const,
       description:
         'allow / revise / block / escalate / yes / no / 选项名（语义随题型）。',
     },
     confidence: {
       oneOf: [{ type: 'number' as const }, { type: 'null' as const }] as const,
-      required: true as const,
     },
     disagreement: {
       type: 'boolean' as const,
-      required: true as const,
       description: '与原判定是否不一致（只表示不一致，不代表谁对）。',
     },
-    detail: { type: 'string' as const, required: true as const },
-    source: { type: 'string' as const, required: true as const },
-    mode: { type: 'string' as const, required: true as const },
+    detail: { type: 'string' as const },
+    source: { type: 'string' as const },
+    mode: { type: 'string' as const },
     original: {
       type: 'object' as const,
       additionalProperties: false as const,

@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  validateJsonSchemaValue,
+  valueSchemaSpecToJsonSchema,
+} from '@deepseek-ai/dsh-tools';
+
+import {
   BATCH_CONCURRENCY,
   BATCH_DESCRIPTION,
   BATCH_OUTPUT,
@@ -363,5 +368,49 @@ describe('decision_batch（决策工具系列 4/11）', () => {
     const { deps } = harness(fetchImpl);
     const tool = createBatchTool(deps) as { name: string };
     expect(tool.name).toBe(BATCH_TOOL);
+  });
+
+  it('出参过宿主 schema 校验：行级 answer/error 可空（2026-11-28 活体回归）', () => {
+    const jsonSchema = valueSchemaSpecToJsonSchema(BATCH_OUTPUT.schema);
+    const answer = {
+      type: 'noul',
+      value: 0.9894,
+      confidence: null,
+      distribution: { yes: 0.9894, no: 0.0106 },
+      legend: null,
+      status: 'ok',
+    };
+    const output = {
+      ok: true,
+      results: [
+        {
+          groupIndex: 0,
+          questionId: 'g0',
+          rows: [
+            {
+              index: 0,
+              text: '好评文本',
+              status: 'ok',
+              answer,
+              error: null,
+            },
+            {
+              index: 1,
+              text: '失败文本',
+              status: 'error',
+              answer: null,
+              error: {
+                code: 'model-call-failed',
+                message: '上游不可达',
+                retryable: true,
+              },
+            },
+          ],
+        },
+      ],
+      concurrency: BATCH_CONCURRENCY,
+      degraded: true,
+    };
+    expect(validateJsonSchemaValue(jsonSchema, output, 'value')).toEqual([]);
   });
 });

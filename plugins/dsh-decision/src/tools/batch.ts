@@ -128,14 +128,26 @@ const BATCH_OUTPUT_SCHEMA = {
                   required: true as const,
                 },
                 answer: {
-                  type: 'object' as const,
-                  additionalProperties: true as const,
-                  properties: {},
+                  // 行成功时是判定对象、失败时为 null——宿主按 schema 校验，
+                  // 声明成纯 object 会把 null 判成 invalid output（2026-11-28 活体实测）。
+                  oneOf: [
+                    {
+                      type: 'object' as const,
+                      additionalProperties: true as const,
+                      properties: {},
+                    },
+                    { type: 'null' as const },
+                  ] as const,
                 },
                 error: {
-                  type: 'object' as const,
-                  additionalProperties: true as const,
-                  properties: {},
+                  oneOf: [
+                    {
+                      type: 'object' as const,
+                      additionalProperties: true as const,
+                      properties: {},
+                    },
+                    { type: 'null' as const },
+                  ] as const,
                 },
               },
             },
@@ -143,8 +155,8 @@ const BATCH_OUTPUT_SCHEMA = {
         },
       },
     },
-    concurrency: { type: 'integer' as const, required: true as const },
-    degraded: { type: 'boolean' as const, required: true as const },
+    concurrency: { type: 'integer' as const },
+    degraded: { type: 'boolean' as const },
     error: {
       type: 'object' as const,
       additionalProperties: true as const,

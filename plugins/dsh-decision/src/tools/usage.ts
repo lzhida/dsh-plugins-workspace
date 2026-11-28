@@ -61,7 +61,7 @@ const USAGE_OUTPUT_SCHEMA = {
   additionalProperties: true as const,
   properties: {
     ok: { type: 'boolean' as const, required: true as const },
-    window: { type: 'string' as const, required: true as const },
+    window: { type: 'string' as const },
     calls: {
       oneOf: [{ type: 'integer' as const }, { type: 'null' as const }] as const,
       description:
@@ -77,7 +77,7 @@ const USAGE_OUTPUT_SCHEMA = {
       oneOf: [{ type: 'number' as const }, { type: 'null' as const }] as const,
       description: '估算成本合计（费率 0 时为 0 且 costEstimated=false）。',
     },
-    costEstimated: { type: 'boolean' as const, required: true as const },
+    costEstimated: { type: 'boolean' as const },
     latencyP50Ms: {
       oneOf: [{ type: 'integer' as const }, { type: 'null' as const }] as const,
     },
@@ -118,7 +118,6 @@ const USAGE_OUTPUT_SCHEMA = {
     budget: {
       type: 'object' as const,
       additionalProperties: false as const,
-      required: true as const,
       properties: {
         enabled: { type: 'boolean' as const, required: true as const },
         hardLimit: { type: 'boolean' as const, required: true as const },
@@ -388,7 +387,8 @@ export function runUsage(
 
   const budget = {
     enabled: config.budgetEnabled,
-    hardLimit: true,
+    // 硬预算在闸门启用时才有约束力（关闭时 quota 不参与拦截）。
+    hardLimit: config.budgetEnabled,
     exceeded,
   };
 

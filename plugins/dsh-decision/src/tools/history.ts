@@ -71,7 +71,6 @@ export const HISTORY_OUTPUT_SCHEMA = {
     ok: { type: 'boolean' as const, required: true as const },
     entries: {
       type: 'array' as const,
-      required: true as const,
       items: {
         type: 'object' as const,
         additionalProperties: false as const,
@@ -107,10 +106,9 @@ export const HISTORY_OUTPUT_SCHEMA = {
     },
     total: {
       type: 'integer' as const,
-      required: true as const,
       description: '过滤后总条数（不受 limit 影响）。',
     },
-    truncated: { type: 'boolean' as const, required: true as const },
+    truncated: { type: 'boolean' as const },
     nextOffset: {
       oneOf: [{ type: 'integer' as const }, { type: 'null' as const }] as const,
       description: '被截断时给出下一页起始偏移；未截断为 null。',

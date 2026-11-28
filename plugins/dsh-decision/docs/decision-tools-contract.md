@@ -1,7 +1,7 @@
 # 决策工具插件行 · 决策工具契约书
 
-> 版本：v1.2.0（10/11 实现口径回写：§3.9 calibrate 与 §3.10 arbiter 的落地口径；承 v1.1.0 的 9/11 实测回写）
-> 日期：2026-11-27（v1.0.0 定稿；v1.1.0 为 9/11 活体 e2e 回写；v1.2.0 为 10/11 calibrate/arbiter 实现口径回写）
+> 版本：v1.3.0（2026-11-28 会话内活体验证回写：§1.1 出参顶层必填面只留 ok；承 v1.2.0 的 10/11 实现口径回写）
+> 日期：2026-11-28（v1.0.0 定稿；v1.1.0 为 9/11 活体 e2e 回写；v1.2.0 为 10/11 calibrate/arbiter 实现口径回写；v1.3.0 为 2026-11-28 会话内活体回写）
 > 适用范围：`plugins/dsh-decision` 组合包内新增的 `decision-tools` 插件行（十工具）
 > 配套文档：[`decision-tools-design.md`](./decision-tools-design.md)（设置页设计稿）
 > 本文件是 **2/11–11/11 卡的唯一契约来源**；下游卡不得自行发明 schema、错误码或字段名。
@@ -35,6 +35,7 @@
 - `error.message` 为可执行的中文短句（含建议动作），长度 ≤ 200 字符。
 - 输出 JSON 顶层 `additionalProperties: true`（与既有 `ask-gate` 一致放宽）。
 - 返回体中**不得出现 `undefined`**，缺省一律用 `null`。
+- **出参 schema 的顶层必填字段只有 `ok`**（2026-11-28 会话内活体验证补正）：成功态字段一律非必填，失败信封 `{ ok:false, error }` 才符合 schema。宿主在工具返回后会按 `output.schema` 校验返回体，若把只在成功路径存在的顶层字段（如 `concurrency`/`degraded`/`verdict`/`sampleSize`/`entries`/`window`/`budget`/`decisionId`）标成 required，错误信封就会缺字段，宿主判 `returned invalid output: missing required property "value.xxx"` 并丢弃结果——等于把 §1.1 规定的错误形态变成不可用。子对象内部的 required 保留（对象存在时其内部字段仍须完整）。回归锚点见 `src/tools/output-schema.test.ts`。
 
 ### 1.2 工具名与冲突检查
 
@@ -425,6 +426,7 @@
 - **失败行原样上报**：失败行保留**原始 text** 与**原始错误码/消息**，不推测、不填默认值、不改写文本；整批不因单行失败而失败（`ok` 仍为 true，行级 `status` 表达成败）。
 - 结果数组与输入**等长且同序**（`index` 与输入下标一一对应）。
 - 每行都是一次独立判定 → **每行都进账本**（§8）。
+- **行级 `answer`/`error` 可空**（`oneOf: [object, null]`，2026-11-28 会话内活体验证补正）：成功行 `answer` 为对象、`error` 为 null；失败行反之。声明成纯 object 会把 null 判成宿主 invalid output（宿主按 schema 校验出参）。回归锚点：`src/tools/batch.test.ts`「出参过宿主 schema 校验」。
 
 ### 3.5 `decision_locate`
 

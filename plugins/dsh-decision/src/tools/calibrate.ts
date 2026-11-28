@@ -83,15 +83,14 @@ export const CALIBRATE_OUTPUT_SCHEMA = {
   additionalProperties: true as const,
   properties: {
     ok: { type: 'boolean' as const, required: true as const },
-    sampleSize: { type: 'number' as const, required: true as const },
-    insufficientSample: { type: 'boolean' as const, required: true as const },
+    sampleSize: { type: 'number' as const },
+    insufficientSample: { type: 'boolean' as const },
     brier: {
       oneOf: [{ type: 'number' as const }, { type: 'null' as const }] as const,
       description: 'Brier 分数；样本不足时为 null（不硬算）。',
     },
     buckets: {
       type: 'array' as const,
-      required: true as const,
       description: '固定 10 桶的命中率；桶内样本不足时 hitRate 为 null。',
       items: {
         type: 'object' as const,
@@ -113,7 +112,6 @@ export const CALIBRATE_OUTPUT_SCHEMA = {
     overconfidence: {
       type: 'object' as const,
       additionalProperties: false as const,
-      required: true as const,
       properties: {
         meanGap: {
           oneOf: [
@@ -135,7 +133,6 @@ export const CALIBRATE_OUTPUT_SCHEMA = {
     excluded: {
       type: 'object' as const,
       additionalProperties: false as const,
-      required: true as const,
       properties: {
         notBackfilled: { type: 'number' as const, required: true as const },
         nonBinary: { type: 'number' as const, required: true as const },

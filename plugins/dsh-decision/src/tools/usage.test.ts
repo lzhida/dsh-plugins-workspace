@@ -196,6 +196,22 @@ describe('dsh-decision usage 工具', () => {
     });
   });
 
+  it('预算关闭时 budget.enabled=false 且 hardLimit=false', () => {
+    const ledger = createMemoryLedger(10);
+    ledger.append(mkEntry({ ts: '2026-03-15T09:00:00.000Z' }));
+    const result = runUsage(
+      { window: '24h' },
+      { readConfig: () => baseConfig({ budgetEnabled: false }), ledger },
+      now,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.budget).toEqual({
+      enabled: false,
+      hardLimit: false,
+      exceeded: false,
+    });
+  });
+
   it('runUsage 按工具过滤并排除窗口外条目', () => {
     const ledger = createMemoryLedger(10);
     ledger.append(

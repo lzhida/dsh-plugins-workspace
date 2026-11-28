@@ -70,12 +70,10 @@ export const RECHECK_OUTPUT_SCHEMA = {
     ok: { type: 'boolean' as const, required: true as const },
     decisionId: {
       type: 'string' as const,
-      required: true as const,
       description: '本次复检产生的新条目 id（账本中 recheckOf 指向原条目）。',
     },
     old: {
       type: 'object' as const,
-      required: true as const,
       additionalProperties: false as const,
       properties: {
         value: { type: 'json' as const },
@@ -102,7 +100,6 @@ export const RECHECK_OUTPUT_SCHEMA = {
     },
     new: {
       type: 'object' as const,
-      required: true as const,
       additionalProperties: false as const,
       properties: {
         value: { type: 'json' as const },
@@ -117,7 +114,6 @@ export const RECHECK_OUTPUT_SCHEMA = {
     },
     drift: {
       type: 'object' as const,
-      required: true as const,
       additionalProperties: false as const,
       properties: {
         changed: { type: 'boolean' as const, required: true as const },
