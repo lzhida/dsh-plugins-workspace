@@ -166,15 +166,15 @@
 
 ### A 区 · 模型连接（systemone 决策接口）
 
-| #   | 组件     | 类型                      | 说明                                                                                                |
-| --- | -------- | ------------------------- | --------------------------------------------------------------------------------------------------- |
-| A1  | Base URL | Input                     | 占位 `http://127.0.0.1:3425`，下方只读展示最终端点 `POST {baseUrl}/v1/systemone`（避免用户猜路径）  |
-| A2  | API Key  | Input(type=password)      | 密码字段，附「显示/隐藏」图标按钮（必须有可访问名）。不回显、不入日志、不入账本                     |
-| A3  | 模型 ID  | Input                     | 例 `ollama-r5/kev-4b`；附说明「决策模型名，非宿主会话模型」                                         |
-| A4  | 超时     | NumberInput               | 毫秒，1000–300000，步进 1000                                                                        |
-| A5  | 验证连接 | Button(info) + 状态 Badge | 触发一次最小决策探测（1 条 noul 题）；状态机见 §6.1                                                 |
-| A6  | 端点说明 | 静态文本                  | 说明本接口是**专用决策端点**，不是 chat completions；载荷 `{model,state,questions}`，响应 `answers` |
-| A7  | 错误摘要 | `role="alert"` 容器       | 验证失败时置顶展示，含可操作建议（检查 key / 检查模型名 / 检查服务存活）                            |
+| #   | 组件     | 类型                      | 说明                                                                                                           |
+| --- | -------- | ------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| A1  | Base URL | Input                     | 占位 `https://decision.example.internal`，下方只读展示最终端点 `POST {baseUrl}/v1/systemone`（避免用户猜路径） |
+| A2  | API Key  | Input(type=password)      | 密码字段，附「显示/隐藏」图标按钮（必须有可访问名）。不回显、不入日志、不入账本                                |
+| A3  | 模型 ID  | Input                     | 例 `local-decision-model`；附说明「决策模型名，非宿主会话模型」                                                |
+| A4  | 超时     | NumberInput               | 毫秒，1000–300000，步进 1000                                                                                   |
+| A5  | 验证连接 | Button(info) + 状态 Badge | 触发一次最小决策探测（1 条 noul 题）；状态机见 §6.1                                                            |
+| A6  | 端点说明 | 静态文本                  | 说明本接口是**专用决策端点**，不是 chat completions；载荷 `{model,state,questions}`，响应 `answers`            |
+| A7  | 错误摘要 | `role="alert"` 容器       | 验证失败时置顶展示，含可操作建议（检查 key / 检查模型名 / 检查服务存活）                                       |
 
 ### B 区 · 工具开关（十个）
 
@@ -242,7 +242,7 @@
 
 - **on blur** 校验（不只在提交时校验）。
 - 每个输入有**可见 label**（label 在上），并带 `accessibilityLabel`；**禁止 placeholder-only**。
-- 错误信息具体可操作（例如「Base URL 不能为空，填 `http://127.0.0.1:3425` 这类地址」），不只标红。
+- 错误信息具体可操作（例如「Base URL 不能为空，填 `https://decision.example.internal` 这类地址」），不只标红。
 - 校验失败时错误摘要置顶（`role="alert"`, `tabindex="-1"`），焦点移到摘要标题，每条摘要链到对应字段；inline 错误同时保留。
 
 ### 6.4 无障碍清单（design_review + design_search 命中项）

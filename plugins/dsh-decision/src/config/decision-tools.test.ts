@@ -191,8 +191,8 @@ describe('dsh-decision 配置面', () => {
 
   describe('baseUrl 归一', () => {
     it('去尾斜杠；非 http(s) 视为未配置', () => {
-      expect(normalizeBaseUrl('http://127.0.0.1:3425/')).toBe(
-        'http://127.0.0.1:3425',
+      expect(normalizeBaseUrl('https://decision.example.internal/')).toBe(
+        'https://decision.example.internal',
       );
       expect(normalizeBaseUrl('  https://dec.example.com//  ')).toBe(
         'https://dec.example.com',
@@ -313,15 +313,17 @@ describe('dsh-decision 配置面', () => {
 
     it('resolveToolsConfig 接受 volatile 引用形态的配置', () => {
       const resolved = resolveToolsConfig({
-        systemoneBaseUrl: wrap('http://127.0.0.1:3425/'),
+        systemoneBaseUrl: wrap('https://decision.example.internal/'),
         systemoneApiKey: wrap('secret-key'),
-        systemoneModel: wrap('ollama-r5/kev-4b'),
+        systemoneModel: wrap('local-decision-model'),
         toolsDecideEnabled: wrap(true),
         systemoneTimeoutMs: wrap(45_000),
       });
-      expect(resolved.systemoneBaseUrl).toBe('http://127.0.0.1:3425');
+      expect(resolved.systemoneBaseUrl).toBe(
+        'https://decision.example.internal',
+      );
       expect(resolved.systemoneApiKey).toBe('secret-key');
-      expect(resolved.systemoneModel).toBe('ollama-r5/kev-4b');
+      expect(resolved.systemoneModel).toBe('local-decision-model');
       expect(resolved.toolsDecideEnabled).toBe(true);
       expect(resolved.systemoneTimeoutMs).toBe(45_000);
     });

@@ -25,7 +25,7 @@ import {
 } from './settings.ts';
 
 const BASE: Settings = {
-  systemoneBaseUrl: 'http://127.0.0.1:3425',
+  systemoneBaseUrl: 'https://decision.example.internal',
   systemoneApiKey: 'key-test',
   systemoneModel: 'model-test',
   systemoneTimeoutMs: 30_000,

@@ -216,7 +216,7 @@ function DecisionCardPage(props: DecisionCardProps): React.ReactElement {
         label={t('field.baseUrl')}
         hint={t('field.baseUrl.hint')}
         value={view.systemoneBaseUrl}
-        placeholder="http://127.0.0.1:3425"
+        placeholder="https://decision.example.internal"
         disabled={readonly || busy}
         onChange={(value) => update('systemoneBaseUrl', value)}
       />
@@ -234,7 +234,7 @@ function DecisionCardPage(props: DecisionCardProps): React.ReactElement {
         label={t('field.model')}
         hint={t('field.model.hint')}
         value={view.systemoneModel}
-        placeholder="ollama-r5/kev-4b"
+        placeholder="local-decision-model"
         disabled={readonly || busy}
         onChange={(value) => update('systemoneModel', value)}
       />

@@ -220,7 +220,7 @@ function mapHttpStatus(
   if (status === 400) {
     // 400 可能是「模型不支持 box/图像能力」——按契约 §2.6 区分。
     const lower = bodyText.toLowerCase();
-    // 上游题型枚举拒绝实测（卡 9/11，kev-4b）：
+    // 上游题型枚举拒绝实测（卡 9/11，local-decision-model）：
     //   questions.target: "type" must be one of: choice, score, noul
     // 这类是「该模型不支持所请求题型」的能力缺失，不是载荷形状写错。
     const typeEnumRejected =
@@ -295,7 +295,7 @@ function optionalProbabilityMap(
 
 /**
  * 档位序列归一：上游可能给「有序数组」也可能给「档位索引 → 值」的对象映射。
- * 实测（卡 9/11，ollama-r5/kev-4b）：score 题的 legend 与 probabilities 都返回
+ * 实测（卡 9/11，local-decision-model）：score 题的 legend 与 probabilities 都返回
  * 对象映射（{"0":"negligible",...} / {"0":0.357,...}），而数组形状也合法。
  * 插件内部统一归一为数组：对象按数值键升序排列，非数值键保持出现顺序。
  */

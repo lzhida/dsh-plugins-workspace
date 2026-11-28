@@ -44,7 +44,7 @@ function makeScope(overrides?: {
     status: 'served' as const,
     value: {
       ...DEFAULT_SETTINGS,
-      systemoneBaseUrl: 'http://127.0.0.1:3425',
+      systemoneBaseUrl: 'https://decision.example.internal',
       systemoneApiKey: 'key-test',
       systemoneModel: 'model-test',
       budgetEnabled: true,
@@ -243,7 +243,7 @@ describe('DecisionCard page view', () => {
         status: 'served',
         value: {
           ...DEFAULT_SETTINGS,
-          systemoneBaseUrl: 'http://127.0.0.1:3425',
+          systemoneBaseUrl: 'https://decision.example.internal',
           systemoneModel: 'model-test',
           budgetEnabled: true,
         },

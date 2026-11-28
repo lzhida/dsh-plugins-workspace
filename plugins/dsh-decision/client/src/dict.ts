@@ -52,8 +52,8 @@ define('section.ledger', 'Ledger & gate', '账本与闸门');
 define('field.baseUrl', 'Base URL', '接口地址');
 define(
   'field.baseUrl.hint',
-  'e.g. http://127.0.0.1:3425',
-  '例如 http://127.0.0.1:3425',
+  'e.g. https://decision.example.internal',
+  '例如 https://decision.example.internal',
 );
 define('field.apiKey', 'API key', 'API key');
 define(
@@ -62,7 +62,11 @@ define(
   '存放于宿主 profile 配置；绝不写入日志。',
 );
 define('field.model', 'Model', '模型');
-define('field.model.hint', 'e.g. ollama-r5/kev-4b', '例如 ollama-r5/kev-4b');
+define(
+  'field.model.hint',
+  'e.g. local-decision-model',
+  '例如 local-decision-model',
+);
 define('field.timeoutMs', 'Timeout (ms)', '超时（毫秒）');
 define('field.timeoutMs.hint', '1000 – 300000', '1000 – 300000');
 

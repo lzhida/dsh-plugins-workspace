@@ -77,7 +77,7 @@ function createRequest(
 
 function savedConfig(overrides: Record<string, unknown> = {}) {
   return resolveToolsConfig({
-    systemoneBaseUrl: 'http://127.0.0.1:3425',
+    systemoneBaseUrl: 'https://decision.example.internal',
     systemoneApiKey: 'key-test',
     systemoneModel: 'model-test',
     ...overrides,
@@ -254,7 +254,7 @@ describe('decision-tools verify route', () => {
     const result = await call(
       state,
       createRequest({
-        body: JSON.stringify({ baseUrl: 'http://127.0.0.1:3425/' }),
+        body: JSON.stringify({ baseUrl: 'https://decision.example.internal/' }),
       }),
     );
     expect(result.status).toBe(200);
@@ -299,12 +299,14 @@ describe('decision-tools verify route', () => {
   it('mergeDraftConfig 归一尾斜杠与空白，超时越界回落保存值', () => {
     const saved = savedConfig({ systemoneTimeoutMs: 30_000 });
     const merged = mergeDraftConfig(saved, {
-      baseUrl: '  http://127.0.0.1:3425/  ',
+      baseUrl: '  https://decision.example.internal/  ',
       model: '  model-x  ',
       timeoutMs: 99_999_999,
     });
     expect(merged.invalidBaseUrl).toBe(false);
-    expect(merged.config.systemoneBaseUrl).toBe('http://127.0.0.1:3425');
+    expect(merged.config.systemoneBaseUrl).toBe(
+      'https://decision.example.internal',
+    );
     expect(merged.config.systemoneModel).toBe('model-x');
     expect(merged.config.systemoneTimeoutMs).toBe(30_000);
   });

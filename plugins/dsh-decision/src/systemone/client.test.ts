@@ -23,9 +23,9 @@ import {
 const API_KEY = 'key-test';
 
 const http = {
-  baseUrl: 'http://127.0.0.1:3425',
+  baseUrl: 'https://decision.example.internal',
   apiKey: API_KEY,
-  model: 'ollama-r5/kev-4b',
+  model: 'local-decision-model',
   timeoutMs: 30_000,
 };
 
@@ -68,12 +68,12 @@ const noulQuestion = { type: 'noul' as const, instructions: 'Is it ready?' };
 describe('dsh-decision systemone client', () => {
   describe('端点与请求头', () => {
     it('baseUrl 归一后拼出 {baseUrl}/v1/systemone（尾斜杠不重复）', () => {
-      expect(buildSystemOneEndpoint('http://127.0.0.1:3425')).toBe(
-        'http://127.0.0.1:3425/v1/systemone',
+      expect(buildSystemOneEndpoint('https://decision.example.internal')).toBe(
+        'https://decision.example.internal/v1/systemone',
       );
-      expect(buildSystemOneEndpoint('http://127.0.0.1:3425///')).toBe(
-        'http://127.0.0.1:3425/v1/systemone',
-      );
+      expect(
+        buildSystemOneEndpoint('https://decision.example.internal///'),
+      ).toBe('https://decision.example.internal/v1/systemone');
       expect(buildSystemOneEndpoint('  https://dec.example.com  ')).toBe(
         'https://dec.example.com/v1/systemone',
       );
@@ -106,7 +106,7 @@ describe('dsh-decision systemone client', () => {
       const { fetchImpl } = stubFetch(
         200,
         JSON.stringify({
-          model: 'ollama-r5/kev-4b',
+          model: 'local-decision-model',
           answers: {
             q1: { type: 'noul', noul: 0.82, confidence: 0.9 },
             q2: { type: 'choice', choice: '方案B', confidence: 0.7 },
@@ -167,11 +167,11 @@ describe('dsh-decision systemone client', () => {
     });
 
     it('score 题的 legend/probabilities 为档位索引对象映射时归一为数组（卡 9/11 实测形状）', async () => {
-      // 真实服务 ollama-r5/kev-4b 返回：legend={"0":"negligible",...}、probabilities={"0":0.35,...}
+      // 真实服务 local-decision-model 返回：legend={"0":"negligible",...}、probabilities={"0":0.35,...}
       const { fetchImpl } = stubFetch(
         200,
         JSON.stringify({
-          model: 'kev-4b',
+          model: 'local-decision-model',
           answers: {
             q3: {
               type: 'score',
@@ -509,14 +509,14 @@ describe('dsh-decision systemone client', () => {
       const { fetchImpl, calls } = stubFetch(
         200,
         JSON.stringify({
-          model: 'ollama-r5/kev-4b',
+          model: 'local-decision-model',
           answers: { probe: { type: 'noul', noul: 1 } },
         }),
       );
       const result = await verifySystemOne({ http, fetchImpl });
       expect(result.ok).toBe(true);
       if (!result.ok) return;
-      expect(result.model).toBe('ollama-r5/kev-4b');
+      expect(result.model).toBe('local-decision-model');
       expect(result.latencyMs).toBeGreaterThanOrEqual(0);
       // 探测只发一题 noul
       expect(calls).toHaveLength(1);
@@ -553,7 +553,7 @@ describe('dsh-decision systemone client', () => {
     it('探测题被上游丢弃 → model-verify-failed（空壳不算验证通过）', async () => {
       const { fetchImpl } = stubFetch(
         200,
-        JSON.stringify({ model: 'ollama-r5/kev-4b', answers: {} }),
+        JSON.stringify({ model: 'local-decision-model', answers: {} }),
       );
       const result = await verifySystemOne({ http, fetchImpl });
       expect(result.ok).toBe(false);

@@ -50,9 +50,9 @@ function configOf(
   overrides: Record<string, unknown> = {},
 ): ResolvedToolsConfig {
   return resolveToolsConfig({
-    systemoneBaseUrl: 'http://127.0.0.1:3425',
+    systemoneBaseUrl: 'https://decision.example.internal',
     systemoneApiKey: 'sk-test',
-    systemoneModel: 'ollama-r5/kev-4b',
+    systemoneModel: 'local-decision-model',
     toolsDecideEnabled: true,
     toolsGateEnabled: true,
     ...overrides,
@@ -69,7 +69,7 @@ function stubFetch(body: unknown, status = 200): FetchLike {
 
 function okAnswerBody(): unknown {
   return {
-    model: 'ollama-r5/kev-4b',
+    model: 'local-decision-model',
     answers: { q1: { type: 'noul', noul: 0.82, confidence: 0.9 } },
     usage: { input_tokens: 100, output_tokens: 20 },
   };

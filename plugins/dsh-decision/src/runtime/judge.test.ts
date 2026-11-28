@@ -31,7 +31,7 @@ function baseConfig(
   overrides: Record<string, unknown> = {},
 ): ResolvedToolsConfig {
   return resolveToolsConfig({
-    systemoneBaseUrl: 'http://127.0.0.1:3425',
+    systemoneBaseUrl: 'https://decision.example.internal',
     systemoneApiKey: 'key-test',
     systemoneModel: 'model-test',
     toolsDecideEnabled: true,

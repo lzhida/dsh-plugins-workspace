@@ -31,12 +31,12 @@ describe('verify state machine', () => {
   it('ok 响应进入 ok 态并携带 model 与 latency', () => {
     const status = applyVerifyResponse({
       ok: true,
-      model: 'ollama-r5/kev-4b',
+      model: 'local-decision-model',
       latencyMs: 412,
     });
     expect(status).toEqual({
       phase: 'ok',
-      model: 'ollama-r5/kev-4b',
+      model: 'local-decision-model',
       latencyMs: 412,
     });
   });
@@ -98,7 +98,7 @@ describe('requestVerify', () => {
       ).toBe('application/json');
       expect(init?.body).toBe(
         JSON.stringify({
-          baseUrl: 'http://127.0.0.1:3425',
+          baseUrl: 'https://decision.example.internal',
           apiKey: 'key-test',
           model: 'm',
           timeoutMs: 30_000,
@@ -112,7 +112,7 @@ describe('requestVerify', () => {
     });
     vi.stubGlobal('fetch', fetchMock);
     const response = await requestVerify('/dsh-decision/verify', {
-      baseUrl: 'http://127.0.0.1:3425',
+      baseUrl: 'https://decision.example.internal',
       apiKey: 'key-test',
       model: 'm',
       timeoutMs: 30_000,

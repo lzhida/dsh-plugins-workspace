@@ -75,12 +75,12 @@
 
 ### 2.1 端点与鉴权
 
-| 项         | 值                                                                                                   |
-| ---------- | ---------------------------------------------------------------------------------------------------- |
-| 方法与路径 | `POST {baseUrl}/v1/systemone`                                                                        |
-| 鉴权头     | `Authorization: Bearer {apiKey}`                                                                     |
-| 内容类型   | `application/json`                                                                                   |
-| 本地实测   | `http://127.0.0.1:3425/v1/systemone`，model `ollama-r5/kev-4b`（用户 2026-11-27 提供的 Python 示例） |
+| 项                             | 值                                                                                                                                                               |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 方法与路径                     | `POST {baseUrl}/v1/systemone`                                                                                                                                    |
+| 鉴权头                         | `Authorization: Bearer {apiKey}`                                                                                                                                 |
+| 内容类型                       | `application/json`                                                                                                                                               |
+| 本地实测（端点与模型名已脱敏） | `https://decision.example.internal/v1/systemone`，model `local-decision-model`（形状依据 2026-11-27 提供的 Python 示例与 9/11 活体实测；具体地址与模型名不入库） |
 
 **这是专用决策端点，不是 chat completions。** 不得按 OpenAI 聊天补全惯例拼装请求。
 
@@ -88,7 +88,7 @@
 
 ```jsonc
 {
-  "model": "ollama-r5/kev-4b",
+  "model": "local-decision-model",
   "state": { "message": "…" },          // string | object | 多模态对象数组
   "questions": {
     "<qid>": {
@@ -121,7 +121,7 @@
 - `choice` 响应**至少**含 `choice`；`probabilities` 为选项名 → 概率的 map。
 - 上游多返回的字段一律忽略（不外泄散文）。
 
-**9/11 实测补充（真实决策服务 kev-4b 经 magpie 网关）**：
+**9/11 实测补充（真实决策服务，经本地网关接入；服务地址与模型名已脱敏）**：
 
 - `score` 的 `legend` / `probabilities` **可能不是数组，而是「档位索引 → 值」的对象映射**（实测 `"legend": {"0":"negligible","1":"minor","2":"major","3":"critical"}`、`"probabilities": {"0":0.3577,…}`）。插件内部**统一归一为数组**：对象映射按**数值键升序**重排（非数值键保序），数组原样保留；对 `status='ok'` 的 score 答案，`legend` 恒为 `string[]`、`distribution` 恒为 `number[]`（全样本缺 probabilities 时 `distribution=null`，见 §3.1；丢题时两字段为 `null`）。
 - `noul` 实测**不带** `confidence` 与 `probabilities` → 工具层 `confidence = null`（已验证：真实调用返回 `confidence: null` 而非臆造值）。
@@ -174,7 +174,7 @@
 `questions.target: "type" must be one of: choice, score, noul`。
 插件把「报文含 `must be one of` 且含 choice/score/noul 之一」也判定为**能力缺失** → `model-unsupported-capability`（`details.upstream` 附截断到 160 字的报文，便于定位；不含任何凭据）。
 其余 400（载荷形状真错，如 criteria 写错）仍是 `model-invalid-response`。
-实测结论：当前可用的决策模型 **kev-4b 不支持 box 题型** → `decision_locate` 在该模型上恒返回 `model-unsupported-capability`（这是上游能力缺失，不是插件缺陷；换支持 box 的模型即可用）。
+实测结论：当前可用的决策模型 **local-decision-model 不支持 box 题型** → `decision_locate` 在该模型上恒返回 `model-unsupported-capability`（这是上游能力缺失，不是插件缺陷；换支持 box 的模型即可用）。
 
 ### 2.7 外部事实来源与版本
 
@@ -193,7 +193,7 @@
 ### 2.8 待探测项（由 9/11 真实活体 e2e 核验）
 
 1. 本地服务对 `noul` / `score` 题的实际响应形状（示例只覆盖了 `choice`）。—— **9/11 实测完成**：`noul` 只给 `noul`（无 `confidence`/`probabilities`）；`score` 的 `legend`/`probabilities` 为**档位索引对象映射**（见 §2.3 实测补充，插件已归一为数组）。
-2. 本地服务对 `box` 题型与图像输入的支持度，以及是否需要 `TypeSafe-Danger-Zone-Images` 头。—— **9/11 实测完成**：实测模型（`ollama-r5/kev-4b`）**不支持 box 题型**，HTTP 400 `must be one of: choice, score, noul` → `model-unsupported-capability`（见 §2.6 实测补充）。
+2. 本地服务对 `box` 题型与图像输入的支持度，以及是否需要 `TypeSafe-Danger-Zone-Images` 头。—— **9/11 实测完成**：实测模型（`local-decision-model`）**不支持 box 题型**，HTTP 400 `must be one of: choice, score, noul` → `model-unsupported-capability`（见 §2.6 实测补充）。
 3. 本地服务 `usage` 字段是否返回 `input_tokens` / `output_tokens`。—— **9/11 实测完成**：返回（实测 `input_tokens:37, output_tokens:0`）。
 4. 本地服务是否返回 `probabilities` / `confidence`（各实现口径不一）。—— **9/11 实测完成**：`choice` 返回两者（`confidence` 与众数概率口径不同，原样透传）；`noul` 不返回；`score` 返回 `confidence: 0`（实测恒 0）。
 5. 本地服务对单题上限、并发上限的表现。—— **9/11 实测**：单请求 ≤16 题按契约执行（客户端前置校验，超出即 `invalid-arguments` 不出网）；并发未做上游压测，保持客户端契约约束。
@@ -1053,13 +1053,13 @@ declare function judgeOnce(req: JudgeRequest): Promise<JudgeResult>;
 
 ## 12. 已知边界与待办
 
-| #   | 事项                                                                          | 状态                                                                                                                                               |
-| --- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| B1  | noul / score / box 在**本地服务**上的真实响应形状                             | **9/11 实测完成**：noul 无 confidence/probabilities；score 的 legend/probabilities 为档位索引对象映射（插件已归一为数组）；box 不被模型支持        |
-| B2  | 本地服务是否支持 box 与图像、是否需 `TypeSafe-Danger-Zone-Images` 头          | **9/11 实测完成**：kev-4b 拒绝 box 题型（HTTP 400 `must be one of: choice, score, noul`）→ `model-unsupported-capability`；换支持 box 的模型即可用 |
-| B3  | choice / score 题**不参与**校准                                               | 定稿（§9），outcome 回填通道不支持多值真值                                                                                                         |
-| B4  | 设置页**不提供** outcome 人工标注 UI                                          | 定稿（§7.2），用户标注通道预留                                                                                                                     |
-| B5  | 账本滚动淘汰会使旧 `decisionId` 失效                                          | 已知限制，README 与 UI 需说明                                                                                                                      |
-| B6  | 成本数字是**估算**，非账单                                                    | 已知限制，费率默认 0                                                                                                                               |
-| B7  | `systemone` 决策调用**不走**宿主 `dsh-llm-fallback` waterfall、不进会话上下文 | 沿用 ask-gate 的已知限制，本行同样适用                                                                                                             |
-| B8  | 本行与 `ask-gate` 判定方向相反（fail-closed vs fail-open）                    | 定稿（§0），实现时禁止复用 core 降级逻辑                                                                                                           |
+| #   | 事项                                                                          | 状态                                                                                                                                                             |
+| --- | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| B1  | noul / score / box 在**本地服务**上的真实响应形状                             | **9/11 实测完成**：noul 无 confidence/probabilities；score 的 legend/probabilities 为档位索引对象映射（插件已归一为数组）；box 不被模型支持                      |
+| B2  | 本地服务是否支持 box 与图像、是否需 `TypeSafe-Danger-Zone-Images` 头          | **9/11 实测完成**：local-decision-model 拒绝 box 题型（HTTP 400 `must be one of: choice, score, noul`）→ `model-unsupported-capability`；换支持 box 的模型即可用 |
+| B3  | choice / score 题**不参与**校准                                               | 定稿（§9），outcome 回填通道不支持多值真值                                                                                                                       |
+| B4  | 设置页**不提供** outcome 人工标注 UI                                          | 定稿（§7.2），用户标注通道预留                                                                                                                                   |
+| B5  | 账本滚动淘汰会使旧 `decisionId` 失效                                          | 已知限制，README 与 UI 需说明                                                                                                                                    |
+| B6  | 成本数字是**估算**，非账单                                                    | 已知限制，费率默认 0                                                                                                                                             |
+| B7  | `systemone` 决策调用**不走**宿主 `dsh-llm-fallback` waterfall、不进会话上下文 | 沿用 ask-gate 的已知限制，本行同样适用                                                                                                                           |
+| B8  | 本行与 `ask-gate` 判定方向相反（fail-closed vs fail-open）                    | 定稿（§0），实现时禁止复用 core 降级逻辑                                                                                                                         |

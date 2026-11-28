@@ -35,7 +35,7 @@ function baseConfig(
   overrides: Record<string, unknown> = {},
 ): ResolvedToolsConfig {
   return resolveToolsConfig({
-    systemoneBaseUrl: 'http://127.0.0.1:3425',
+    systemoneBaseUrl: 'https://decision.example.internal',
     systemoneApiKey: 'key-test',
     systemoneModel: 'model-test',
     toolsDecideEnabled: true,
@@ -822,7 +822,7 @@ describe('决策工具 decide 全链路（经统一调用层）', () => {
   });
 
   it('卡 9/11 实测形状：score 的 legend/probabilities 为档位索引对象映射、noul 无 confidence', async () => {
-    // 真实决策服务（kev-4b）返回的形状：
+    // 真实决策服务（local-decision-model）返回的形状：
     //   noul   → { type:'noul', noul:0.5559 }（无 confidence、无 probabilities）
     //   score  → { type:'score', score:1.1092,
     //               legend:{"0":"negligible",...},
