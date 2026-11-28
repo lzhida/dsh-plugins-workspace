@@ -16,6 +16,12 @@ declare module '@deepseek-ai/cordis' {
   interface Context {
     /** 宿主提问服务；未注入时 ask-gate 无法接管提问。 */
     userQuestions?: UserQuestionsLike;
+    /**
+     * 动态注入依赖就绪的子 fiber（宿主运行时由 cordis 提供；依赖服务
+     * 缺失时子 fiber 保持 PENDING、回调不执行）。6/11 起用于把
+     * `webServer` 上的同源验证路由挂进插件生命周期。
+     */
+    inject(deps: readonly string[], callback: (ctx: Context) => void): unknown;
   }
 }
 

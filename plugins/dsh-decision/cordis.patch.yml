@@ -31,6 +31,10 @@
 - insert:
     - id: ask-gate
       name: './src/entries/ask-gate.ts'
+    # 决策工具行（决策工具系列 2/11）：行骨架 + systemone client +
+    # 统一调用层；决策工具本体由后续系列卡按 decision_ 前缀注册。
+    - id: decision-tools
+      name: './src/entries/decision-tools.ts'
 
 # 让位：出厂提问工具行停用，由 ask-gate 行接管同名工具面。
 - id: tool-ask-user

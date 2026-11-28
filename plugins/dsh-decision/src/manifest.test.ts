@@ -9,11 +9,13 @@
  * 本测试把三处互锚：改包结构却没改 patch（或反之）时在此变红。
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 import { name as askGateName } from './entries/ask-gate.ts';
+import { name as decisionToolsName } from './entries/decision-tools.ts';
+import { DECISION_TOOL_NAMES, TOOL_SWITCH_KEYS } from './config/index.ts';
 
 /** npm 发布元数据里与本包相关的字段形状（只声明测试关心的部分）。 */
 interface PackageManifest {
@@ -66,6 +68,39 @@ function parseInsertedRows(text: string): { id: string; name: string }[] {
   return rows;
 }
 
+/**
+ * 扫描 monorepo 内其他插件源码里 defineTool 注册的工具名。
+ *
+ * 契约 §1.2 的「零冲突」结论就是基于全仓扫描得出的——把它变成常驻断言，
+ * 别的插件新增同名工具时这里立刻变红。非 monorepo 布局（单包安装）时
+ * 扫描不到文件，返回空数组，断言自动跳过。
+ */
+function collectRepoToolNames(): string[] {
+  const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url));
+  const pluginsDir = `${repoRoot}plugins`;
+  if (!existsSync(pluginsDir)) return [];
+  const pattern = /defineTool\(\s*\{[^}]{0,400}?name:\s*'([a-z][a-z0-9_]*)'/g;
+  const names: string[] = [];
+  for (const plugin of readdirSync(pluginsDir, { withFileTypes: true })) {
+    if (!plugin.isDirectory()) continue;
+    const srcDir = `${pluginsDir}/${plugin.name}/src`;
+    if (!existsSync(srcDir)) continue;
+    for (const file of readdirSync(srcDir, {
+      recursive: true,
+      withFileTypes: true,
+    })) {
+      if (!file.isFile() || !file.name.endsWith('.ts')) continue;
+      const full = `${file.parentPath}/${file.name}`;
+      const text = readFileSync(full, 'utf8');
+      for (const match of text.matchAll(pattern)) {
+        const found = match[1];
+        if (found) names.push(found);
+      }
+    }
+  }
+  return names;
+}
+
 describe('dsh-decision manifest', () => {
   it('包名符合 @zhidal/ scope 约定', () => {
     expect(pkg.name).toBe('@zhidal/dsh-decision');
@@ -86,7 +121,10 @@ describe('dsh-decision manifest', () => {
     expect(
       existsSync(fileURLToPath(new URL('../src/cordis.d.ts', import.meta.url))),
     ).toBe(true);
-    for (const target of Object.values(pkg.exports ?? {})) {
+    for (const [key, target] of Object.entries(pkg.exports ?? {})) {
+      // './client' 指向构建产物（client/dist/index.js）——构建结果不入库
+      // （根 .gitignore 的 dist/ 通配），故不参与「文件存在」断言。
+      if (key === './client') continue;
       expect(existsSync(`${packageRoot}${target}`)).toBe(true);
     }
   });
@@ -104,14 +142,72 @@ describe('dsh-decision manifest', () => {
 
   it('patch 的插件行 id 与入口导出的 name 一致（loader 以 id 定位行）', () => {
     const rows = parseInsertedRows(patch);
-    expect(rows).toHaveLength(1);
+    expect(rows).toHaveLength(2);
     expect(rows[0].id).toBe(askGateName);
+    expect(rows[1].id).toBe(decisionToolsName);
   });
 
   it('patch 的插件行 name 指向真实入口文件', () => {
     const rows = parseInsertedRows(patch);
-    const relative = rows[0].name.replace(/^\.\//, '');
-    expect(existsSync(`${packageRoot}${relative}`)).toBe(true);
+    for (const row of rows) {
+      const relative = row.name.replace(/^\.\//, '');
+      expect(existsSync(`${packageRoot}${relative}`)).toBe(true);
+    }
+  });
+
+  it('同名冲突守卫：decision_ 工具名唯一且不与既有工具名撞名', () => {
+    // 契约 §1.2：十工具名闭集；前缀 decision_ 与宿主/本仓既有工具零冲突。
+    expect(new Set(DECISION_TOOL_NAMES).size).toBe(DECISION_TOOL_NAMES.length);
+    for (const toolName of DECISION_TOOL_NAMES) {
+      expect(toolName.startsWith('decision_')).toBe(true);
+      // 与宿主既有工具名不撞名（ask_user_question 由 ask-gate 行注册）。
+      expect(toolName).not.toBe('ask_user_question');
+    }
+    // 两行插件名互不相同（同名会让 loader 定位到错误的行）。
+    expect(decisionToolsName).not.toBe(askGateName);
+    // 工具名不得与任何插件行 id 撞名（行 id 会出现在工具注册面上）。
+    for (const row of parseInsertedRows(patch)) {
+      expect(DECISION_TOOL_NAMES).not.toContain(row.id);
+    }
+    // 与 monorepo 内其他插件已注册的 defineTool 工具名零冲突。
+    const repoToolNames = collectRepoToolNames();
+    if (repoToolNames.length > 0) {
+      for (const toolName of DECISION_TOOL_NAMES) {
+        expect(
+          repoToolNames,
+          `工具名 ${toolName} 与仓库内既有工具名冲突`,
+        ).not.toContain(toolName);
+      }
+    }
+  });
+
+  it('工具数与开关数四口径一致（实现闭集 / README / 契约书 / 开关映射）', () => {
+    // 口径一：实现侧闭集恒为十工具 + 十开关。
+    expect(DECISION_TOOL_NAMES).toHaveLength(10);
+    expect(Object.keys(TOOL_SWITCH_KEYS)).toHaveLength(10);
+    // 每个工具恰有一个开关字段，且开关字段互不重复。
+    const switchFields = Object.values(TOOL_SWITCH_KEYS);
+    expect(new Set(switchFields).size).toBe(switchFields.length);
+    for (const toolName of DECISION_TOOL_NAMES) {
+      expect(TOOL_SWITCH_KEYS[toolName]).toBeTruthy();
+    }
+
+    // 口径二/三：README 与契约书都逐个列出十个工具名。
+    const readme = readPackageFile('../README.md');
+    const contract = readPackageFile('../docs/decision-tools-contract.md');
+    for (const toolName of DECISION_TOOL_NAMES) {
+      expect(readme, `README 工具清单缺 ${toolName}`).toContain(toolName);
+      expect(contract, `契约书工具表缺 ${toolName}`).toContain(toolName);
+    }
+
+    // 口径四：README 的「共 N 个」计数与开关数量与实现一致。
+    expect(readme).toContain('共 10 个');
+    expect(readme).toContain('tools*Enabled`（10 个）');
+    // 口径五：README 工具表行数恰好为十行（防「多写一个工具名但计数没改」漂移）。
+    const tableRows = readme
+      .split('\n')
+      .filter((line) => /^\| `decision_[a-z_]+`/.test(line));
+    expect(tableRows).toHaveLength(DECISION_TOOL_NAMES.length);
   });
 
   it('patch 含让位行：出厂 tool-ask-user 停用，避免同名工具重复注册', () => {

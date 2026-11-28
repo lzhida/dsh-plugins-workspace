@@ -1,0 +1,52 @@
+/* decision-tools 客户端主题（决策工具系列 6/11）。
+ *
+ * 唯一视觉口径 = 1/11 设计稿 §3.1 的「语义角色映射表」（25 行），
+ * 逐行内联映射到宿主 --dsw-alias-* token：
+ * - 禁 preflight（宿主 DOM 不能被全局 reset）；
+ * - source(none) 关闭自动内容探测，@source 锁定本目录；
+ * - @theme inline 把 shadcn 语义 token 内联映射到宿主 --dsw-alias-*；
+ * - 不引入 .dark 类：深浅两态由宿主 data-ds-dark-theme 属性驱动，零延迟；
+ * - 纪律：禁止新增 .dark 类、禁止硬编码色值，新增语义角色必须先在设计稿
+ *   §3.1 登记再落到这里（一对一，不合并、不臆造）。
+ */
+
+@layer theme, base, components, utilities;
+
+@import 'tailwindcss/theme.css' layer(theme) source(none);
+
+@import 'tailwindcss/utilities.css' layer(utilities) source(none);
+
+@source "./";
+
+@theme inline {
+  /* 底色与前景 */
+  --color-background: var(--dsw-alias-bg-layer-1);
+  --color-foreground: var(--dsw-alias-label-primary);
+  --color-surface: var(--dsw-alias-bg-layer-2);
+  --color-muted: var(--dsw-alias-bg-layer-3);
+  --color-muted-foreground: var(--dsw-alias-label-secondary);
+  --color-secondary-foreground: var(--dsw-alias-label-tertiary);
+  /* 品牌与交互 */
+  --color-primary: var(--dsw-alias-brand-primary);
+  --color-primary-hover: var(--dsw-alias-button-primary-hover);
+  --color-primary-foreground: var(--dsw-alias-label-primary-foreground);
+  --color-accent: var(--dsw-alias-interactive-bg-hover);
+  --color-accent-foreground: var(--dsw-alias-label-primary);
+  /* 语义状态 */
+  --color-destructive: var(--dsw-alias-state-error-primary);
+  --color-destructive-foreground: var(--dsw-alias-label-primary-foreground);
+  --color-success: var(--dsw-alias-state-success-primary);
+  --color-success-soft: var(--dsw-alias-state-success-tertiary);
+  --color-warning: var(--dsw-alias-state-warn-primary);
+  --color-warning-label: var(--dsw-alias-state-warn-label);
+  --color-warning-soft: var(--dsw-alias-state-warn-tertiary);
+  --color-link: var(--dsw-alias-link);
+  /* 描边与焦点 */
+  --color-border: var(--dsw-alias-border-l1);
+  --color-border-strong: var(--dsw-alias-border-l2);
+  --color-input: var(--dsw-alias-border-l2);
+  --color-ring: var(--dsw-alias-brand-primary);
+  /* 浮层 */
+  --color-overlay: var(--dsw-alias-bg-overlay);
+  --color-tooltip: var(--dsw-alias-tooltip-bg);
+}
